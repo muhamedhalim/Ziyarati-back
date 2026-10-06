@@ -1051,6 +1051,13 @@ export class AiExecutionService {
     tenantId: string,
     aiConversationId: string,
     content: string,
+    /**
+     * Provider facts (WhatsApp `wamid`) when the message arrived over a channel
+     * bridge. The bridge has already stored the message on the timeline under
+     * that `wamid`, so passing it makes the mirror below a no-op instead of a
+     * second copy of the same patient message.
+     */
+    origin?: { waMessageId?: string; messageType?: string },
   ): Promise<{ handedOver: true }> {
     const aiConv = await this.aiConversations.findOne({
       where: { id: aiConversationId, tenant: { id: tenantId } },
@@ -1086,6 +1093,7 @@ export class AiExecutionService {
         linkedConversationId,
         'CUSTOMER',
         content,
+        origin,
       );
       // Requirement #10 (notifications): let the assigned agent's channels
       // (WhatsApp/email, per their NotificationRule) know the customer

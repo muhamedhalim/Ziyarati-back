@@ -32,7 +32,6 @@ import { UpdateHandoverRequestDto } from './dto/update-handover-request.dto';
 import { AssignHandoverDto } from './dto/assign-handover.dto';
 import { TransferHandoverDto } from './dto/transfer-handover.dto';
 import { HandoverNoteDto } from './dto/handover-note.dto';
-import { SendHandoverReplyDto } from './dto/send-handover-reply.dto';
 import { HandoverRequestFilterDto } from './dto/handover-request-filter.dto';
 
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -455,40 +454,9 @@ export class HandoverRequestController {
     );
   }
 
-  @ApiOperation({
-    summary: 'Send a reply as the assigned agent',
-    description: `**Protected — \`ai.handover.manage\`. Clinic active.** REST fallback for the realtime \`ai:agent:reply\` socket event — same persistence + WhatsApp/web delivery. Only the assigned agent may reply (Conversation Locking).`,
-  })
-  @ApiParam({
-    name: 'aiConversationId',
-    description: 'AI conversation UUID',
-    type: 'string',
-    format: 'uuid',
-  })
-  @ApiCreatedResponse({ description: 'Message sent.' })
-  @ApiConflictResponse({
-    description: 'Assigned to another agent.',
-    schema: S_ERROR,
-  })
-  @ApiUnprocessableEntityResponse({
-    description: 'Conversation is not handed over.',
-    schema: S_ERROR,
-  })
-  @Post('conversations/:aiConversationId/reply')
-  @RequirePermissions(PERMISSION.AI_HANDOVER_MANAGE)
-  async reply(
-    @Param('aiConversationId', ParseUUIDPipe) aiConversationId: string,
-    @Body() dto: SendHandoverReplyDto,
-    @CurrentUser('id') userId: string,
-  ) {
-    const { message } = await this.handovers.sendAgentReply(
-      this.ctx.requireTenantId(),
-      userId,
-      aiConversationId,
-      dto.content,
-    );
-    return message;
-  }
+  // `POST conversations/:aiConversationId/reply` (an agent's reply) lives in
+  // `HandoverReplyController` (ai-realtime module): delivering it over WhatsApp
+  // needs the WhatsApp module, which AiModule cannot import without a cycle.
 
   @ApiOperation({
     summary: 'Close a conversation',

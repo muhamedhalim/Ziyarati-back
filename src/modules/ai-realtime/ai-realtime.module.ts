@@ -14,6 +14,7 @@ import { AgentPresenceService } from './agent-presence.service';
 import { HandoverChatService } from './handover-chat.service';
 import { HandoverRealtimeListener } from './handover-realtime.listener';
 import { HandoverChatController } from './handover-chat.controller';
+import { HandoverReplyController } from './handover-reply.controller';
 import { AiWsRateLimitService } from './ai-ws-rate-limit.service';
 
 /**
@@ -55,7 +56,7 @@ import { AiWsRateLimitService } from './ai-ws-rate-limit.service';
       }),
     }),
   ],
-  controllers: [HandoverChatController],
+  controllers: [HandoverChatController, HandoverReplyController],
   providers: [
     AiRealtimeGateway,
     WsAuthService,

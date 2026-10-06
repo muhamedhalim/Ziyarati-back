@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 
 import { WhatsappContact } from '../../entities/WhatsApp/WhatsappContact';
+import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
+import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import { Message } from '../../entities/Conversations/Message';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
@@ -32,6 +34,27 @@ import type {
 } from './webhooks/whatsapp-webhook.types';
 
 const PG_UNIQUE_VIOLATION = '23505';
+
+/**
+ * What the STORE step (see `handleInboundValue`) learned about one inbound
+ * message, for the AI step that may follow it.
+ *  - `skip`   — nothing for the AI to do (no actionable content, or the patient
+ *               opted out); the message itself is already stored.
+ *  - `failed` — the message could not be stored/resolved; carries the error.
+ *  - `ready`  — stored; `conversationId` is its timeline thread (`null` only
+ *               when no thread could be resolved).
+ */
+type IngestedMessage =
+  | { kind: 'skip'; message: MetaWebhookMessage }
+  | { kind: 'failed'; message: MetaWebhookMessage; error: unknown }
+  | {
+      kind: 'ready';
+      message: MetaWebhookMessage;
+      waId: string;
+      content: string;
+      contact: WhatsappContact;
+      conversationId: string | null;
+    };
 
 /**
  * Sent when an AI turn throws (see `onTurnFailed`). Bilingual because no
@@ -64,7 +87,8 @@ const CONTACT_DAILY_LIMIT_TEXT =
  * pipeline the website and dashboard use:
  *
  *   inbound message → resolve/create WhatsApp contact + linked CRM customer →
- *   restore the tenant's AI Bot Actor as the real authenticated principal →
+ *   STORE it on the unified timeline (always, whatever the AI settings) →
+ *   [only if the clinic's assistant is on and entitled] restore the tenant's AI Bot Actor as the real authenticated principal →
  *   AiOrchestratorService.handleStream (WHATSAPP channel, tool-calling +
  *   memory + RAG — same engine, same permission checks as every other channel)
  *   → reply via the WhatsApp Cloud API session message (text, or an
@@ -92,6 +116,10 @@ export class WhatsappInboundAiService {
     private readonly messages: Repository<Message>,
     @InjectRepository(TenantSetting)
     private readonly tenantSettings: Repository<TenantSetting>,
+    @InjectRepository(AiConversation)
+    private readonly aiConversations: Repository<AiConversation>,
+    @InjectRepository(WhatsappAccount)
+    private readonly accounts: Repository<WhatsappAccount>,
     private readonly media: WhatsappMediaService,
     private readonly orchestrator: AiOrchestratorService,
     private readonly conversationExecution: ConversationExecutionService,
@@ -114,15 +142,22 @@ export class WhatsappInboundAiService {
   /**
    * Process the inbound messages in a resolved Meta change value.
    *
-   * INGEST vs EXECUTE. The webhook job itself (`whatsapp.webhookProcess`) is
-   * deliberately NOT entitlement-gated — inbound events must keep being
-   * accepted and persisted while a clinic is blocked, or a suspension would
-   * silently destroy customer messages the clinic never gets to read. What is
-   * gated is what this bridge DOES with them: driving an AI turn and sending a
-   * reply. Checked once here rather than per message so a blocked tenant's
-   * batch produces one log line instead of one error per inbound message —
+   * STORE FIRST, DECIDE AFTER. Every inbound message is stored on the unified
+   * timeline (and its media queued, and a STOP honoured) BEFORE any decision
+   * about the AI is taken. Before, the timeline copy was written only as part
+   * of an AI turn, so a clinic that switched the assistant off (or was not
+   * entitled to it) never saw the patient's message in the inbox at all — it
+   * survived only as a raw `whatsapp_webhooks` row. Disabling the AI must
+   * change who ANSWERS, never whether staff can SEE.
+   *
+   * What is gated is what this bridge DOES afterwards — driving an AI turn and
+   * sending a reply. Checked once per batch (not per message) so a blocked
+   * tenant's batch produces one log line instead of one per inbound message —
    * `AiExecutionService` and `WhatsappMessagingService.sendSession` still
-   * refuse independently, so this is an early-out, not the enforcement.
+   * refuse independently, so this is an early-out, not the enforcement. The
+   * webhook job itself (`whatsapp.webhookProcess`) is deliberately NOT
+   * entitlement-gated for the same reason: a blocked clinic must keep
+   * receiving what its patients send.
    */
   async handleInboundValue(
     tenantId: string,
@@ -130,13 +165,203 @@ export class WhatsappInboundAiService {
   ): Promise<void> {
     const messages = value?.messages ?? [];
     if (messages.length === 0) return;
-    if (!(await this.botSwitchedOn(tenantId))) return;
-    if (!(await this.mayAutoReply(tenantId))) return;
+
+    const ingested: IngestedMessage[] = [];
     for (const message of messages) {
-      await this.handleOne(tenantId, value, message).catch((err) =>
-        this.onTurnFailed(tenantId, message, err),
+      ingested.push(await this.ingestOne(tenantId, value, message));
+    }
+
+    // `&&` keeps the original short-circuit: the entitlement lookup is skipped
+    // (and not logged) when the clinic itself has the assistant switched off.
+    const aiOn =
+      (await this.botSwitchedOn(tenantId)) &&
+      (await this.mayAutoReply(tenantId));
+
+    for (const item of ingested) {
+      if (item.kind === 'failed') {
+        if (aiOn) {
+          // Unchanged for a clinic whose assistant is on: the same ERROR log,
+          // counter and one plain "we could not answer" message as any turn
+          // that throws.
+          await this.onTurnFailed(tenantId, item.message, item.error);
+        } else {
+          // The assistant is off, so the patient must not be answered — but a
+          // message that could not even be stored is still worth an alert.
+          this.logger.error(
+            `inbound message could not be stored on the timeline (tenant=${tenantId}): ${(item.error as Error)?.message}`,
+          );
+        }
+        continue;
+      }
+      if (!aiOn || item.kind === 'skip') continue;
+      await this.handleOne(tenantId, item).catch((err) =>
+        this.onTurnFailed(tenantId, item.message, err),
       );
     }
+  }
+
+  /**
+   * The STORE step for one message. Runs for every clinic whatever its AI
+   * settings, so it never calls the bot actor, the orchestrator or the model,
+   * and never sends anything. Never throws — a failure comes back as
+   * `kind: 'failed'` so one bad message cannot lose the rest of the batch.
+   */
+  private async ingestOne(
+    tenantId: string,
+    value: MetaWebhookChangeValue,
+    message: MetaWebhookMessage,
+  ): Promise<IngestedMessage> {
+    try {
+      const waId = message.from?.replace(/[^\d]/g, '');
+      if (!waId) return { kind: 'skip', message };
+
+      const content = this.extractContent(message);
+      if (!content) {
+        this.logger.debug(
+          `inbound ${message.type ?? 'unknown'} had no actionable content (tenant=${tenantId})`,
+        );
+        return { kind: 'skip', message };
+      }
+
+      const displayName = value?.contacts?.find((c) => c.wa_id === message.from)
+        ?.profile?.name;
+      const contact = await this.findOrCreateContact(
+        tenantId,
+        waId,
+        displayName,
+      );
+
+      const conversationId = await this.storeOnTimeline(
+        tenantId,
+        value,
+        message,
+        contact,
+        content,
+      );
+
+      // Fetch any attached media on its own queue — see WhatsappMediaService for
+      // why this cannot happen inline. Needs the timeline message stored above.
+      // Never blocks or fails the message.
+      await this.attachMedia(tenantId, message);
+
+      // FND-024: an inbound opt-out is recorded here, ahead of every AI gate —
+      // a "STOP" must be honoured even when the clinic has the assistant off,
+      // and a customer who just said it must never get a chatbot response back
+      // (confusing at best, a compliance problem at worst). Keyword set is data
+      // (whatsapp.opt_out_keywords), never hardcoded — extensible without a
+      // deploy (AD-05-adjacent: exact-message match only, not substring, so an
+      // unrelated sentence containing a keyword-shaped word is never mistaken
+      // for an opt-out).
+      if (await this.recordOptOutIfRequested(tenantId, contact, content)) {
+        return { kind: 'skip', message };
+      }
+
+      return { kind: 'ready', message, waId, content, contact, conversationId };
+    } catch (error) {
+      return { kind: 'failed', message, error };
+    }
+  }
+
+  /**
+   * Stores the patient's message on the timeline thread of this contact and
+   * returns that thread's id (`null` when it could not be placed).
+   *
+   * Idempotent on the `wamid`: a job retry, or the AI engine's own mirror of
+   * the same message later in the turn, finds the row and writes nothing. A
+   * message that already existed is NOT a reason to stop — the first attempt
+   * may have died before the reply went out, and the AI request claim (keyed on
+   * the same `wamid`) is what prevents a second model run.
+   */
+  private async storeOnTimeline(
+    tenantId: string,
+    value: MetaWebhookChangeValue,
+    message: MetaWebhookMessage,
+    contact: WhatsappContact,
+    content: string,
+  ): Promise<string | null> {
+    const customerId = contact.customer?.id;
+    const account = await this.resolveInboundAccount(
+      tenantId,
+      value?.metadata?.phone_number_id,
+    );
+    if (!customerId || !account) {
+      this.logger.warn(
+        `inbound message not stored on the timeline (tenant=${tenantId}): ${
+          customerId
+            ? 'no connected WhatsApp account matches the receiving number'
+            : 'contact has no linked customer'
+        }`,
+      );
+      return null;
+    }
+
+    // The thread the contact's AI session is already bound to wins, so the AI
+    // session, the agent inbox and the patient's messages share one thread.
+    const aiSession = contact.ai_conversation_id
+      ? await this.aiConversations.findOne({
+          where: {
+            id: contact.ai_conversation_id,
+            tenant: { id: tenantId },
+          },
+          relations: { conversation: true },
+        })
+      : null;
+    const thread = await this.conversationExecution.resolveWhatsappThread(
+      tenantId,
+      customerId,
+      account.id,
+      aiSession?.conversation?.id,
+    );
+    await this.conversationExecution.recordChannelMessageOnce(
+      tenantId,
+      thread.id,
+      'CUSTOMER',
+      content,
+      undefined,
+      { waMessageId: message.id, messageType: message.type },
+    );
+    return thread.id;
+  }
+
+  /**
+   * The clinic's own connected account for the number that received the
+   * message. Tenant-scoped and live-only, like every other inbound lookup of
+   * `phone_number_id` — the tenant itself was already resolved from it.
+   */
+  private async resolveInboundAccount(
+    tenantId: string,
+    phoneNumberId: string | undefined,
+  ): Promise<WhatsappAccount | null> {
+    if (!phoneNumberId) return null;
+    return this.accounts.findOne({
+      where: {
+        phone_number_id: phoneNumberId,
+        tenant: { id: tenantId },
+        deleted_at: IsNull(),
+      },
+    });
+  }
+
+  /** Records the opt-out and returns true when `content` is an opt-out keyword. */
+  private async recordOptOutIfRequested(
+    tenantId: string,
+    contact: WhatsappContact,
+    content: string,
+  ): Promise<boolean> {
+    if (!contact.customer?.id) return false;
+    const keywordsCsv = await this.settings.getTyped<string>(
+      SettingKey.WHATSAPP_OPT_OUT_KEYWORDS,
+    );
+    if (!isOptOutMessage(content, keywordsCsv)) return false;
+    await this.customers.recordOptOut(
+      tenantId,
+      contact.customer.id,
+      'inbound_keyword',
+    );
+    this.logger.log(
+      `Customer ${contact.customer.id} opted out via inbound WhatsApp keyword`,
+    );
+    return true;
   }
 
   /**
@@ -239,80 +464,43 @@ export class WhatsappInboundAiService {
     return true;
   }
 
+  /**
+   * The AI step for one stored message: restores the tenant's AI Bot Actor as a
+   * REAL authenticated principal for the whole turn — every downstream check
+   * (booking permission gates, actorUserId on the appointment row) sees a real,
+   * auditable user instead of an anonymous context, exactly as an HTTP request
+   * would. Only reached for a clinic whose assistant is on and entitled, so a
+   * clinic that never uses the AI never gets a bot user provisioned.
+   */
   private async handleOne(
     tenantId: string,
-    value: MetaWebhookChangeValue,
-    message: MetaWebhookMessage,
+    item: Extract<IngestedMessage, { kind: 'ready' }>,
   ): Promise<void> {
-    const waId = message.from?.replace(/[^\d]/g, '');
-    if (!waId) return;
-
-    const content = this.extractContent(message);
-    if (!content) {
-      this.logger.debug(
-        `inbound ${message.type ?? 'unknown'} had no actionable content (tenant=${tenantId})`,
-      );
-      return;
-    }
-
-    // Restore the tenant's AI Bot Actor as a REAL authenticated principal for
-    // the whole turn — every downstream check (booking permission gates,
-    // actorUserId on the appointment row) sees a real, auditable user instead
-    // of an anonymous context, exactly as an HTTP request would.
     const bot = await this.botActor.ensureBotActor(tenantId);
     await this.ctx.run(async () => {
       this.ctx.setPrincipal(bot);
-      await this.processTurn(tenantId, value, message, waId, content);
+      await this.processTurn(tenantId, item);
     });
   }
 
   private async processTurn(
     tenantId: string,
-    value: MetaWebhookChangeValue,
-    message: MetaWebhookMessage,
-    waId: string,
-    content: string,
+    item: Extract<IngestedMessage, { kind: 'ready' }>,
   ): Promise<void> {
-    const displayName = value?.contacts?.find((c) => c.wa_id === message.from)
-      ?.profile?.name;
-    const contact = await this.findOrCreateContact(tenantId, waId, displayName);
-
-    // FND-024: an inbound opt-out is recorded and the turn stops HERE — no AI
-    // reply, no booking turn. Checked before the orchestrator call so a
-    // customer who just said "STOP" never gets a chatbot response back
-    // (confusing at best, a compliance problem at worst). Keyword set is data
-    // (whatsapp.opt_out_keywords), never hardcoded — extensible without a
-    // deploy (AD-05-adjacent: exact-message match only, not substring, so an
-    // unrelated sentence containing a keyword-shaped word is never mistaken
-    // for an opt-out).
-    if (contact.customer?.id) {
-      const keywordsCsv = await this.settings.getTyped<string>(
-        SettingKey.WHATSAPP_OPT_OUT_KEYWORDS,
-      );
-      if (isOptOutMessage(content, keywordsCsv)) {
-        await this.customers.recordOptOut(
-          tenantId,
-          contact.customer.id,
-          'inbound_keyword',
-        );
-        this.logger.log(
-          `Customer ${contact.customer.id} opted out via inbound WhatsApp keyword`,
-        );
-        return;
-      }
-    }
+    const { message, waId, content, contact, conversationId } = item;
 
     // F-16: after the opt-out check (a "STOP" must always be honoured) and before
     // anything that costs money. A refused message is already stored on the
-    // timeline by ingest, so a human can still read it.
+    // timeline, so a human can still read it.
     if (!(await this.admitContactTurn(tenantId, waId))) return;
 
     // Continue the contact's single conversation (shared history/session/memory/
-    // agent). First inbound turn has none → the orchestrator creates + routes one.
-    // `handleStream` reuses the SAME tool-capable streaming path as the website/
-    // dashboard widgets (real usage accounting, no duplicated AI logic) — the
-    // token deltas aren't forwarded anywhere (WhatsApp has no live-edit UX), only
-    // the final assistant reply is sent.
+    // agent). First inbound turn has none → the orchestrator creates + routes one,
+    // bound to the timeline thread the message was just stored on. `handleStream`
+    // reuses the SAME tool-capable streaming path as the website/dashboard
+    // widgets (real usage accounting, no duplicated AI logic) — the token deltas
+    // aren't forwarded anywhere (WhatsApp has no live-edit UX), only the final
+    // assistant reply is sent.
     const result = await this.orchestrator.handleStream(
       tenantId,
       {
@@ -321,6 +509,10 @@ export class WhatsappInboundAiService {
         trustedChannel: true,
         content,
         aiConversationId: contact.ai_conversation_id ?? undefined,
+        // Only honoured because `trustedChannel` is set: binds a new session —
+        // or a resumed one that has no thread yet — to the timeline thread, so
+        // the AI's replies are mirrored where the patient's messages already are.
+        conversationId: conversationId ?? undefined,
         autoRoute: Boolean(contact.ai_conversation_id),
         useMemory: true,
         // TRUSTED, not `sessionPatch`: this bridge is trusted server code
@@ -343,10 +535,6 @@ export class WhatsappInboundAiService {
       },
       () => undefined,
     );
-
-    // Fetch any attached media on its own queue — see WhatsappMediaService for
-    // why this cannot happen inline. Never blocks or fails the AI turn.
-    await this.attachMedia(tenantId, message);
 
     if (!contact.ai_conversation_id && result.aiConversationId) {
       contact.ai_conversation_id = result.aiConversationId;

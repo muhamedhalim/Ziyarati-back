@@ -9,6 +9,7 @@ import { WhatsappContact } from '../../entities/WhatsApp/WhatsappContact';
 import { NotificationLog } from '../../entities/Notifications/NotificationLog';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
+import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import { Customer } from '../../entities/CRM/Customer';
 import { User } from '../../entities/Auth&RBAC/User';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
@@ -125,6 +126,9 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
       // READ-ONLY: `bot_enabled`, the clinic's own switch for the inbound AI
       // auto-reply (`WhatsappInboundAiService.botSwitchedOn`).
       TenantSetting,
+      // READ-ONLY: the contact's AI session, to find the timeline thread it is
+      // already bound to (`WhatsappInboundAiService.storeOnTimeline`).
+      AiConversation,
     ]),
     // Usage-quota enforcement (UsageService) for WhatsApp message metering.
     SubscriptionBillingModule,
