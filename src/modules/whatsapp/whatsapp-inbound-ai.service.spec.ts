@@ -6,6 +6,8 @@ import { WhatsappInboundAiService } from './whatsapp-inbound-ai.service';
 import { WhatsappContact } from '../../entities/WhatsApp/WhatsappContact';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { Message } from '../../entities/Conversations/Message';
+import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
+import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import { WhatsappMediaService } from './meta/whatsapp-media.service';
 import { AiOrchestratorService } from '../ai-orchestrator/ai-orchestrator.service';
 import { ConversationExecutionService } from '../conversations/conversation-execution.service';
@@ -43,7 +45,16 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
   };
   let settings: { getTyped: jest.Mock };
   let messaging: { sendSession: jest.Mock };
-  let conversationExecution: { recordProviderMessageId: jest.Mock };
+  let conversationExecution: {
+    recordProviderMessageId: jest.Mock;
+    resolveWhatsappThread: jest.Mock;
+    recordChannelMessageOnce: jest.Mock;
+  };
+  let media: { enqueueForMessage: jest.Mock };
+  let botActor: { ensureBotActor: jest.Mock };
+  let accounts: MockRepository;
+  let aiConversations: MockRepository;
+  let messageRepo: MockRepository;
   let access: { resolve: jest.Mock; shouldBlock: jest.Mock };
   let tenantSettings: MockRepository;
   let metrics: { recordWhatsappAiTurnFailure: jest.Mock };
@@ -87,7 +98,28 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     messaging = { sendSession: jest.fn().mockResolvedValue({ success: true }) };
     conversationExecution = {
       recordProviderMessageId: jest.fn().mockResolvedValue(undefined),
+      // The thread an inbound message is stored on, and the (idempotent) write.
+      resolveWhatsappThread: jest.fn().mockResolvedValue({ id: 'thread-1' }),
+      recordChannelMessageOnce: jest
+        .fn()
+        .mockResolvedValue({ message: { id: 'msg-1' }, created: true }),
     };
+    media = { enqueueForMessage: jest.fn() };
+    botActor = {
+      ensureBotActor: jest.fn().mockResolvedValue({
+        id: 'bot-1',
+        tenantId: TENANT,
+        email: null,
+        roles: [],
+        permissions: [],
+      }),
+    };
+    // The clinic's connected number the messages arrive on; no AI session yet.
+    accounts = createMockRepository();
+    accounts.findOne.mockResolvedValue({ id: 'acc-1' });
+    aiConversations = createMockRepository();
+    aiConversations.findOne.mockResolvedValue(null);
+    messageRepo = createMockRepository();
     access = {
       resolve: jest.fn(async (_t: string, key: FeatureKey) => allowed(key)),
       shouldBlock: jest.fn().mockReturnValue(true),
@@ -100,11 +132,16 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
         { provide: getRepositoryToken(TenantSetting), useValue: tenantSettings },
         {
           provide: getRepositoryToken(Message),
-          useValue: createMockRepository(),
+          useValue: messageRepo,
+        },
+        { provide: getRepositoryToken(WhatsappAccount), useValue: accounts },
+        {
+          provide: getRepositoryToken(AiConversation),
+          useValue: aiConversations,
         },
         {
           provide: WhatsappMediaService,
-          useValue: { enqueueForMessage: jest.fn() },
+          useValue: media,
         },
         { provide: AiOrchestratorService, useValue: orchestrator },
         {
@@ -122,18 +159,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
             }),
           },
         },
-        {
-          provide: WhatsappBotActorService,
-          useValue: {
-            ensureBotActor: jest.fn().mockResolvedValue({
-              id: 'bot-1',
-              tenantId: TENANT,
-              email: null,
-              roles: [],
-              permissions: [],
-            }),
-          },
-        },
+        { provide: WhatsappBotActorService, useValue: botActor },
         { provide: CustomerService, useValue: customers },
         { provide: TenantContextService, useValue: new TenantContextService() },
         { provide: SystemSettingService, useValue: settings },
@@ -648,6 +674,281 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
       expect(
         errorSpy.mock.calls.map((c) => c.map(String).join(' ')).join('\n'),
       ).not.toContain('966500000000');
+    });
+  });
+
+  /**
+   * P1a — STORE FIRST, DECIDE AFTER. Switching the assistant off (or not being
+   * entitled to it) must change who ANSWERS, never whether staff can SEE the
+   * patient's message.
+   */
+  describe('store first, decide after', () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    const inbound = (over: Record<string, unknown> = {}) =>
+      ({
+        metadata: { phone_number_id: 'p1' },
+        messages: [
+          {
+            id: 'wamid-s1',
+            from: '966500000000',
+            type: 'text',
+            text: { body: 'hello' },
+            ...over,
+          },
+        ],
+      }) as never;
+
+    const assistantOff = () =>
+      tenantSettings.findOne.mockResolvedValue({
+        id: 'ts-1',
+        bot_enabled: false,
+      });
+
+    it('stores the message on the timeline thread, keyed by its wamid', async () => {
+      await service.handleInboundValue(TENANT, inbound());
+
+      expect(
+        conversationExecution.recordChannelMessageOnce,
+      ).toHaveBeenCalledWith(
+        TENANT,
+        'thread-1',
+        'CUSTOMER',
+        'hello',
+        undefined,
+        { waMessageId: 'wamid-s1', messageType: 'text' },
+      );
+    });
+
+    it('stores it, but runs no AI and sends no reply, when the clinic switched the assistant OFF', async () => {
+      assistantOff();
+
+      await service.handleInboundValue(TENANT, inbound());
+
+      expect(
+        conversationExecution.recordChannelMessageOnce,
+      ).toHaveBeenCalledTimes(1);
+      expect(orchestrator.handleStream).not.toHaveBeenCalled();
+      expect(messaging.sendSession).not.toHaveBeenCalled();
+      // No bot user is provisioned for a clinic that never uses the assistant.
+      expect(botActor.ensureBotActor).not.toHaveBeenCalled();
+    });
+
+    it('stores it, but runs no AI and sends no reply, when the clinic is not entitled', async () => {
+      access.resolve.mockImplementation(async (_t: string, key: FeatureKey) =>
+        key === FeatureKey.AI_ASSISTANT
+          ? {
+              allowed: false,
+              tenantId: TENANT,
+              featureKey: key,
+              source: AccessSource.DENIED,
+              quotaPolicy: QuotaPolicy.BLOCKED,
+            }
+          : allowed(key),
+      );
+
+      await service.handleInboundValue(TENANT, inbound());
+
+      expect(
+        conversationExecution.recordChannelMessageOnce,
+      ).toHaveBeenCalledTimes(1);
+      expect(orchestrator.handleStream).not.toHaveBeenCalled();
+      expect(messaging.sendSession).not.toHaveBeenCalled();
+    });
+
+    it('queues inbound media for a stored message even while the assistant is off', async () => {
+      assistantOff();
+      messageRepo.findOne.mockResolvedValue({
+        id: 'msg-1',
+        conversation: { whatsapp_account: { id: 'acc-1' } },
+      });
+
+      await service.handleInboundValue(
+        TENANT,
+        inbound({ type: 'image', image: { id: 'media-1' }, text: undefined }),
+      );
+
+      expect(media.enqueueForMessage).toHaveBeenCalledWith(
+        TENANT,
+        'acc-1',
+        'msg-1',
+        expect.objectContaining({ id: 'wamid-s1' }),
+      );
+      expect(orchestrator.handleStream).not.toHaveBeenCalled();
+    });
+
+    it('still honours a STOP while the assistant is off', async () => {
+      assistantOff();
+
+      await service.handleInboundValue(
+        TENANT,
+        inbound({ text: { body: 'STOP' } }),
+      );
+
+      expect(customers.recordOptOut).toHaveBeenCalledWith(
+        TENANT,
+        'cust-1',
+        'inbound_keyword',
+      );
+      expect(
+        conversationExecution.recordChannelMessageOnce,
+      ).toHaveBeenCalledTimes(1);
+      expect(messaging.sendSession).not.toHaveBeenCalled();
+    });
+
+    it('stores every message of a batch before it decides anything', async () => {
+      await service.handleInboundValue(TENANT, {
+        metadata: { phone_number_id: 'p1' },
+        messages: [
+          { id: 'w1', from: '966500000000', type: 'text', text: { body: 'a' } },
+          { id: 'w2', from: '966500000000', type: 'text', text: { body: 'b' } },
+        ],
+      } as never);
+
+      const lastStore = Math.max(
+        ...conversationExecution.recordChannelMessageOnce.mock
+          .invocationCallOrder,
+      );
+      const firstTurn = Math.min(
+        ...orchestrator.handleStream.mock.invocationCallOrder,
+      );
+      expect(lastStore).toBeLessThan(firstTurn);
+    });
+
+    it('binds the AI turn to the thread the message was stored on', async () => {
+      await service.handleInboundValue(TENANT, inbound());
+
+      expect(orchestrator.handleStream).toHaveBeenCalledWith(
+        TENANT,
+        expect.objectContaining({
+          trustedChannel: true,
+          conversationId: 'thread-1',
+          origin: { waMessageId: 'wamid-s1', messageType: 'text' },
+        }),
+        expect.any(Function),
+      );
+    });
+
+    it("prefers the thread the contact's AI session is already bound to, looked up tenant-scoped", async () => {
+      contacts.findOne.mockResolvedValue({
+        ...EXISTING_CONTACT,
+        ai_conversation_id: 'ai-1',
+      });
+      aiConversations.findOne.mockResolvedValue({
+        id: 'ai-1',
+        conversation: { id: 'handover-thread' },
+      });
+
+      await service.handleInboundValue(TENANT, inbound());
+
+      expect(aiConversations.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'ai-1', tenant: { id: TENANT } },
+        }),
+      );
+      expect(conversationExecution.resolveWhatsappThread).toHaveBeenCalledWith(
+        TENANT,
+        'cust-1',
+        'acc-1',
+        'handover-thread',
+      );
+    });
+
+    it("resolves the account from THIS tenant's live accounts only", async () => {
+      await service.handleInboundValue(TENANT, inbound());
+
+      expect(accounts.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            phone_number_id: 'p1',
+            tenant: { id: TENANT },
+          }),
+        }),
+      );
+    });
+
+    it('still answers when no connected account matches the receiving number (nothing to store it on)', async () => {
+      accounts.findOne.mockResolvedValue(null);
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      await service.handleInboundValue(TENANT, inbound());
+
+      expect(
+        conversationExecution.recordChannelMessageOnce,
+      ).not.toHaveBeenCalled();
+      expect(orchestrator.handleStream).toHaveBeenCalledWith(
+        TENANT,
+        expect.objectContaining({ conversationId: undefined }),
+        expect.any(Function),
+      );
+    });
+
+    it('a message already on the timeline (a job retry) still gets its AI turn', async () => {
+      // The first attempt may have died after storing it but before replying;
+      // stopping here would leave the patient unanswered for good. The AI
+      // request claim (keyed on the wamid) is what prevents a second model run.
+      conversationExecution.recordChannelMessageOnce.mockResolvedValue({
+        message: { id: 'msg-1' },
+        created: false,
+      });
+
+      await service.handleInboundValue(TENANT, inbound());
+
+      expect(orchestrator.handleStream).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays silent toward the patient, but logs an error, when storing fails and the assistant is off', async () => {
+      assistantOff();
+      conversationExecution.resolveWhatsappThread.mockRejectedValue(
+        new Error('db down'),
+      );
+      const errorSpy = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+
+      await service.handleInboundValue(TENANT, inbound());
+
+      expect(messaging.sendSession).not.toHaveBeenCalled();
+      expect(orchestrator.handleStream).not.toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('could not be stored on the timeline'),
+      );
+    });
+
+    it('keeps the "could not answer" fallback when storing fails and the assistant is on', async () => {
+      conversationExecution.resolveWhatsappThread.mockRejectedValue(
+        new Error('db down'),
+      );
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+
+      await service.handleInboundValue(TENANT, inbound());
+
+      expect(orchestrator.handleStream).not.toHaveBeenCalled();
+      expect(messaging.sendSession).toHaveBeenCalledTimes(1);
+      expect(messaging.sendSession.mock.calls[0][0].text).toMatch(
+        /could not process your message/i,
+      );
+      expect(metrics.recordWhatsappAiTurnFailure).toHaveBeenCalledWith('sent');
+    });
+
+    it('never writes the patient phone number to any log while storing', async () => {
+      assistantOff();
+      conversationExecution.resolveWhatsappThread.mockRejectedValue(
+        new Error('db down'),
+      );
+      const spies = (['debug', 'log', 'warn', 'error'] as const).map((level) =>
+        jest.spyOn(Logger.prototype, level).mockImplementation(() => undefined),
+      );
+
+      await service.handleInboundValue(TENANT, inbound());
+      accounts.findOne.mockResolvedValue(null);
+      await service.handleInboundValue(TENANT, inbound());
+
+      const logged = spies
+        .flatMap((spy) => spy.mock.calls)
+        .map((call) => call.map(String).join(' '))
+        .join('\n');
+      expect(logged).not.toContain('966500000000');
     });
   });
 
