@@ -2,6 +2,13 @@
 # live in Secrets Manager (zt/production/*). account_id comes from
 # TF_VAR_account_id. Sizing rationale: infra/docs/ARCHITECTURE.md.
 
+# Regions this environment may be deployed to. EMPTY ON PURPOSE: no hosting
+# location is approved yet (infra/docs/SECURITY.md §6, decision D-1). With an
+# empty list every plan fails closed (modules/platform variable validation and
+# infra/scripts/region-gate.sh). Add a region ONLY after the hosting-location
+# decision is approved in writing; aws_region below must then be a member.
+approved_regions = []
+
 aws_region            = "me-central-1"
 availability_zone_ids = ["mec1-az1", "mec1-az2", "mec1-az3"]
 vpc_cidr              = "10.20.0.0/16"

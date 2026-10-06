@@ -11,6 +11,7 @@ import {
 import { AiExecuteJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { validateJobPayload } from '../../queue/job-payload-validator';
+import { minimizeCompletedJob } from '../../queue/job-pii-redaction';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { AiExecutionService } from '../../modules/ai/ai-execution.service';
@@ -93,6 +94,17 @@ export class AiProcessor extends WorkerHost {
         'BACKGROUND_JOB',
       ),
     );
+  }
+
+  /**
+   * Residency plan P6: the raw message text of an `ai.execute` job is dropped
+   * once the turn has completed (it is persisted on the conversation by
+   * `sendMessage`). The sweep jobs on this queue carry no content and are
+   * left alone.
+   */
+  @OnWorkerEvent('completed')
+  async onCompleted(job: Job) {
+    await minimizeCompletedJob(job, this.logger);
   }
 
   @OnWorkerEvent('failed')

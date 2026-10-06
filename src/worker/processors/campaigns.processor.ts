@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
+import { scrubFailureReason } from '../../common/utils/log-scrubber.util';
 import { DelayedError, Job, UnrecoverableError } from 'bullmq';
 
 import {
@@ -127,7 +128,7 @@ async function parkExhaustedOrPermanent(
       sourceJobName: job.name,
       originalJobId: String(job?.id ?? ''),
       originalData: data as unknown as Record<string, unknown>,
-      failedReason: err?.message ?? 'unknown',
+      failedReason: scrubFailureReason(err),
       attemptsMade: job?.attemptsMade ?? 0,
       diedAt: new Date().toISOString(),
     } satisfies CampaignDlqJob)

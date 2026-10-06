@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
 import { AiProviderFactory } from '../../ai/providers/ai-provider.factory';
 import { AiModelRouterService } from '../../ai/routing/ai-model-router.service';
@@ -65,7 +66,22 @@ export class GuestAttachmentExtractionService {
     // hand the result to the provider, which made it the one execution path in
     // the codebase that could run a model the platform had not authorized.
     private readonly modelRouter: AiModelRouterService,
+    private readonly config: ConfigService,
   ) {}
+
+  /**
+   * Residency plan P3. An uploaded image is whatever the visitor photographed —
+   * typically a medical report with a name, an ID number and results on it — and
+   * the vision pass sends the whole image to the model provider and asks for it
+   * verbatim. That is the single largest disclosure in the AI surface, so it is
+   * OFF unless the platform explicitly turns it on (`AI_VISION_ENABLED=true`).
+   * While off, an image resolves to `unreadable`, which the widget already
+   * answers by offering to pass the file to the clinic. PDFs are parsed locally
+   * and are unaffected.
+   */
+  private visionEnabled(): boolean {
+    return String(this.config.get('AI_VISION_ENABLED', 'false')) === 'true';
+  }
 
   async extract(
     buffer: Buffer,
@@ -150,6 +166,10 @@ export class GuestAttachmentExtractionService {
     // Routed, not configured. `conversationId` is the tenant id because an
     // upload has no conversation yet — it only feeds the rollout hash, and a
     // stable value keeps a tenant's uploads on one side of a partial rollout.
+    if (!this.visionEnabled()) {
+      this.logger.debug('Image extraction skipped: AI_VISION_ENABLED is not true');
+      return '';
+    }
     const routed = this.modelRouter.resolve({
       tenantId,
       conversationId: tenantId,

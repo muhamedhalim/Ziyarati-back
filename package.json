@@ -20,6 +20,8 @@
     "migration:show": "node dist/src/migrate.js show",
     "migration:revert": "node dist/src/migrate.js revert",
     "migration:generate": "node -r dotenv/config ./node_modules/typeorm/cli.js migration:generate -d dist/src/config/data-source.js",
+    "retention:run": "node dist/src/retention-run.js",
+    "tenant:offboard": "node dist/src/tenant-offboard.js",
     "migration:verify": "ts-node -r tsconfig-paths/register scripts/verify-migrations.ts",
     "start:worker:dev": "ts-node -r tsconfig-paths/register src/worker.ts",
     "dev": "concurrently -n api,worker -c blue,green \"npm:start:dev\" \"npm:start:worker:dev\"",

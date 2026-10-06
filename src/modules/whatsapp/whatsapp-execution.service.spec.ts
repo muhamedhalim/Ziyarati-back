@@ -113,6 +113,141 @@ describe('WhatsappExecutionService', () => {
   afterEach(() => jest.clearAllMocks());
 
   describe('sendTemplateMessage', () => {
+    describe('outbound content policy and marketing consent (residency plan P5)', () => {
+      const BODY = (text: string) => ({ components: [{ type: 'BODY', text }] });
+
+      it('refuses a variable carrying a national ID, and never reaches the provider or the quota', async () => {
+        templates.getSendableTemplate.mockResolvedValue({
+          ...TEMPLATE,
+          components: BODY('Hello {{1}}, your visit is on {{2}}'),
+        });
+        await expect(
+          service.sendTemplateMessage(TENANT, 'tpl-1', {
+            toWaId: '966500000000',
+            variables: { 1: 'Sara', 2: '1012345678' },
+          } as any),
+        ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+        expect(messaging.send).not.toHaveBeenCalled();
+        expect(usage.incrementIfWithinLimit).not.toHaveBeenCalled();
+      });
+
+      it('refuses a clinical term in a variable, and the refusal names the variable but not its value', async () => {
+        templates.getSendableTemplate.mockResolvedValue({
+          ...TEMPLATE,
+          components: BODY('Hello {{1}}, {{2}}'),
+        });
+        let message = '';
+        try {
+          await service.sendTemplateMessage(TENANT, 'tpl-1', {
+            toWaId: '966500000000',
+            variables: { 1: 'Sara', 2: 'your lab results are ready' },
+          } as any);
+        } catch (err) {
+          message = (err as Error).message;
+        }
+        expect(message).toContain('clinical_term in "2"');
+        expect(message).not.toContain('lab results');
+        expect(messaging.send).not.toHaveBeenCalled();
+      });
+
+      it('refuses an identifier that only appears once the body is rendered', async () => {
+        templates.getSendableTemplate.mockResolvedValue({
+          ...TEMPLATE,
+          components: BODY('Your reference is {{1}}'),
+        });
+        await expect(
+          service.sendTemplateMessage(TENANT, 'tpl-1', {
+            toWaId: '966500000000',
+            variables: { 1: '4111 1111 1111 1111' },
+          } as any),
+        ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+      });
+
+      it('finalises a CLAIMED log row as FAILED instead of stranding it in SENDING', async () => {
+        templates.getSendableTemplate.mockResolvedValue({
+          ...TEMPLATE,
+          components: BODY('Hi {{1}}'),
+        });
+        const qb = logs.createQueryBuilder();
+        (logs.createQueryBuilder as jest.Mock).mockReturnValue(qb);
+        (qb.execute as jest.Mock).mockResolvedValueOnce({ affected: 1 });
+        (logs.findOneBy as jest.Mock).mockResolvedValueOnce({ id: 'log-9' });
+
+        await expect(
+          service.sendTemplateMessage(
+            TENANT,
+            'tpl-1',
+            { toWaId: '966500000000', variables: { 1: '1012345678' } } as any,
+            { logId: 'log-9' },
+          ),
+        ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+
+        expect(messaging.send).not.toHaveBeenCalled();
+        expect(logs.update).toHaveBeenCalledWith(
+          { id: 'log-9' },
+          expect.objectContaining({ status: WHATSAPP_DELIVERY_STATUS.FAILED }),
+        );
+        const patch = (logs.update as jest.Mock).mock.calls[0][1];
+        expect(patch.error_message).toContain('content policy');
+        expect(patch.error_message).not.toContain('1012345678');
+      });
+
+      it('lets an ordinary appointment notice through', async () => {
+        templates.getSendableTemplate.mockResolvedValue({
+          ...TEMPLATE,
+          components: BODY('Hi {{1}}, your appointment is on {{2}} at {{3}}'),
+        });
+        const res = await service.sendTemplateMessage(TENANT, 'tpl-1', {
+          toWaId: '966500000000',
+          variables: { 1: 'Sara', 2: '2026-10-07', 3: '09:30' },
+        } as any);
+        expect(res.status).toBe(WHATSAPP_DELIVERY_STATUS.SENT);
+      });
+
+      it('refuses a MARKETING template to a customer without marketing consent', async () => {
+        templates.getSendableTemplate.mockResolvedValue({
+          ...TEMPLATE,
+          category: 'MARKETING',
+        });
+        customers.findOne.mockResolvedValue({
+          id: 'c1',
+          phone: '966500000000',
+          marketing_opt_in: false,
+          opted_out_at: null,
+        });
+        await expect(
+          service.sendTemplateMessage(TENANT, 'tpl-1', { customerId: 'c1' } as any),
+        ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+        expect(messaging.send).not.toHaveBeenCalled();
+      });
+
+      it('refuses a MARKETING template to a raw number (no consent record exists)', async () => {
+        templates.getSendableTemplate.mockResolvedValue({
+          ...TEMPLATE,
+          category: 'marketing',
+        });
+        await expect(
+          service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any),
+        ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+      });
+
+      it('sends a MARKETING template to a consenting customer, and UTILITY to anyone', async () => {
+        customers.findOne.mockResolvedValue({
+          id: 'c1',
+          phone: '966500000000',
+          marketing_opt_in: true,
+          opted_out_at: null,
+        });
+        templates.getSendableTemplate.mockResolvedValue({ ...TEMPLATE, category: 'MARKETING' });
+        const marketing = await service.sendTemplateMessage(TENANT, 'tpl-1', { customerId: 'c1' } as any);
+        expect(marketing.status).toBe(WHATSAPP_DELIVERY_STATUS.SENT);
+
+        templates.getSendableTemplate.mockResolvedValue({ ...TEMPLATE, category: 'UTILITY' });
+        const utility = await service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any);
+        expect(utility.status).toBe(WHATSAPP_DELIVERY_STATUS.SENT);
+      });
+    });
+
     it('resolves account/template/recipient, reserves quota atomically, sends, and records a SENT log', async () => {
       const res = await service.sendTemplateMessage(TENANT, 'tpl-1', {
         toWaId: '966500000000',

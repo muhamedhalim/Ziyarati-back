@@ -81,7 +81,10 @@ export class CustomerFileService {
 
     if (file.storage_key) {
       try {
-        await this.storage.deleteObject(file.storage_key, tenantId);
+        // A patient document is D4 data: remove it PERMANENTLY, every stored version.
+        // `deleteObject` on a versioned bucket only writes a delete marker and leaves the
+        // document readable by version id (residency plan P11).
+        await this.storage.purgeObject(file.storage_key, tenantId);
       } catch (err) {
         this.logger.warn(
           `Failed to delete R2 object ${file.storage_key}: ${(err as Error)?.message}`,

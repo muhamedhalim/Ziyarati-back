@@ -57,3 +57,42 @@ run "parameters_enforce_tls_and_phi_safe_logging" {
     error_message = "force_ssl, PHI-safe logging and explicit max_connections must be set"
   }
 }
+
+# Data boundary: a single in-region instance, Multi-AZ, no replica, backups kept
+# and encrypted in the same region, logs retained under the env key.
+run "database_stays_in_region_and_keeps_backups" {
+  command = plan
+
+  assert {
+    condition     = aws_db_instance.this.replicate_source_db == null
+    error_message = "A read replica would copy the database elsewhere; none may be declared"
+  }
+
+  assert {
+    condition     = aws_db_instance.this.multi_az == true
+    error_message = "Production-shaped fixture must be Multi-AZ"
+  }
+
+  assert {
+    condition     = aws_db_instance.this.backup_retention_period >= 7 && aws_db_instance.this.delete_automated_backups == false
+    error_message = "PITR backups must be retained and survive instance deletion"
+  }
+
+  assert {
+    condition     = aws_db_instance.this.skip_final_snapshot == false
+    error_message = "A final snapshot is required"
+  }
+
+  assert {
+    condition     = aws_db_instance.this.ca_cert_identifier == var.ca_cert_identifier
+    error_message = "The CA bundle must come from the variable, not a literal"
+  }
+
+  assert {
+    condition = alltrue([
+      for g in [aws_cloudwatch_log_group.postgresql, aws_cloudwatch_log_group.upgrade] :
+      g.retention_in_days > 0 && g.kms_key_id == var.kms_key_arn
+    ])
+    error_message = "RDS log groups need a finite retention and the env CMK"
+  }
+}

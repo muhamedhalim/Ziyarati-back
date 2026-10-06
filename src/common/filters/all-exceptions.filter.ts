@@ -13,6 +13,7 @@ import { normalizeException } from '../errors/error-normalizer';
 import type { NormalizedError } from '../errors/error-normalizer';
 import { ErrorResponseBody } from '../interfaces/error-response.interface';
 import { sanitizeForLog, sanitizeUrlForLog } from '../utils/sanitize.util';
+import { scrubText, summarizeBodyForLog } from '../utils/log-scrubber.util';
 
 /** `Retry-After` bounds (seconds). A 429 with no hint falls back to the length of the rate-limit windows in use. */
 const RETRY_AFTER_MIN_SECONDS = 1;
@@ -153,17 +154,25 @@ export class AllExceptionsFilter implements ExceptionFilter {
       code: normalized.code,
       userId: principal?.id,
       tenantId: principal?.tenantId,
-      message:
+      // The raw driver/provider message can quote row values or echo a
+      // recipient ("invalid input syntax for type uuid: '0501234567'") — scrub
+      // by shape before it is written (residency plan P7).
+      message: scrubText(
         rawMessage ??
-        (Array.isArray(normalized.message)
-          ? normalized.message.join('; ')
-          : normalized.message),
+          (Array.isArray(normalized.message)
+            ? normalized.message.join('; ')
+            : normalized.message),
+      ),
       // Server-log-only diagnostics — never present in the client response.
       internalContext: normalized.internalContext
         ? sanitizeForLog(normalized.internalContext)
         : undefined,
-      cause: cause ? { message: cause.message, name: cause.name } : undefined,
-      body: sanitizeForLog(request.body),
+      cause: cause
+        ? { message: scrubText(cause.message), name: cause.name }
+        : undefined,
+      // Shape only (field names, types, lengths): a request body is whatever a
+      // patient or clinician typed, so its TEXT is never logged.
+      body: summarizeBodyForLog(request.body),
     };
 
     const serialized = JSON.stringify(payload);
@@ -171,11 +180,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
     if (normalized.statusCode >= HttpStatus.INTERNAL_SERVER_ERROR) {
       // 5xx: real failures — log at error with the full stack, including the
       // cause's own stack (e.g. the raw DB/provider error an AppError wraps).
-      const stack = exception instanceof Error
-        ? [exception.stack, cause?.stack && `Caused by: ${cause.stack}`]
-            .filter(Boolean)
-            .join('\n')
-        : undefined;
+      const stack =
+        exception instanceof Error
+          ? scrubText(
+              [exception.stack, cause?.stack && 'Caused by: ' + cause.stack]
+                .filter(Boolean)
+                .join('\n'),
+            )
+          : undefined;
       this.logger.error(serialized, stack);
     } else {
       // 4xx: expected/operational — log at warn, no stack noise.

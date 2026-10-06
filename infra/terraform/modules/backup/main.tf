@@ -43,6 +43,7 @@ resource "aws_kms_key" "dr" {
   provider                = aws.dr
   description             = "${var.name} DR backup copies"
   enable_key_rotation     = true
+  multi_region            = false
   deletion_window_in_days = 30
   policy                  = data.aws_iam_policy_document.dr_key.json
   tags                    = local.tags

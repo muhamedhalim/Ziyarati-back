@@ -18,7 +18,7 @@ describe('CustomerFileService', () => {
   let storage: {
     upload: jest.Mock;
     getSignedDownloadUrl: jest.Mock;
-    deleteObject: jest.Mock;
+    purgeObject: jest.Mock;
   };
 
   const uploadInput = {
@@ -40,7 +40,7 @@ describe('CustomerFileService', () => {
         sha256: 'deadbeef',
       }),
       getSignedDownloadUrl: jest.fn().mockResolvedValue('https://signed.example.com/file'),
-      deleteObject: jest.fn().mockResolvedValue(undefined),
+      purgeObject: jest.fn().mockResolvedValue({ versionsRemoved: 1 }),
     };
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -133,7 +133,7 @@ describe('CustomerFileService', () => {
     it('removes the row and best-effort deletes the R2 object', async () => {
       files.findOne.mockResolvedValueOnce({ id: 'f1', storage_key: 'k1' });
       await expect(service.remove(TENANT, CUSTOMER, 'f1')).resolves.toEqual({ id: 'f1', deleted: true });
-      expect(storage.deleteObject).toHaveBeenCalledWith('k1', TENANT);
+      expect(storage.purgeObject).toHaveBeenCalledWith('k1', TENANT);
     });
 
     it('does not call storage.getSignedDownloadUrl while removing (raw load only)', async () => {
@@ -144,14 +144,14 @@ describe('CustomerFileService', () => {
 
     it('does not fail the request when R2 deletion errors', async () => {
       files.findOne.mockResolvedValueOnce({ id: 'f1', storage_key: 'k1' });
-      storage.deleteObject.mockRejectedValueOnce(new Error('network error'));
+      storage.purgeObject.mockRejectedValueOnce(new Error('network error'));
       await expect(service.remove(TENANT, CUSTOMER, 'f1')).resolves.toEqual({ id: 'f1', deleted: true });
     });
 
     it('skips R2 deletion for legacy rows with no storage_key', async () => {
       files.findOne.mockResolvedValueOnce({ id: 'f1', storage_key: null });
       await service.remove(TENANT, CUSTOMER, 'f1');
-      expect(storage.deleteObject).not.toHaveBeenCalled();
+      expect(storage.purgeObject).not.toHaveBeenCalled();
     });
   });
 

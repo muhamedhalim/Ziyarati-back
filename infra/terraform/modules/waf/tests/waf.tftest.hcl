@@ -53,3 +53,13 @@ run "block_mode_blocks_the_source_ip_rule" {
     error_message = "mode=block must block on the source-IP rule"
   }
 }
+
+# WAF logs carry request metadata: finite retention and the env CMK.
+run "waf_logs_are_retained_and_encrypted" {
+  command = plan
+
+  assert {
+    condition     = aws_cloudwatch_log_group.waf.retention_in_days > 0 && aws_cloudwatch_log_group.waf.kms_key_id == var.kms_key_arn
+    error_message = "WAF log group needs a finite retention and the env CMK"
+  }
+}

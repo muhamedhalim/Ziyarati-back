@@ -21,14 +21,16 @@ mock_provider "aws" {
 mock_provider "random" {}
 
 variables {
-  environment           = "production"
+  environment = "production"
+  # TEST FIXTURE ONLY — this is not an approval of any hosting location.
+  approved_regions      = ["me-central-1"]
   aws_region            = "me-central-1"
   availability_zone_ids = ["mec1-az1", "mec1-az2", "mec1-az3"]
   vpc_cidr              = "10.20.0.0/16"
   nat_gateway_count     = 2
   domain                = "ziyaratech.com"
   email_domain          = "ziyaratech.com"
-  cookie_domain         = ".ziyaratech.com"
+  cookie_domain         = "ziyaratech.com"
   frontend_origins      = ["https://www.ziyaratech.com"]
   app_url               = "https://www.ziyaratech.com"
   image_tag             = "test"
@@ -140,7 +142,8 @@ run "dr_copy_only_when_region_chosen" {
   command = plan
 
   variables {
-    dr_backup_region = "eu-central-1"
+    dr_backup_region         = "eu-central-1"
+    approved_dr_destinations = ["eu-central-1"]
   }
 
   assert {
@@ -153,10 +156,53 @@ run "dr_region_must_differ_from_primary" {
   command = plan
 
   variables {
-    dr_backup_region = "me-central-1"
+    dr_backup_region         = "me-central-1"
+    approved_dr_destinations = ["me-central-1"]
   }
 
   expect_failures = [var.dr_backup_region]
+}
+
+# Data boundary (residency plan T1/T4): a region outside the approved list, an
+# empty list, and an unapproved backup destination must all fail at plan time.
+run "region_must_be_approved" {
+  command = plan
+
+  variables {
+    aws_region = "eu-central-1"
+  }
+
+  expect_failures = [var.aws_region]
+}
+
+run "empty_approved_regions_block_every_plan" {
+  command = plan
+
+  variables {
+    approved_regions = []
+  }
+
+  expect_failures = [var.aws_region]
+}
+
+run "dr_destination_must_be_approved" {
+  command = plan
+
+  variables {
+    dr_backup_region         = "eu-central-1"
+    approved_dr_destinations = []
+  }
+
+  expect_failures = [var.dr_backup_region]
+}
+
+run "no_backup_module_without_an_approved_destination" {
+  command = plan
+
+  assert {
+    condition     = length(module.backup) == 0
+    error_message = "No cross-region backup copy may exist when dr_backup_region is empty"
+  }
 }
 
 run "rejects_frontend_origin_with_trailing_slash" {
@@ -193,4 +239,61 @@ run "review_fixes_are_wired" {
     condition     = length(module.account_baseline) == 1
     error_message = "Account baseline (with the uploads-bucket data events) must be enabled by default"
   }
+}
+
+# Cookie scope (residency plan P9). The API validates COOKIE_DOMAIN with Joi
+# hostname(), which REJECTS a leading dot — the previous ".<domain>" value would
+# have failed the task's env validation at boot, so a regression here is a boot
+# loop, not a cosmetic issue.
+run "cookie_domain_is_a_bare_hostname_and_scopes_all_cookies_by_default" {
+  command = plan
+
+  assert {
+    condition     = local.common_env.COOKIE_DOMAIN == "ziyaratech.com"
+    error_message = "COOKIE_DOMAIN must be the bare parent domain (no leading dot)"
+  }
+
+  assert {
+    condition     = !contains(keys(local.common_env), "CSRF_COOKIE_DOMAIN")
+    error_message = "Without direct API routing the csrf cookie follows COOKIE_DOMAIN; CSRF_COOKIE_DOMAIN must be absent"
+  }
+}
+
+run "direct_api_routing_scopes_only_the_csrf_cookie" {
+  command = plan
+
+  variables {
+    cookie_domain      = ""
+    csrf_cookie_domain = "ziyaratech.com"
+  }
+
+  assert {
+    condition     = local.common_env.CSRF_COOKIE_DOMAIN == "ziyaratech.com"
+    error_message = "The readable session hint must be shared with the app host"
+  }
+
+  assert {
+    condition     = !contains(keys(local.common_env), "COOKIE_DOMAIN")
+    error_message = "With COOKIE_DOMAIN unset the access/refresh cookies stay host-only on the API host, never sent to the page-serving tier"
+  }
+}
+
+run "a_leading_dot_cookie_domain_is_refused" {
+  command = plan
+
+  variables {
+    cookie_domain = ".ziyaratech.com"
+  }
+
+  expect_failures = [var.cookie_domain]
+}
+
+run "a_leading_dot_csrf_cookie_domain_is_refused" {
+  command = plan
+
+  variables {
+    csrf_cookie_domain = ".ziyaratech.com"
+  }
+
+  expect_failures = [var.csrf_cookie_domain]
 }

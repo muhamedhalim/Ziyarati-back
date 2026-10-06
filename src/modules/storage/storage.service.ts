@@ -4,8 +4,11 @@ import {
   S3Client,
   PutObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   HeadObjectCommand,
   GetObjectCommand,
+  ListObjectsV2Command,
+  ListObjectVersionsCommand,
   type GetObjectCommandOutput,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -74,14 +77,17 @@ export class StorageService {
   private readonly signedUrlTtl: number;
 
   constructor(config: ConfigService) {
-    this.provider = config.get<string>('STORAGE_PROVIDER') === 's3' ? 's3' : 'r2';
+    this.provider =
+      config.get<string>('STORAGE_PROVIDER') === 's3' ? 's3' : 'r2';
     if (this.provider === 's3') {
       this.accountId = '';
       this.accessKeyId = '';
       this.secretAccessKey = '';
       this.bucket = config.get<string>('S3_BUCKET') ?? '';
       this.region =
-        config.get<string>('S3_REGION') || config.get<string>('AWS_REGION') || '';
+        config.get<string>('S3_REGION') ||
+        config.get<string>('AWS_REGION') ||
+        '';
     } else {
       this.accountId = config.get<string>('R2_ACCOUNT_ID') ?? '';
       this.accessKeyId = config.get<string>('R2_ACCESS_KEY_ID') ?? '';
@@ -330,6 +336,144 @@ export class StorageService {
     await this.getClient().send(
       new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
     );
+  }
+
+  /**
+   * Erases an object PERMANENTLY, including every stored version and delete
+   * marker (residency plan P11).
+   *
+   * Plain `deleteObject` is not erasure on a versioned bucket: S3 only writes a
+   * delete marker and every earlier version stays readable to anyone who can ask
+   * for it by version id. The uploads bucket is versioned, so a patient's
+   * document survives `deleteObject` in full. This lists the key's versions and
+   * removes each one.
+   *
+   * Providers without version listing (Cloudflare R2) answer the list call with
+   * an error; those buckets have no versions, so the fallback is the plain
+   * delete — which IS permanent there.
+   */
+  async purgeObject(
+    key: string,
+    tenantId: string,
+  ): Promise<{ versionsRemoved: number }> {
+    this.assertKeyBelongsToTenant(key, tenantId);
+    const removed = await this.purgeVersionedPrefix(key, true);
+    if (removed === null) {
+      await this.getClient().send(
+        new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+      return { versionsRemoved: 1 };
+    }
+    return { versionsRemoved: removed };
+  }
+
+  /**
+   * Erases EVERY object (all versions and delete markers) under a tenant's
+   * `<tenantId>/` prefix — the storage leg of tenant offboarding. Returns the
+   * number of versions removed. Throws on any batch failure so a partial purge is
+   * never reported as complete.
+   */
+  async purgeTenantPrefix(
+    tenantId: string,
+  ): Promise<{ versionsRemoved: number }> {
+    if (!/^[0-9a-f-]{36}$/i.test(tenantId)) {
+      // The prefix is the only thing standing between this and the whole bucket.
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'A tenant id is required to purge a storage prefix.',
+      });
+    }
+    const prefix = `${tenantId}/`;
+    const removed = await this.purgeVersionedPrefix(prefix, false);
+    if (removed !== null) return { versionsRemoved: removed };
+
+    // No version listing: list current objects and delete them.
+    const client = this.getClient();
+    let total = 0;
+    let token: string | undefined;
+    do {
+      const page = await client.send(
+        new ListObjectsV2Command({
+          Bucket: this.bucket,
+          Prefix: prefix,
+          ContinuationToken: token,
+        }),
+      );
+      const keys = (page.Contents ?? []).map((o) => ({ Key: o.Key! }));
+      if (keys.length > 0) {
+        await this.deleteBatch(keys);
+        total += keys.length;
+      }
+      token = page.IsTruncated ? page.NextContinuationToken : undefined;
+    } while (token);
+    return { versionsRemoved: total };
+  }
+
+  /**
+   * Deletes every version and delete marker whose key matches `target`
+   * (`exact`) or starts with it. Returns the count, or `null` when the provider
+   * cannot list versions at all.
+   */
+  private async purgeVersionedPrefix(
+    target: string,
+    exact: boolean,
+  ): Promise<number | null> {
+    const client = this.getClient();
+    let total = 0;
+    let keyMarker: string | undefined;
+    let versionMarker: string | undefined;
+    for (;;) {
+      let page;
+      try {
+        page = await client.send(
+          new ListObjectVersionsCommand({
+            Bucket: this.bucket,
+            Prefix: target,
+            KeyMarker: keyMarker,
+            VersionIdMarker: versionMarker,
+          }),
+        );
+      } catch (err) {
+        const name = (err as { name?: string })?.name ?? '';
+        // Only "this provider has no versioning API" selects the fallback;
+        // anything else (denied, network) must surface, not silently degrade.
+        if (
+          total === 0 &&
+          /NotImplemented|NotSupported|Unsupported/i.test(name)
+        ) {
+          return null;
+        }
+        throw err;
+      }
+      const entries = [...(page.Versions ?? []), ...(page.DeleteMarkers ?? [])]
+        .filter((v) => v.Key && (!exact || v.Key === target))
+        .map((v) => ({ Key: v.Key!, VersionId: v.VersionId }));
+      if (entries.length > 0) {
+        await this.deleteBatch(entries);
+        total += entries.length;
+      }
+      if (!page.IsTruncated) return total;
+      keyMarker = page.NextKeyMarker;
+      versionMarker = page.NextVersionIdMarker;
+    }
+  }
+
+  /** DeleteObjects takes at most 1000 keys; a per-key error is a failure of the purge. */
+  private async deleteBatch(
+    objects: Array<{ Key: string; VersionId?: string }>,
+  ): Promise<void> {
+    for (let i = 0; i < objects.length; i += 1000) {
+      const result = await this.getClient().send(
+        new DeleteObjectsCommand({
+          Bucket: this.bucket,
+          Delete: { Objects: objects.slice(i, i + 1000), Quiet: true },
+        }),
+      );
+      if (result.Errors && result.Errors.length > 0) {
+        throw new AppError(ErrorCode.INTERNAL_ERROR, {
+          message: `Storage purge failed for ${result.Errors.length} object(s).`,
+        });
+      }
+    }
   }
 
   /**

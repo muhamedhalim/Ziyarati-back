@@ -351,6 +351,32 @@ describe('env.validation', () => {
       ).toThrow(/COOKIE_DOMAIN/);
     });
 
+    it('rejects a leading dot on COOKIE_DOMAIN — infra must emit a bare hostname', () => {
+      // Real finding (residency plan P9): the Terraform platform module used to
+      // emit ".<domain>", which fails here and would have kept the task from booting.
+      expect(() => validate({ ...base, COOKIE_DOMAIN: '.example.com' })).toThrow(
+        /COOKIE_DOMAIN/,
+      );
+    });
+
+    describe('CSRF_COOKIE_DOMAIN (residency plan P9)', () => {
+      it('accepts a bare hostname and is optional', () => {
+        expect(validate({ ...base, CSRF_COOKIE_DOMAIN: 'example.com' }).CSRF_COOKIE_DOMAIN).toBe(
+          'example.com',
+        );
+        expect(validate({ ...base }).CSRF_COOKIE_DOMAIN).toBeUndefined();
+      });
+
+      it.each(['.example.com', 'https://example.com', 'not a hostname!'])(
+        'rejects %s',
+        (value) => {
+          expect(() => validate({ ...base, CSRF_COOKIE_DOMAIN: value })).toThrow(
+            /CSRF_COOKIE_DOMAIN/,
+          );
+        },
+      );
+    });
+
     it('COOKIE_DOMAIN is optional', () => {
       expect(validate({ ...base }).COOKIE_DOMAIN).toBeUndefined();
     });
@@ -1526,5 +1552,62 @@ describe('client-address trust (SEC-02)', () => {
 
   it('rejects a short edge token', () => {
     expect(() => validate({ ...base, TRUST_PROXY_HOPS: 1, EDGE_PROXY_TOKEN: 'short' })).toThrow(/Env validation error/);
+  });
+});
+
+describe('AI data minimisation and residency settings (residency plan P2-P4)', () => {
+  const prodOk = {
+    ...prodBase,
+    CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+  };
+
+  it('minimiser defaults ON and vision defaults OFF', () => {
+    const value = validate({ ...base });
+    expect(value.AI_MINIMIZER_ENABLED).toBe('true');
+    expect(value.AI_VISION_ENABLED).toBe('false');
+  });
+
+  it('rejects a non-boolean value for either switch', () => {
+    expect(() => validate({ ...base, AI_VISION_ENABLED: 'yes' })).toThrow(/Env validation error/);
+    expect(() => validate({ ...base, AI_MINIMIZER_ENABLED: '1' })).toThrow(/Env validation error/);
+  });
+
+  it('refuses to boot in production when required-residency features are listed but the master switch is off', () => {
+    expect(() =>
+      validate({ ...prodOk, AI_RESIDENCY_REQUIRED_FEATURES: 'chat' }),
+    ).toThrow(/AI_RESIDENCY_REQUIRED_FEATURES is set but AI_DATA_RESIDENCY_ENABLED/);
+  });
+
+  it('boots in production when the list is empty, or the switch is on', () => {
+    expect(() => validate({ ...prodOk })).not.toThrow();
+    expect(() =>
+      validate({
+        ...prodOk,
+        AI_RESIDENCY_REQUIRED_FEATURES: 'chat',
+        AI_DATA_RESIDENCY_ENABLED: 'true',
+      }),
+    ).not.toThrow();
+  });
+
+  it('does not apply the fail-fast outside production', () => {
+    expect(() =>
+      validate({ ...base, AI_RESIDENCY_REQUIRED_FEATURES: 'chat' }),
+    ).not.toThrow();
+  });
+});
+
+describe('WhatsApp and email content settings (residency plan P5, P8)', () => {
+  it('defaults: policy enforced, marketing consent required, email minimal', () => {
+    const value = validate({ ...base });
+    expect(value.WHATSAPP_CONTENT_POLICY).toBe('enforce');
+    expect(value.WHATSAPP_ENFORCE_MARKETING_OPT_IN).toBe('true');
+    expect(value.EMAIL_INCLUDE_HEALTH_DETAIL).toBe('false');
+  });
+
+  it('accepts monitor and off, rejects anything else', () => {
+    expect(validate({ ...base, WHATSAPP_CONTENT_POLICY: 'monitor' }).WHATSAPP_CONTENT_POLICY).toBe('monitor');
+    expect(validate({ ...base, WHATSAPP_CONTENT_POLICY: 'off' }).WHATSAPP_CONTENT_POLICY).toBe('off');
+    expect(() => validate({ ...base, WHATSAPP_CONTENT_POLICY: 'warn' })).toThrow(/Env validation error/);
+    expect(() => validate({ ...base, EMAIL_INCLUDE_HEALTH_DETAIL: 'yes' })).toThrow(/Env validation error/);
   });
 });

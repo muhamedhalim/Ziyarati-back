@@ -12,6 +12,10 @@ import { OpenAiRequestPolicy } from './openai-request-policy';
 import { OpenAiClientProvider } from './openai-client.provider';
 import { ModelCircuitBreaker } from './model-circuit-breaker';
 import {
+  MinimizationSession,
+  passthroughSession,
+} from '../minimization/ai-minimizer';
+import {
   DEFAULT_AI_MODEL_ID,
   allowedModelId,
 } from '../routing/ai-model-registry';
@@ -40,6 +44,13 @@ export class OpenAiChatProvider implements AiCompletionProvider {
   private readonly fallbackModel: string;
   private readonly policy: OpenAiRequestPolicy;
   private readonly breaker: ModelCircuitBreaker;
+  /**
+   * Residency plan P2. ON unless explicitly set to `false`: identifiers are
+   * tokenised before a request leaves the process and restored in the reply and
+   * in tool-call arguments (see `minimization/ai-minimizer.ts`). The switch
+   * exists as a kill-switch for a regression, not as a way to run unprotected.
+   */
+  private readonly minimizerEnabled: boolean;
 
   constructor(
     private readonly config: ConfigService,
@@ -55,6 +66,7 @@ export class OpenAiChatProvider implements AiCompletionProvider {
     // hand-built ConfigService that never went through Joi — and because an
     // env var must never be the way a disallowed model reaches the API.
     this.fallbackModel = this.allowedDefault(config.get<string>('AI_FALLBACK_MODEL'));
+    this.minimizerEnabled = String(config.get('AI_MINIMIZER_ENABLED', 'true')) !== 'false';
     const timeout = Number(config.get('OPENAI_REQUEST_TIMEOUT_MS', 30_000));
     this.policy = new OpenAiRequestPolicy(
       Number(config.get('OPENAI_PROVIDER_MAX_RETRIES', 2)),
@@ -146,14 +158,32 @@ export class OpenAiChatProvider implements AiCompletionProvider {
     return client;
   }
 
+  /**
+   * Tokenises identifiers in the outbound messages. A failure here propagates:
+   * a request the minimiser could not process is refused, never sent raw.
+   */
+  private minimize(
+    request: AiCompletionRequest,
+  ): Pick<MinimizationSession, 'messages' | 'rehydrate' | 'rehydrateToolCalls' | 'streamRehydrator' | 'report' | 'changed'> {
+    if (!this.minimizerEnabled) return passthroughSession(request.messages);
+    const session = new MinimizationSession(request.messages);
+    if (session.changed) {
+      // Counts only — never the values.
+      this.logger.debug(`minimised outbound prompt ${JSON.stringify(session.report)}`);
+    }
+    return session;
+  }
+
   async complete(request: AiCompletionRequest): Promise<AiCompletionResult> {
     const model = this.effectiveModel(request.model ?? this.fallbackModel);
     const client = await this.resolveClient(request.tenantId);
+    const session = this.minimize(request);
+    const outbound = { ...request, messages: session.messages };
 
     const { value: res, attempts } = await this.trackModelHealth(model, () =>
       this.policy.execute(
         () => client.chat.completions.create(
-          this.requestBody(request, model),
+          this.requestBody(outbound, model),
           this.requestOptions(request),
         ),
         'chat.completions',
@@ -170,7 +200,7 @@ export class OpenAiChatProvider implements AiCompletionProvider {
       }));
 
     return {
-      content: message?.content ?? '',
+      content: session.rehydrate(message?.content ?? ''),
       model: res.model,
       promptTokens: res.usage?.prompt_tokens ?? 0,
       completionTokens: res.usage?.completion_tokens ?? 0,
@@ -178,7 +208,7 @@ export class OpenAiChatProvider implements AiCompletionProvider {
       cacheWriteTokens: this.cacheWriteTokens(res.usage),
       providerAttempts: attempts,
       providerRequestId: res._request_id ?? undefined,
-      toolCalls,
+      toolCalls: session.rehydrateToolCalls(toolCalls),
     };
   }
 
@@ -303,13 +333,16 @@ export class OpenAiChatProvider implements AiCompletionProvider {
   async *stream(request: AiCompletionRequest): AsyncIterable<AiCompletionChunk> {
     const model = this.effectiveModel(request.model ?? this.fallbackModel);
     const client = await this.resolveClient(request.tenantId);
+    const session = this.minimize(request);
+    const outbound = { ...request, messages: session.messages };
+    const rehydrator = session.streamRehydrator();
     // Retry only stream creation. Once any stream data is observed, replaying it
     // could duplicate output/cost, so iteration failures propagate immediately.
     // The breaker likewise only sees the creation outcome, for the same reason.
     const { value: stream, attempts } = await this.trackModelHealth(model, () =>
       this.policy.execute(
         () => client.chat.completions.create(
-          { ...this.requestBody(request, model), stream: true, stream_options: { include_usage: true } },
+          { ...this.requestBody(outbound, model), stream: true, stream_options: { include_usage: true } },
           this.requestOptions(request),
         ),
         'chat.completions.stream',
@@ -335,7 +368,10 @@ export class OpenAiChatProvider implements AiCompletionProvider {
       }
       const choice = part.choices[0];
       const delta = choice?.delta?.content ?? '';
-      if (delta) yield { delta, done: false };
+      if (delta) {
+        const ready = rehydrator.push(delta);
+        if (ready) yield { delta: ready, done: false };
+      }
 
       for (const tc of choice?.delta?.tool_calls ?? []) {
         const entry = pending.get(tc.index) ?? { id: '', name: '', arguments: '' };
@@ -350,6 +386,15 @@ export class OpenAiChatProvider implements AiCompletionProvider {
       .filter((t) => t.id && t.name)
       .map((t) => ({ id: t.id, name: t.name, arguments: t.arguments }));
 
-    yield { delta: '', done: true, toolCalls: toolCalls.length ? toolCalls : undefined, usage, model: resolvedModel };
+    const tail = rehydrator.flush();
+    if (tail) yield { delta: tail, done: false };
+
+    yield {
+      delta: '',
+      done: true,
+      toolCalls: toolCalls.length ? session.rehydrateToolCalls(toolCalls) : undefined,
+      usage,
+      model: resolvedModel,
+    };
   }
 }

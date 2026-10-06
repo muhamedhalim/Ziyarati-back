@@ -325,6 +325,14 @@ export const validate = (config: Record<string, unknown>) => {
     // means host-only cookies, the existing default.
     COOKIE_DOMAIN: Joi.string().hostname(),
 
+    // Residency plan P9 — scope of the readable `csrf_token` / session-hint
+    // cookie ONLY (cookie.service.ts `csrfDomain`). Unset falls back to
+    // COOKIE_DOMAIN, so nothing changes until it is set. Lets the SPA on the app
+    // host read the hint while the access/refresh cookies stay host-only on the
+    // API host. Bare hostname, NO leading dot (`example.com`, not `.example.com`
+    // — the latter fails `hostname()`; browsers treat both the same).
+    CSRF_COOKIE_DOMAIN: Joi.string().hostname(),
+
     // Contract C10 (Marketplace) — per-cookie override for the TWO anonymous
     // patient cookies only: `guest_token` (guest-chat.controller.ts) and
     // `booking_session_id` (public-booking.controller.ts). `CookieService`
@@ -810,6 +818,30 @@ export const validate = (config: Record<string, unknown>) => {
     // globally. Empty (default) ⇒ residency is driven purely by the tenant's own
     // deployment row.
     AI_RESIDENCY_REQUIRED_FEATURES: Joi.string().allow('').default(''),
+    // Data minimisation in front of the model provider (residency plan P2).
+    // ON by default: names/phones/emails are tokenised before a request leaves
+    // the process and restored in the reply and in tool-call arguments; national
+    // IDs, Iqama and card numbers are removed. `false` is a regression kill-switch.
+    AI_MINIMIZER_ENABLED: Joi.string().valid('true', 'false').default('true'),
+    // Outbound WhatsApp content policy (residency plan P5). `enforce` refuses a
+    // send carrying a national ID / card / insurance number / credential, or a
+    // clinical term in a template variable; `monitor` only logs what it would
+    // have refused; `off` disables the check.
+    WHATSAPP_CONTENT_POLICY: Joi.string()
+      .valid('enforce', 'monitor', 'off')
+      .default('enforce'),
+    // MARKETING-category WhatsApp templates require the customer's recorded
+    // marketing consent at the single send seam (campaigns already did).
+    WHATSAPP_ENFORCE_MARKETING_OPT_IN: Joi.string()
+      .valid('true', 'false')
+      .default('true'),
+    // Appointment emails are minimal (date, time, clinic) by default; `true`
+    // restores service / doctor / cancellation-reason text (residency plan P8).
+    EMAIL_INCLUDE_HEALTH_DETAIL: Joi.string().valid('true', 'false').default('false'),
+    // Guest image reading (vision pass) sends the whole uploaded image to the
+    // model provider. OFF by default (residency plan P3); while off an image is
+    // reported unreadable and the widget offers to pass it to the clinic.
+    AI_VISION_ENABLED: Joi.string().valid('true', 'false').default('false'),
 
     RAG_TOP_K: Joi.number().default(5),
     // HNSW query-time recall/latency knob (higher = better recall, slower).
@@ -952,6 +984,19 @@ export const validate = (config: Record<string, unknown>) => {
     // Notification dispatch (notification-dispatch.service.ts, module-load).
     NOTIF_RATE_PER_MIN: Joi.number().integer().min(1),
     NOTIF_LOG_RETENTION_DAYS: Joi.number().integer().min(1),
+
+    // Residency plan P12 — retention targets with NO defaults (data-governance/
+    // retention-policy.ts). Unset = keep: how long a record may be kept is a legal
+    // input and is never guessed. A target runs only when its setting is given AND
+    // an operator runs `npm run retention:run` (a dry run unless --apply).
+    RETENTION_EMAIL_LOGS_DAYS: Joi.number().integer().min(1),
+    RETENTION_WHATSAPP_WEBHOOKS_DAYS: Joi.number().integer().min(1),
+    RETENTION_SCHEDULED_NOTIFICATION_VARIABLES_DAYS: Joi.number().integer().min(1),
+    RETENTION_AI_TRANSCRIPTS_DAYS: Joi.number().integer().min(1),
+
+    // Residency plan P13 — response deadline for a data-subject request, in days.
+    // No default: the legal period is a counsel input. Unset = no due date is set.
+    DSR_RESPONSE_DAYS: Joi.number().integer().min(1).max(365),
 
     // Platform request/webhook logging + retention (api-logging.interceptor.ts,
     // platform-maintenance.service.ts).
@@ -1471,6 +1516,25 @@ export const validate = (config: Record<string, unknown>) => {
           `(the worker), or set EMAIL_ENABLED=false to turn email off explicitly.`,
       );
     }
+  }
+
+  // ── AI residency fail-fast (production) ───────────────────────────────────
+  // Features named in AI_RESIDENCY_REQUIRED_FEATURES are REFUSED whenever the
+  // tenant has no regional deployment (AiProcessingPolicyService). With the
+  // master switch off no deployment is ever consulted, so that combination can
+  // only refuse every listed request — an outage dressed as a policy. Refuse to
+  // boot instead of discovering it from a patient.
+  if (
+    value.NODE_ENV === 'production' &&
+    String(value.AI_RESIDENCY_REQUIRED_FEATURES ?? '').trim() !== '' &&
+    value.AI_DATA_RESIDENCY_ENABLED !== 'true'
+  ) {
+    throw new Error(
+      `❌ Env validation error: AI_RESIDENCY_REQUIRED_FEATURES is set but ` +
+        `AI_DATA_RESIDENCY_ENABLED is not "true". Every listed feature would be ` +
+        `refused, because no regional deployment can be resolved while the ` +
+        `master switch is off. Enable residency or clear the list.`,
+    );
   }
 
   // ── Object storage fail-fast (production, S3 explicitly selected) ─────────

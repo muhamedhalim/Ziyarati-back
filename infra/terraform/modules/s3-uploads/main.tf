@@ -81,6 +81,19 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
 }
 
 data "aws_iam_policy_document" "this" {
+  # Data boundary: nobody (console, CLI or a stolen role) may turn on replication
+  # and copy this bucket's objects to another bucket or region.
+  statement {
+    sid       = "DenyReplicationConfiguration"
+    effect    = "Deny"
+    actions   = ["s3:PutReplicationConfiguration"]
+    resources = [aws_s3_bucket.this.arn]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+  }
+
   statement {
     sid       = "DenyInsecureTransport"
     effect    = "Deny"

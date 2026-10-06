@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { RedactingLogger } from './common/logging/redacting-logger';
 import { requestContext } from './common/middleware/request-context.middleware';
 import { TenantContextService } from './core/tenant-context/tenant-context.service';
 import { MetricsService } from './metrics/metrics.service';
@@ -12,11 +13,15 @@ import { RedisIoAdapter } from './modules/ai-realtime/redis-io.adapter';
 import { runClustered } from './cluster-bootstrap';
 import { mountApiDocs } from './config/api-docs';
 import { registerSecurityHeaders } from './config/security-headers';
-import { parseAllowedOrigins } from './config/cors-origins';
+import { buildCorsOptions, parseAllowedOrigins } from './config/cors-origins';
 import { applyTrustProxy } from './config/trust-proxy';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { rawBody: true });
+  // Every Logger call in the process goes through the redacting logger (residency plan P7).
+  const app = await NestFactory.create(AppModule, {
+    rawBody: true,
+    logger: new RedactingLogger(),
+  });
 
   // ---------------- Client address trust (SEC-02) ----------------
   // Must precede every middleware/guard that reads `req.ip`. 0 (default) is
@@ -92,10 +97,7 @@ async function bootstrap() {
   // the entries are normalized rather than merely split.
   const allowedOrigins = parseAllowedOrigins(process.env.FRONTEND_ORIGIN);
 
-  app.enableCors({
-    origin: allowedOrigins,
-    credentials: true,
-  });
+  app.enableCors(buildCorsOptions(allowedOrigins));
 
   // The resolved allow-list, once, at boot. Not diagnostic noise: a
   // FRONTEND_ORIGIN matching no real browser origin fails *silently* — the API

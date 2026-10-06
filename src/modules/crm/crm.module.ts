@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { StorageModule } from '../storage/storage.module';
+import { MedicalRecordsModule } from '../medical-records/medical-records.module';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 
 import { Customer } from '../../entities/CRM/Customer';
@@ -59,6 +60,9 @@ import { CustomerSegmentController } from './customer-segment.controller';
       CustomerSegment,
     ]),
     StorageModule,
+    // Read-audit of D4 reads (profile, notes, files) — residency plan P14. Acyclic:
+    // MedicalRecordsModule imports only ActivityLogModule.
+    MedicalRecordsModule,
     // `max_customers` is a plan cap enforced at `CustomerService.create`.
     // Acyclic: SubscriptionBillingModule imports only PlatformModule.
     SubscriptionBillingModule,

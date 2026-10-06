@@ -57,3 +57,24 @@ run "single_node_has_no_failover" {
     error_message = "A single node cannot fail over"
   }
 }
+
+# Data boundary: encrypted at rest and in transit (TLS required) and slow-log
+# retention under the env key. A Global Datastore is excluded at source level
+# (infra/scripts/region-gate.sh forbids aws_elasticache_global_replication_group).
+run "cache_is_encrypted_and_logs_are_retained" {
+  command = plan
+
+  assert {
+    condition = (
+      tostring(aws_elasticache_replication_group.this.at_rest_encryption_enabled) == "true" &&
+      aws_elasticache_replication_group.this.transit_encryption_enabled == true &&
+      aws_elasticache_replication_group.this.transit_encryption_mode == "required"
+    )
+    error_message = "Redis must be encrypted at rest and require TLS"
+  }
+
+  assert {
+    condition     = aws_cloudwatch_log_group.slow.retention_in_days > 0 && aws_cloudwatch_log_group.slow.kms_key_id == var.kms_key_arn
+    error_message = "Slow-log group needs a finite retention and the env CMK"
+  }
+}

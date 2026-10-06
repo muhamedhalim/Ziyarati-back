@@ -29,6 +29,7 @@ import {
 } from '@nestjs/swagger';
 
 import { CustomerFileService } from './customer-file.service';
+import { ClinicalAccessLogService } from '../medical-records/clinical-access-log.service';
 import { UploadCustomerFileDto } from './dto/upload-customer-file.dto';
 import { PaginationQueryDto } from './dto/pagination-query.dto';
 
@@ -79,6 +80,8 @@ export class CustomerFileController {
   constructor(
     private readonly files: CustomerFileService,
     private readonly ctx: TenantContextService,
+    // Residency plan P14 — reads of D4 data are accounted for (who, which patient, when).
+    private readonly accessLog: ClinicalAccessLogService,
   ) {}
 
   @ApiOperation({
@@ -177,11 +180,14 @@ export class CustomerFileController {
   })
   @Get()
   @RequirePermissions(PERMISSION.CRM_FILES_READ)
-  list(
+  async list(
     @Param('customerId', ParseUUIDPipe) customerId: string,
     @Query() query: PaginationQueryDto,
   ) {
-    return this.files.list(this.ctx.requireTenantId(), customerId, query);
+    const tenantId = this.ctx.requireTenantId();
+    const page = await this.files.list(tenantId, customerId, query);
+    await this.auditRead(tenantId, customerId);
+    return page;
   }
 
   @ApiOperation({
@@ -216,15 +222,21 @@ export class CustomerFileController {
   })
   @Get(':fileId')
   @RequirePermissions(PERMISSION.CRM_FILES_READ)
-  getMetadata(
+  async getMetadata(
     @Param('customerId', ParseUUIDPipe) customerId: string,
     @Param('fileId', ParseUUIDPipe) fileId: string,
   ) {
-    return this.files.getMetadata(
-      this.ctx.requireTenantId(),
-      customerId,
-      fileId,
-    );
+    const tenantId = this.ctx.requireTenantId();
+    const file = await this.files.getMetadata(tenantId, customerId, fileId);
+    await this.auditRead(tenantId, customerId);
+    return file;
+  }
+
+  /** Best-effort by design (a logging failure never blocks the read) — see ClinicalAccessLogService. */
+  private async auditRead(tenantId: string, customerId: string): Promise<void> {
+    const userId = this.ctx.getUser()?.id;
+    if (userId)
+      await this.accessLog.record(tenantId, customerId, userId, 'files');
   }
 
   @ApiOperation({

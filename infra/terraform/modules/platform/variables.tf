@@ -8,9 +8,23 @@ variable "environment" {
   }
 }
 
+variable "approved_regions" {
+  description = <<-EOT
+    The ONLY regions this stack may be deployed to. No default on purpose: a region
+    is added here after the hosting-location decision is approved in writing
+    (infra/docs/SECURITY.md §6, decision D-1). An empty list blocks every plan.
+  EOT
+  type        = list(string)
+}
+
 variable "aws_region" {
-  description = "Primary region (me-central-1 until the KSA region is GA and D-1 says otherwise)"
+  description = "Primary region. Must be a member of approved_regions; changing it on an existing state recreates the stack, so a region move is a NEW state (section 22 of the residency plan), never an in-place edit."
   type        = string
+
+  validation {
+    condition     = contains(var.approved_regions, var.aws_region)
+    error_message = "aws_region is not in approved_regions. No region is approved until the hosting location is signed off in writing; do not add one without that decision."
+  }
 }
 
 variable "availability_zone_ids" {
@@ -46,8 +60,36 @@ variable "email_domain" {
 }
 
 variable "cookie_domain" {
-  description = "COOKIE_DOMAIN, e.g. .ziyaratech.com (shared by www. and api. so the WebSocket carries the auth cookie)"
+  description = <<-EOT
+    COOKIE_DOMAIN, e.g. ziyaratech.com — scopes ALL THREE staff cookies (access, refresh, csrf)
+    to the parent domain, shared by www. and api. so a WebSocket on a sibling host carries the
+    auth cookie. Same-origin-proxy topology only. "" leaves them host-only (direct API routing:
+    set csrf_cookie_domain instead). NO leading dot: the API's env validation (Joi hostname())
+    rejects ".ziyaratech.com" and the task would fail to boot; browsers treat both forms alike.
+  EOT
   type        = string
+
+  validation {
+    condition     = !startswith(var.cookie_domain, ".")
+    error_message = "cookie_domain must not start with a dot (the API rejects \".example.com\" at boot); use \"example.com\" — browsers scope it to subdomains either way."
+  }
+}
+
+variable "csrf_cookie_domain" {
+  description = <<-EOT
+    CSRF_COOKIE_DOMAIN — scopes ONLY the readable csrf_token / session-hint cookie to the parent
+    domain, leaving the access and refresh cookies host-only on the API host. This is the cookie
+    layout for direct API routing (residency plan P9): the app host can read the hint, but the
+    page-serving tier is never sent a bearer credential. Use with cookie_domain = "". "" = unset
+    (the csrf cookie follows cookie_domain). No leading dot.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = !startswith(var.csrf_cookie_domain, ".")
+    error_message = "csrf_cookie_domain must not start with a dot; use \"example.com\"."
+  }
 }
 
 variable "frontend_origins" {
@@ -230,6 +272,12 @@ variable "enable_external_health_check" {
   default = true
 }
 
+variable "approved_dr_destinations" {
+  description = "Regions a backup copy may leave the primary region for. Empty until the DR scenario is approved in writing: a backup is patient data and a foreign copy is a cross-border transfer."
+  type        = list(string)
+  default     = []
+}
+
 variable "dr_backup_region" {
   description = "Decision D-1: region for daily cross-region RDS backup copies (\"\" = disabled)"
   type        = string
@@ -238,6 +286,11 @@ variable "dr_backup_region" {
   validation {
     condition     = var.dr_backup_region == "" || var.dr_backup_region != var.aws_region
     error_message = "dr_backup_region must differ from aws_region: a same-region copy gives no protection against a regional loss (use \"\" to disable)."
+  }
+
+  validation {
+    condition     = var.dr_backup_region == "" || contains(var.approved_dr_destinations, var.dr_backup_region)
+    error_message = "dr_backup_region is not in approved_dr_destinations. A backup copy is a transfer of patient data; approve the destination in writing first."
   }
 }
 

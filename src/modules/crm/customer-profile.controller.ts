@@ -19,6 +19,7 @@ import {
 } from '@nestjs/swagger';
 
 import { CustomerProfileService } from './customer-profile.service';
+import { ClinicalAccessLogService } from '../medical-records/clinical-access-log.service';
 import { UpdateCustomerProfileDto } from './dto/update-customer-profile.dto';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -57,6 +58,8 @@ export class CustomerProfileController {
   constructor(
     private readonly profiles: CustomerProfileService,
     private readonly ctx: TenantContextService,
+    // Residency plan P14 — reads of D4 data are accounted for (who, which patient, when).
+    private readonly accessLog: ClinicalAccessLogService,
   ) {}
 
   /** Mirrors PermissionsGuard's own super_admin role bypass (not a literal '*' in `permissions`). */
@@ -96,12 +99,26 @@ export class CustomerProfileController {
   })
   @Get()
   @RequirePermissions(PERMISSION.CRM_CUSTOMERS_READ)
-  get(@Param('customerId', ParseUUIDPipe) customerId: string) {
-    return this.profiles.get(
-      this.ctx.requireTenantId(),
+  async get(@Param('customerId', ParseUUIDPipe) customerId: string) {
+    const tenantId = this.ctx.requireTenantId();
+    const profile = await this.profiles.get(
+      tenantId,
       customerId,
       this.hasClinical(PERMISSION.CLINICAL_RECORDS_READ),
     );
+    await this.auditRead(tenantId, customerId, 'profile');
+    return profile;
+  }
+
+  /** Best-effort by design (a logging failure never blocks the read) — see ClinicalAccessLogService. */
+  private async auditRead(
+    tenantId: string,
+    customerId: string,
+    scope: 'profile',
+  ): Promise<void> {
+    const userId = this.ctx.getUser()?.id;
+    if (userId)
+      await this.accessLog.record(tenantId, customerId, userId, scope);
   }
 
   @ApiOperation({

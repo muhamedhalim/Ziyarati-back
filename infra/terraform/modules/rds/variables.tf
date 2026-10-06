@@ -110,3 +110,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "ca_cert_identifier" {
+  description = "RDS CA bundle. A variable (not a literal) because a different region can ship a different default CA; the app pins the matching bundle via DB_SSL_CA."
+  type        = string
+  default     = "rds-ca-rsa2048-g1"
+}

@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
@@ -24,6 +25,11 @@ import {
   WHATSAPP_SENDING_STALE_MS,
 } from './whatsapp.constants';
 import { missingVariables } from './template-variables.util';
+import {
+  assessTemplateContent,
+  describeViolations,
+  resolveContentPolicyMode,
+} from './whatsapp-content-policy';
 
 interface ResolvedRecipient {
   to: string;
@@ -31,6 +37,12 @@ interface ResolvedRecipient {
   recipientId?: string;
   /** FND-024: set only when the recipient resolved to a known CRM customer who has opted out. */
   optedOutAt?: Date | null;
+  /**
+   * Residency plan P5: the CRM customer's recorded marketing consent. Only a
+   * customer recipient carries one; a contact or a raw number has NO consent
+   * record, which the marketing gate below treats as "not consented".
+   */
+  marketingOptIn?: boolean;
 }
 
 const PG_UNIQUE_VIOLATION = '23505';
@@ -62,6 +74,8 @@ export class WhatsappExecutionService {
     private readonly usage: UsageService,
     private readonly ctx: TenantContextService,
     private readonly subscriptions: SubscriptionService,
+    // Optional so direct-construction tests keep working; Nest injects it.
+    @Optional() private readonly config?: ConfigService,
   ) {}
 
   /**
@@ -188,6 +202,53 @@ export class WhatsappExecutionService {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'This customer has opted out of WhatsApp messages',
       });
+    }
+
+    // Residency plan P5 — consent for MARKETING-category templates. The campaign
+    // path already gates on `marketing_opt_in` before it gets here; this is the
+    // same rule at the single send seam, so the ad-hoc, notification and
+    // workflow paths cannot send marketing content to someone who never agreed.
+    // UTILITY / AUTHENTICATION templates (appointment notices, codes) are not
+    // marketing and are unaffected. Recording WHEN/WHERE/under which wording a
+    // consent was given is not modelled yet (only the boolean exists).
+    if (
+      this.flag('WHATSAPP_ENFORCE_MARKETING_OPT_IN', true) &&
+      String(template.category ?? '').toUpperCase() === 'MARKETING' &&
+      recipient.marketingOptIn !== true
+    ) {
+      await this.refuse(
+        claim,
+        template.id,
+        recipient,
+        'This recipient has not given marketing consent for WhatsApp',
+      );
+    }
+
+    // Residency plan P5 — what may leave over WhatsApp at all. Reports the
+    // category and variable NAME, never the value. See whatsapp-content-policy.ts.
+    const policyMode = resolveContentPolicyMode(
+      this.config?.get('WHATSAPP_CONTENT_POLICY', 'enforce'),
+    );
+    if (policyMode !== 'off') {
+      const violations = assessTemplateContent(template.components, dto.variables);
+      if (violations.length > 0) {
+        const reason = describeViolations(violations);
+        if (policyMode === 'enforce') {
+          this.logger.warn(
+            `Blocked WhatsApp template send (tenant=${tenantId}, template=${template.id}): ${reason}`,
+          );
+          await this.refuse(
+            claim,
+            template.id,
+            recipient,
+            `Blocked by the WhatsApp content policy: ${reason}`,
+            { violations: violations.map((v) => ({ category: v.category, variable: v.variable })) },
+          );
+        }
+        this.logger.warn(
+          `[monitor] WhatsApp content policy would block this send (tenant=${tenantId}, template=${template.id}): ${reason}`,
+        );
+      }
     }
 
     // Quota: WhatsApp messages are usage-limited. This is the single send seam
@@ -431,6 +492,37 @@ export class WhatsappExecutionService {
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
 
+  private flag(name: string, fallback: boolean): boolean {
+    const raw = this.config?.get(name);
+    if (raw === undefined || raw === null || raw === '') return fallback;
+    return String(raw).toLowerCase() !== 'false';
+  }
+
+  /**
+   * Refuses a send on policy grounds. When the send was claimed (the queued
+   * path) the claimed log row is finalised as FAILED first, so a refusal does
+   * not strand it in SENDING until the stale-reclaim window; the redelivered
+   * job then finds the row handled and skips instead of re-evaluating.
+   */
+  private async refuse(
+    claim: { logId: string } | undefined,
+    templateId: string,
+    recipient: ResolvedRecipient,
+    message: string,
+    publicContext?: Record<string, unknown>,
+  ): Promise<never> {
+    if (claim) {
+      await this.updateClaimedLog(
+        claim.logId,
+        templateId,
+        recipient,
+        WHATSAPP_DELIVERY_STATUS.FAILED,
+        { error: message },
+      );
+    }
+    throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message, publicContext });
+  }
+
   private async resolveRecipient(
     tenantId: string,
     dto: SendTemplateMessageDto,
@@ -462,6 +554,7 @@ export class WhatsappExecutionService {
         recipientType: WHATSAPP_RECIPIENT_TYPE.CUSTOMER,
         recipientId: customer.id,
         optedOutAt: customer.opted_out_at,
+        marketingOptIn: customer.marketing_opt_in === true,
       };
     }
 

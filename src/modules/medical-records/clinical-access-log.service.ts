@@ -8,7 +8,22 @@ import { Customer } from '../../entities/CRM/Customer';
 import { User } from '../../entities/Auth&RBAC/User';
 import { ClinicalEntry } from '../../entities/Clinical/ClinicalEntry';
 
-export type ClinicalAccessScope = 'timeline' | 'summary' | 'entry';
+/**
+ * What was read. The first three are the clinical record proper; the rest are
+ * the other places health data (D4) is readable from — added by the residency
+ * plan (P14) so a read of a patient's profile, notes or documents leaves the
+ * same who / which patient / when trail a clinical entry does. `export` and
+ * `erasure` record a data-subject request being fulfilled.
+ */
+export type ClinicalAccessScope =
+  | 'timeline'
+  | 'summary'
+  | 'entry'
+  | 'profile'
+  | 'notes'
+  | 'files'
+  | 'export'
+  | 'erasure';
 
 /**
  * Spec 014 (Clinic Platform Completion) — T110 (US6, FR-H011, FR-H012).

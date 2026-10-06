@@ -1,4 +1,8 @@
 # cp backend.hcl.example backend.hcl  (backend.hcl is git-ignored)
 # Values come from `terraform -chdir=infra/terraform/bootstrap output`.
 bucket     = "zt-production-tfstate-<ACCOUNT_ID>"
-kms_key_id = "arn:aws:kms:me-central-1:<ACCOUNT_ID>:key/<STATE_KEY_ID>"
+# Region and key are per-deployment-region so that moving region means a NEW state,
+# never an in-place edit of the existing one (that would recreate the stack).
+region     = "<APPROVED_REGION>"
+key        = "platform/<APPROVED_REGION>/terraform.tfstate"
+kms_key_id = "arn:aws:kms:<APPROVED_REGION>:<ACCOUNT_ID>:key/<STATE_KEY_ID>"

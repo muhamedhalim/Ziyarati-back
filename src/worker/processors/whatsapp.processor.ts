@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
+import { scrubFailureReason } from '../../common/utils/log-scrubber.util';
 import { Job, UnrecoverableError } from 'bullmq';
 
 import { JOB, QUEUE, workerConcurrency } from '../../queue/queue.constants';
@@ -10,6 +11,10 @@ import {
 } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { validateJobPayload } from '../../queue/job-payload-validator';
+import {
+  isMinimized,
+  minimizeCompletedJob,
+} from '../../queue/job-pii-redaction';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { QueueService } from '../../queue/queue.service';
@@ -64,6 +69,13 @@ export class WhatsappProcessor extends WorkerHost {
       );
     }
 
+    if (isMinimized(data)) {
+      // A completed job whose recipient/variables were dropped (P6) cannot be replayed.
+      throw new UnrecoverableError(
+        `${job.name} payload was minimised after completion`,
+      );
+    }
+
     const sendData = data as WhatsappSendJob;
     this.logger.log(
       `[cid=${sendData.correlationId ?? '-'}] ${job.name} tenant=${sendData.tenantId} template=${sendData.templateId} attempt=${job.attemptsMade + 1}`,
@@ -91,6 +103,17 @@ export class WhatsappProcessor extends WorkerHost {
     );
   }
 
+  /**
+   * Residency plan P6: a sent message's recipient and template variables are
+   * not left in Redis for the completed-job retention window. Only
+   * `whatsapp.send` / `whatsapp.retry` are touched; other jobs on this queue
+   * carry no content and are left alone.
+   */
+  @OnWorkerEvent('completed')
+  async onCompleted(job: Job) {
+    await minimizeCompletedJob(job, this.logger);
+  }
+
   @OnWorkerEvent('failed')
   async onFailed(job: Job, err: Error) {
     this.logger.error(
@@ -115,7 +138,7 @@ export class WhatsappProcessor extends WorkerHost {
         sourceJobName: job.name,
         originalJobId: String(job?.id ?? ''),
         originalData: data as unknown as Record<string, unknown>,
-        failedReason: err?.message ?? 'unknown',
+        failedReason: scrubFailureReason(err),
         attemptsMade: job?.attemptsMade ?? 0,
         diedAt: new Date().toISOString(),
       } satisfies WhatsappDlqJob)

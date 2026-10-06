@@ -398,3 +398,90 @@ describe('AllExceptionsFilter', () => {
     });
   });
 });
+
+// ── Residency plan P7 — what the error log may contain ────────────────────── //
+describe('AllExceptionsFilter — log content (residency plan P7)', () => {
+  let filter: AllExceptionsFilter;
+  let request: any;
+  let host: any;
+
+  beforeEach(() => {
+    filter = new AllExceptionsFilter();
+    request = {
+      requestId: 'req-p7',
+      method: 'POST',
+      originalUrl: '/api/v1/appointments',
+      user: { id: 'u1', tenantId: 't1' },
+      body: {},
+    };
+    const json = jest.fn();
+    host = {
+      switchToHttp: () => ({
+        getRequest: () => request,
+        getResponse: () => ({
+          status: jest.fn().mockReturnValue({ json }),
+          setHeader: jest.fn(),
+          getHeader: jest.fn().mockReturnValue(undefined),
+        }),
+      }),
+    };
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  const logged = (spy: jest.SpyInstance) => String(spy.mock.calls[0]?.[0]);
+
+  it('never logs the text of a request body, only its shape', () => {
+    const spy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    request.body = {
+      reason: 'chest pain since Tuesday',
+      visitNotes: 'patient is allergic to penicillin',
+      branchId: 'br-1',
+      urgent: true,
+    };
+    filter.catch(new Error('boom'), host);
+
+    const line = logged(spy);
+    expect(line).not.toContain('chest pain');
+    expect(line).not.toContain('penicillin');
+    expect(line).toContain('"reason":"[string:24]"');
+    expect(line).toContain('"urgent":true');
+  });
+
+  it('scrubs row values out of a raw driver message', () => {
+    const spy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    filter.catch(
+      new Error('invalid input syntax for type uuid: "Sara Ahmed 0501234567"'),
+      host,
+    );
+
+    const line = logged(spy);
+    expect(line).not.toContain('Sara Ahmed');
+    expect(line).not.toContain('0501234567');
+    expect(line).toContain('invalid input syntax for type uuid');
+  });
+
+  it('scrubs the stack and the cause that are logged on a 5xx', () => {
+    const spy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const cause = new Error('mailbox sara@example.com unavailable');
+    const err = new AppError(ErrorCode.INTERNAL_ERROR, {
+      message: 'send failed',
+      status: HttpStatus.INTERNAL_SERVER_ERROR,
+      cause,
+    });
+    filter.catch(err, host);
+
+    const line = logged(spy);
+    const stack = String(spy.mock.calls[0]?.[1]);
+    expect(line).not.toContain('sara@example.com');
+    expect(stack).not.toContain('sara@example.com');
+    expect(stack).toContain('Caused by');
+  });
+
+  it('does not log a capability token carried in the URL path', () => {
+    const spy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    request.originalUrl = '/api/v1/public/payments/Xk3PqR9vTn2LmB7wYz4HdC8s';
+    filter.catch(new Error('boom'), host);
+    expect(logged(spy)).not.toContain('Xk3PqR9vTn2LmB7wYz4HdC8s');
+  });
+});

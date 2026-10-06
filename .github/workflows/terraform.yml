@@ -39,6 +39,8 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
       - name: fmt
         run: terraform -chdir=infra/terraform fmt -check -recursive
+      - name: region gate (no region literals; tfvars consistent)
+        run: bash infra/scripts/region-gate.sh static
       - name: validate roots
         run: |
           for d in bootstrap environments/staging environments/production; do
@@ -51,7 +53,7 @@ jobs:
             --severity HIGH,CRITICAL --exit-code 1 --skip-dirs "**/.terraform" --skip-files "**/*.tftest.hcl"
       - name: terraform test (mocked AWS — no account needed)
         run: |
-          for m in network rds elasticache s3-uploads ecs waf platform; do
+          for m in network rds elasticache s3-uploads ecs waf kms backup secrets ecr alb account-baseline platform; do
             terraform -chdir="infra/terraform/modules/$m" init -backend=false -input=false
             terraform -chdir="infra/terraform/modules/$m" test
           done
@@ -70,6 +72,8 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
+      - name: region gate (a region must be approved before any plan or apply)
+        run: bash infra/scripts/region-gate.sh deploy ${{ matrix.environment }}
       - name: Account id
         id: acct
         run: |
@@ -87,7 +91,9 @@ jobs:
         env:
           TF_VAR_account_id: ${{ steps.acct.outputs.id }}
         run: |
-          terraform init -input=false -backend-config="bucket=zt-${{ matrix.environment }}-tfstate-${{ steps.acct.outputs.id }}"
+          terraform init -input=false -backend-config="bucket=zt-${{ matrix.environment }}-tfstate-${{ steps.acct.outputs.id }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="key=platform/${{ env.AWS_REGION }}/terraform.tfstate"
           terraform plan -input=false -lock=false -no-color -out=tfplan | tee plan.txt
           {
             echo "### terraform plan — ${{ matrix.environment }}"
@@ -113,6 +119,8 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
+      - name: region gate (a region must be approved before any plan or apply)
+        run: bash infra/scripts/region-gate.sh deploy ${{ inputs.environment }}
       - name: Account id
         id: acct
         run: |
@@ -131,7 +139,9 @@ jobs:
         env:
           TF_VAR_account_id: ${{ steps.acct.outputs.id }}
         run: |
-          terraform init -input=false -backend-config="bucket=zt-${{ inputs.environment }}-tfstate-${{ steps.acct.outputs.id }}"
+          terraform init -input=false -backend-config="bucket=zt-${{ inputs.environment }}-tfstate-${{ steps.acct.outputs.id }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="key=platform/${{ env.AWS_REGION }}/terraform.tfstate"
           terraform plan -input=false -lock=false -no-color | tee plan.txt
           SUMMARY="$(grep -E '^Plan:|^No changes' plan.txt | head -1 || true)"
           echo "summary=${SUMMARY}" >> "$GITHUB_OUTPUT"
@@ -156,6 +166,8 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
+      - name: region gate (a region must be approved before any plan or apply)
+        run: bash infra/scripts/region-gate.sh deploy ${{ inputs.environment }}
       - name: Account id
         id: acct
         run: |
@@ -175,7 +187,9 @@ jobs:
           TF_VAR_account_id: ${{ steps.acct.outputs.id }}
           REVIEWED: ${{ needs.preview.outputs.summary }}
         run: |
-          terraform init -input=false -backend-config="bucket=zt-${{ inputs.environment }}-tfstate-${{ steps.acct.outputs.id }}"
+          terraform init -input=false -backend-config="bucket=zt-${{ inputs.environment }}-tfstate-${{ steps.acct.outputs.id }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="key=platform/${{ env.AWS_REGION }}/terraform.tfstate"
           terraform plan -input=false -no-color -out=tfplan | tee plan.txt
           NOW="$(grep -E '^Plan:|^No changes' plan.txt | head -1 || true)"
           if [ "$NOW" != "$REVIEWED" ]; then

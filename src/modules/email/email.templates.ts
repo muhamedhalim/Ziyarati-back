@@ -9,6 +9,8 @@
  * `EmailSendJob.locale` via `EmailDeliveryService`, unchanged).
  */
 
+import { redactProhibitedIdentifiers } from '../../common/utils/prohibited-content.util';
+
 export type EmailTemplateKey =
   | 'welcome'
   | 'email_verification'
@@ -51,6 +53,14 @@ export interface RenderContext {
   appUrl: string;
   locale: string;
   brand?: string;
+  /**
+   * Residency plan P8. Appointment notices are MINIMAL by default: date, time and
+   * clinic, never the service, doctor or free-text reason — an email sits in
+   * third-party infrastructure and mailboxes, and a service name can reveal a
+   * condition. Set only when the platform has decided otherwise
+   * (`EMAIL_INCLUDE_HEALTH_DETAIL=true`).
+   */
+  includeHealthDetail?: boolean;
 }
 
 const s = (v: unknown, fallback = ''): string =>
@@ -686,6 +696,53 @@ export const EMAIL_TEMPLATES: Record<
   },
 };
 
+/** Variables that describe the care being given. Dropped from appointment notices unless the platform opts in. */
+const HEALTH_DETAIL_FIELDS = ['service', 'doctor', 'doctorName', 'specialty'];
+const MINIMAL_APPOINTMENT_TEMPLATES = new Set<string>([
+  'appointment_confirmation',
+  'appointment_reminder',
+  'appointment_cancelled',
+  'appointment_rescheduled',
+]);
+/** Templates whose body is a caller-supplied sentence — scrubbed of identifiers, since their content is not ours. */
+const FREE_TEXT_TEMPLATES = new Set<string>([
+  'doctor_notification',
+  'patient_notification',
+  'security_alert',
+  'generic',
+]);
+const FREE_TEXT_FIELDS = ['title', 'message', 'actionLabel'];
+
+/**
+ * The variables a template is actually allowed to see (residency plan P8).
+ * Pure; never mutates `vars`.
+ */
+export function minimizeEmailVars(
+  key: string,
+  vars: EmailVars,
+  ctx: RenderContext,
+): EmailVars {
+  let out: EmailVars = vars;
+
+  if (MINIMAL_APPOINTMENT_TEMPLATES.has(key) && !ctx.includeHealthDetail) {
+    out = { ...out };
+    for (const field of HEALTH_DETAIL_FIELDS) delete out[field];
+    // A cancellation reason is free text typed by staff — it can say anything.
+    if (key === 'appointment_cancelled') delete out.reason;
+  }
+
+  if (FREE_TEXT_TEMPLATES.has(key)) {
+    out = { ...out };
+    for (const field of FREE_TEXT_FIELDS) {
+      const value = out[field];
+      if (typeof value === 'string') {
+        out[field] = redactProhibitedIdentifiers(value);
+      }
+    }
+  }
+  return out;
+}
+
 export function renderEmail(
   key: string,
   vars: EmailVars,
@@ -693,5 +750,5 @@ export function renderEmail(
 ): RenderedEmail {
   const renderer =
     EMAIL_TEMPLATES[key as EmailTemplateKey] ?? EMAIL_TEMPLATES.generic;
-  return renderer(vars, ctx);
+  return renderer(minimizeEmailVars(key, vars, ctx), ctx);
 }
