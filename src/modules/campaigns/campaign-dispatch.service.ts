@@ -184,6 +184,12 @@ export class CampaignDispatchService {
     // mail (which never calls this method at all — FR-E009).
     if (channel === CAMPAIGN_CHANNEL.EMAIL) {
       const email = recipient.customer.email;
+      if (!email) {
+        // Unreachable in practice (checkConsent already rejects it), kept as a
+        // type-narrowing guard so a missing address can never be dispatched.
+        await this.markSkipped(runId, recipientId, 'customer-has-no-email');
+        return { status: 'skipped', reason: 'customer-has-no-email' };
+      }
       const suppressed = await this.emailSuppression.isSuppressed(
         tenantId,
         email,
@@ -265,7 +271,9 @@ export class CampaignDispatchService {
     }
 
     const resolvedEmail =
-      channel === CAMPAIGN_CHANNEL.EMAIL ? recipient.customer.email : undefined;
+      channel === CAMPAIGN_CHANNEL.EMAIL
+        ? (recipient.customer.email ?? undefined)
+        : undefined;
     let result: CampaignDeliveryResult;
     try {
       result = await provider.send({
@@ -489,7 +497,7 @@ export class CampaignDispatchService {
           marketing_opt_in?: boolean;
           is_active?: boolean;
           phone?: string;
-          email?: string;
+          email?: string | null;
           opted_out_at?: Date | null;
         }
       | undefined,
