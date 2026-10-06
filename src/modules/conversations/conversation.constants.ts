@@ -93,3 +93,17 @@ export const MESSAGE_STATUS = {
 
 export type MessageStatus = (typeof MESSAGE_STATUS)[keyof typeof MESSAGE_STATUS];
 export const MESSAGE_STATUSES: MessageStatus[] = Object.values(MESSAGE_STATUS);
+
+/**
+ * Conversation-level WhatsApp AI override (`Conversation.ai_mode`).
+ * `ENABLED` behaves like `DEFAULT` until the assignment mode exists; it is a
+ * valid stored value so that mode needs no second migration.
+ */
+export const CONVERSATION_AI_MODE = {
+  DEFAULT: 'DEFAULT',
+  ENABLED: 'ENABLED',
+  DISABLED: 'DISABLED',
+} as const;
+
+export type ConversationAiMode =
+  (typeof CONVERSATION_AI_MODE)[keyof typeof CONVERSATION_AI_MODE];

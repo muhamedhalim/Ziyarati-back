@@ -3,6 +3,8 @@ import { DataSource } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { TenantService } from './tenant.service';
+import { AccessControlService } from '../subscription-billing/access-control.service';
+import { ActivityAuditService } from '../activity-log/activity-audit.service';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { TenantApprovalEvent } from '../../entities/SaaS-Core/TenantApprovalEvent';
@@ -59,6 +61,11 @@ describe('TenantService', () => {
         { provide: DataSource, useValue: dataSource },
         { provide: AnalyticsAggregationService, useValue: analyticsAggregation },
         { provide: AnalyticsCacheService, useValue: analyticsCache },
+        {
+          provide: AccessControlService,
+          useValue: { assertAccess: jest.fn() },
+        },
+        { provide: ActivityAuditService, useValue: { record: jest.fn() } },
       ],
     }).compile();
     service = moduleRef.get(TenantService);

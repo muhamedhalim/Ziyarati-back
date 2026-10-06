@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { StorageModule } from '../storage/storage.module';
 import { MedicalRecordsModule } from '../medical-records/medical-records.module';
+import { ActivityLogModule } from '../activity-log/activity-log.module';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 
 import { Customer } from '../../entities/CRM/Customer';
@@ -15,6 +16,7 @@ import { CustomerFile } from '../../entities/CRM/CustomerFile';
 import { CustomerSegment } from '../../entities/CRM/CustomerSegment';
 
 import { CustomerService } from './customer.service';
+import { CustomerAiRepliesService } from './customer-ai-replies.service';
 import { CustomerProfileService } from './customer-profile.service';
 import { CustomerAddressService } from './customer-address.service';
 import { CustomerNoteService } from './customer-note.service';
@@ -66,6 +68,8 @@ import { CustomerSegmentController } from './customer-segment.controller';
     // `max_customers` is a plan cap enforced at `CustomerService.create`.
     // Acyclic: SubscriptionBillingModule imports only PlatformModule.
     SubscriptionBillingModule,
+    // Audit records for excluding a patient from the WhatsApp AI. Acyclic: imports only TypeORM.
+    ActivityLogModule,
   ],
   controllers: [
     CustomerController,
@@ -80,6 +84,7 @@ import { CustomerSegmentController } from './customer-segment.controller';
   ],
   providers: [
     CustomerService,
+    CustomerAiRepliesService,
     CustomerProfileService,
     CustomerAddressService,
     CustomerNoteService,

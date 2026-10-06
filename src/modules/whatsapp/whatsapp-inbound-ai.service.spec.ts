@@ -9,6 +9,7 @@ import { Message } from '../../entities/Conversations/Message';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import { Conversation } from '../../entities/Conversations/Conversation';
+import { Customer } from '../../entities/CRM/Customer';
 import { WhatsappAiPolicyService } from './whatsapp-ai-policy.service';
 import {
   ContactTurnBusyError,
@@ -53,6 +54,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
   let locks: { acquire: jest.Mock; release: jest.Mock; renew: jest.Mock };
   let messageStatus: { markFailed: jest.Mock };
   let conversationsRepo: MockRepository;
+  let customersRepo: MockRepository;
   let lockService: ContactTurnLockService;
   let customers: {
     recordOptOut: jest.Mock;
@@ -107,6 +109,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     };
     messageStatus = { markFailed: jest.fn().mockResolvedValue(undefined) };
     conversationsRepo = createMockRepository();
+    customersRepo = createMockRepository();
     // F-16: admission is open unless a test closes it.
     rateLimit = { checkAndRecord: jest.fn().mockResolvedValue({ allowed: true }) };
     contacts = createMockRepository();
@@ -209,6 +212,8 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
           provide: getRepositoryToken(Conversation),
           useValue: conversationsRepo,
         },
+        // The policy's patient rule. Nobody is excluded unless a test says so.
+        { provide: getRepositoryToken(Customer), useValue: customersRepo },
       ],
     }).compile();
     service = moduleRef.get(WhatsappInboundAiService);
@@ -1038,6 +1043,222 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     };
     const decisions = (stage: string) =>
       metrics.recordWhatsappAiDecision.mock.calls.filter((c) => c[2] === stage);
+
+    /**
+     * P1c — staff and clinic controls, enforced here on the backend. Each case
+     * proves the same three things: the model is not called, nothing is sent,
+     * and the patient's message is still stored for staff to read.
+     */
+    describe('conversation and patient controls', () => {
+      const FUTURE = () => new Date(Date.now() + 10 * 60_000);
+      const answer = () =>
+        orchestrator.handleStream.mockResolvedValue({
+          reply: { content: 'AI reply' },
+          mirroredMessageId: 'bot-msg-1',
+        });
+      const pausedThread = (over: Record<string, unknown> = {}) => ({
+        id: 'thread-1',
+        owner_type: 'AI',
+        ai_mode: 'DISABLED',
+        customer: { id: 'cust-1' },
+        ...over,
+      });
+
+      it('a conversation paused by staff: no model call, no send, message stored', async () => {
+        conversationsRepo.findOne.mockResolvedValue(pausedThread());
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(orchestrator.handleStream).not.toHaveBeenCalled();
+        expect(messaging.sendSession).not.toHaveBeenCalled();
+        expect(botActor.ensureBotActor).not.toHaveBeenCalled();
+        expect(
+          conversationExecution.recordChannelMessageOnce,
+        ).toHaveBeenCalledTimes(1);
+        expect(metrics.recordWhatsappAiDecision).toHaveBeenCalledWith(
+          'SKIP',
+          'CONVERSATION_AI_DISABLED',
+          'pre_ai',
+        );
+        expect(metrics.recordWhatsappAiTurnFailure).not.toHaveBeenCalled();
+      });
+
+      it('keeps a paused conversation’s messages in the AI history, so the AI is not missing them when staff resume', async () => {
+        withAiSession();
+        conversationsRepo.findOne.mockResolvedValue(pausedThread());
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(orchestrator.recordInboundWithoutAnswer).toHaveBeenCalledWith(
+          TENANT,
+          'ai-1',
+          'hello',
+          { waMessageId: 'wamid-p1', messageType: 'text' },
+        );
+      });
+
+      it('a patient excluded from the AI: no model call, no send, message stored', async () => {
+        customersRepo.findOne.mockResolvedValue({
+          id: 'cust-1',
+          ai_replies_disabled: true,
+        });
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(orchestrator.handleStream).not.toHaveBeenCalled();
+        expect(messaging.sendSession).not.toHaveBeenCalled();
+        expect(botActor.ensureBotActor).not.toHaveBeenCalled();
+        expect(
+          conversationExecution.recordChannelMessageOnce,
+        ).toHaveBeenCalledTimes(1);
+        expect(metrics.recordWhatsappAiDecision).toHaveBeenCalledWith(
+          'SKIP',
+          'PATIENT_AI_DISABLED',
+          'pre_ai',
+        );
+      });
+
+      it('an excluded patient’s message is NOT fed into an AI history', async () => {
+        withAiSession();
+        customersRepo.findOne.mockResolvedValue({
+          id: 'cust-1',
+          ai_replies_disabled: true,
+        });
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(orchestrator.recordInboundWithoutAnswer).not.toHaveBeenCalled();
+      });
+
+      it('excluding one patient leaves another patient’s conversation answered', async () => {
+        // The policy is asked about THIS message's patient: the exclusion lookup
+        // is by that patient, so someone else's flag cannot reach this turn.
+        customersRepo.findOne.mockImplementation(
+          async ({ where }: { where: { id: string } }) => ({
+            id: where.id,
+            ai_replies_disabled: where.id === 'someone-else',
+          }),
+        );
+        conversationsRepo.findOne.mockResolvedValue(thread('AI'));
+        answer();
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(orchestrator.handleStream).toHaveBeenCalledTimes(1);
+        expect(messaging.sendSession).toHaveBeenCalledTimes(1);
+      });
+
+      it('an automatic takeover window in the future: no model call, no send', async () => {
+        conversationsRepo.findOne.mockResolvedValue({
+          ...thread('AI'),
+          ai_mode: 'DEFAULT',
+          ai_paused_until: FUTURE(),
+        });
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(orchestrator.handleStream).not.toHaveBeenCalled();
+        expect(messaging.sendSession).not.toHaveBeenCalled();
+        expect(metrics.recordWhatsappAiDecision).toHaveBeenCalledWith(
+          'SKIP',
+          'HUMAN_TAKEOVER',
+          'pre_ai',
+        );
+      });
+
+      it('the AI answers again once the window has elapsed', async () => {
+        conversationsRepo.findOne.mockResolvedValue({
+          ...thread('AI'),
+          ai_mode: 'DEFAULT',
+          ai_paused_until: new Date(Date.now() - 60_000),
+        });
+        answer();
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(orchestrator.handleStream).toHaveBeenCalledTimes(1);
+        expect(messaging.sendSession).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not send when staff pause the conversation while the model is answering', async () => {
+        conversationsRepo.findOne.mockResolvedValue(thread('AI'));
+        orchestrator.handleStream.mockImplementation(async () => {
+          conversationsRepo.findOne.mockResolvedValue(pausedThread());
+          return {
+            reply: { content: 'AI reply' },
+            mirroredMessageId: 'bot-msg-1',
+          };
+        });
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(orchestrator.handleStream).toHaveBeenCalledTimes(1);
+        expect(messaging.sendSession).not.toHaveBeenCalled();
+        expect(messageStatus.markFailed).toHaveBeenCalledWith(
+          TENANT,
+          'bot-msg-1',
+        );
+        expect(metrics.recordWhatsappAiDecision).toHaveBeenCalledWith(
+          'SKIP',
+          'CONVERSATION_AI_DISABLED',
+          'pre_send',
+        );
+      });
+
+      it('does not send when a patient is excluded while the model is answering', async () => {
+        orchestrator.handleStream.mockImplementation(async () => {
+          customersRepo.findOne.mockResolvedValue({
+            id: 'cust-1',
+            ai_replies_disabled: true,
+          });
+          return { reply: { content: 'AI reply' }, mirroredMessageId: null };
+        });
+        conversationsRepo.findOne.mockResolvedValue(thread('AI'));
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(messaging.sendSession).not.toHaveBeenCalled();
+        expect(metrics.recordWhatsappAiDecision).toHaveBeenCalledWith(
+          'SKIP',
+          'PATIENT_AI_DISABLED',
+          'pre_send',
+        );
+      });
+
+      it('a refused message still gets no apology — the "could not process" fallback is gated too', async () => {
+        conversationsRepo.findOne.mockResolvedValue(thread('AI'));
+        orchestrator.handleStream.mockImplementation(async () => {
+          conversationsRepo.findOne.mockResolvedValue(pausedThread());
+          throw new Error('boom');
+        });
+        jest
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation(() => undefined);
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(messaging.sendSession).not.toHaveBeenCalled();
+      });
+
+      it('logs ids only — never the message, the phone number or the patient', async () => {
+        const logSpy = jest
+          .spyOn(Logger.prototype, 'log')
+          .mockImplementation(() => undefined);
+        customersRepo.findOne.mockResolvedValue({
+          id: 'cust-1',
+          ai_replies_disabled: true,
+        });
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        const logged = logSpy.mock.calls
+          .map((c) => c.map(String).join(' '))
+          .join('\n');
+        expect(logged).toContain('reason=PATIENT_AI_DISABLED');
+        expect(logged).not.toContain('hello');
+        expect(logged).not.toContain('966500000000');
+      });
+    });
 
     describe('before the model is called', () => {
       it('stops a conversation a person owns — no model call, no send, no bot user', async () => {

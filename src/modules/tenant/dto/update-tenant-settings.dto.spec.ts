@@ -34,3 +34,26 @@ describe('UpdateTenantSettingsDto — reminder lead-time whitelist (T011)', () =
     expect(await validate(dto)).not.toHaveLength(0);
   });
 });
+
+describe('UpdateTenantSettingsDto — aiHumanTakeoverMinutes', () => {
+  const check = (v: unknown) =>
+    validate(
+      plainToInstance(UpdateTenantSettingsDto, { aiHumanTakeoverMinutes: v }),
+    );
+
+  it.each([0, 1, 30, 1440])('accepts %p', async (v) => {
+    expect(await check(v)).toHaveLength(0);
+  });
+
+  it('is optional', async () => {
+    expect(
+      await validate(plainToInstance(UpdateTenantSettingsDto, {})),
+    ).toHaveLength(0);
+  });
+
+  it.each([-1, 1441, 1.5, '30', 'abc'])('rejects %p', async (v) => {
+    const errors = await check(v);
+    expect(errors).not.toHaveLength(0);
+    expect(errors[0].property).toBe('aiHumanTakeoverMinutes');
+  });
+});

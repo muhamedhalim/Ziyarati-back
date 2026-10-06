@@ -427,7 +427,10 @@ current values.
 - \`cancellationHours\`: How many hours before the appointment
   cancellation is blocked (0 = always allowed).
 - \`botEnabled\`: Enables/disables the WhatsApp AI chatbot for this
-  clinic.
+  clinic. Switching it ON is refused when the plan does not include the
+  AI assistant; switching it OFF is always allowed.
+- \`aiHumanTakeoverMinutes\`: How long the AI stays silent on a conversation
+  after a staff member replies (0 = off, max 1440).
 
 **Who can call this:** Clinic Owner or Manager.
 
@@ -449,8 +452,15 @@ current values.
   })
   @Patch('me/settings')
   @Roles(ROLE.OWNER, ROLE.MANAGER)
-  updateMySettings(@Body() dto: UpdateTenantSettingsDto) {
-    return this.tenantService.updateSettings(this.ctx.requireTenantId(), dto);
+  updateMySettings(
+    @Body() dto: UpdateTenantSettingsDto,
+    @CurrentUser('id') actorId: string,
+  ) {
+    return this.tenantService.updateSettings(
+      this.ctx.requireTenantId(),
+      dto,
+      actorId,
+    );
   }
 
   @ApiOperation({
