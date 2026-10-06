@@ -57,3 +57,35 @@ describe('UpdateTenantSettingsDto — aiHumanTakeoverMinutes', () => {
     expect(errors[0].property).toBe('aiHumanTakeoverMinutes');
   });
 });
+
+describe('UpdateTenantSettingsDto — aiScheduleMode / aiAssignmentMode', () => {
+  const check = (body: Record<string, unknown>) =>
+    validate(plainToInstance(UpdateTenantSettingsDto, body));
+
+  it.each(['ALWAYS', 'WORKING_HOURS', 'OUTSIDE_WORKING_HOURS'])(
+    'accepts aiScheduleMode %p',
+    async (v) => {
+      expect(await check({ aiScheduleMode: v })).toHaveLength(0);
+    },
+  );
+
+  it.each(['ALL', 'ASSIGNED_ONLY'])(
+    'accepts aiAssignmentMode %p',
+    async (v) => {
+      expect(await check({ aiAssignmentMode: v })).toHaveLength(0);
+    },
+  );
+
+  it.each(['always', 'NIGHT', '', 1])(
+    'rejects aiScheduleMode %p',
+    async (v) => {
+      const errors = await check({ aiScheduleMode: v });
+      expect(errors.length).toBeGreaterThan(0);
+    },
+  );
+
+  it.each(['all', 'NONE', '', 1])('rejects aiAssignmentMode %p', async (v) => {
+    const errors = await check({ aiAssignmentMode: v });
+    expect(errors.length).toBeGreaterThan(0);
+  });
+});

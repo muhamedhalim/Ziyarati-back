@@ -40,6 +40,7 @@ export interface ConversationAiStatus {
 export const CONVERSATION_AI_AUDIT_ACTION = {
   PAUSED: 'conversation.ai_paused',
   RESUMED: 'conversation.ai_resumed',
+  ENABLED: 'conversation.ai_enabled',
 } as const;
 
 /**
@@ -164,6 +165,48 @@ export class ConversationAiControlService {
       entityId: conversationId,
       before: { ai_mode: before.mode, takeover_active: !!before.pausedUntil },
       after: { ai_mode: CONVERSATION_AI_MODE.DEFAULT },
+    });
+    return this.getStatus(tenantId, conversationId);
+  }
+
+  /**
+   * "Assign this conversation to the AI": `ai_mode = ENABLED`. It matters in the
+   * clinic's assigned-only mode, where it is the one thing that lets the AI
+   * answer; otherwise it behaves like the default. Like resume, it ends any
+   * automatic-takeover window and is refused (409) while a person owns the
+   * conversation. It lifts only that one rule — the clinic switch, the patient
+   * exclusion, the schedule and a handover keep their priority. Idempotent.
+   */
+  async enable(
+    tenantId: string,
+    actorUserId: string,
+    conversationId: string,
+  ): Promise<ConversationAiStatus> {
+    const before = await this.getStatus(tenantId, conversationId);
+    if (before.ownerType === CONVERSATION_OWNER_TYPE.HUMAN) {
+      throw this.handedOver();
+    }
+    if (before.mode === CONVERSATION_AI_MODE.ENABLED && !before.pausedUntil) {
+      return before;
+    }
+
+    const changed = await this.applyMode(
+      tenantId,
+      actorUserId,
+      conversationId,
+      CONVERSATION_AI_MODE.ENABLED,
+      { clearTakeoverWindow: true, unlessOwnedByHuman: true },
+    );
+    if (!changed) throw this.handedOver();
+
+    await this.audit.record({
+      tenantId,
+      actorUserId,
+      action: CONVERSATION_AI_AUDIT_ACTION.ENABLED,
+      entityType: 'conversation',
+      entityId: conversationId,
+      before: { ai_mode: before.mode, takeover_active: !!before.pausedUntil },
+      after: { ai_mode: CONVERSATION_AI_MODE.ENABLED },
     });
     return this.getStatus(tenantId, conversationId);
   }

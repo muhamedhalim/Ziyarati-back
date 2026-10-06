@@ -38,6 +38,8 @@ describe('TenantService.updateSettings — WhatsApp AI settings', () => {
   const stored = (over: Record<string, unknown> = {}) => ({
     bot_enabled: true,
     ai_human_takeover_minutes: 0,
+    ai_schedule_mode: 'ALWAYS',
+    ai_assignment_mode: 'ALL',
     ...over,
   });
 
@@ -162,6 +164,76 @@ describe('TenantService.updateSettings — WhatsApp AI settings', () => {
       await f.service.updateSettings('t1', { currency: 'SAR' }, 'u1');
 
       expect(f.saved[0].ai_human_takeover_minutes).toBe(45);
+    });
+  });
+
+  describe('aiScheduleMode / aiAssignmentMode', () => {
+    it('are saved, and the change is audited with both the old and the new modes', async () => {
+      const f = build(stored());
+
+      await f.service.updateSettings(
+        't1',
+        { aiScheduleMode: 'WORKING_HOURS', aiAssignmentMode: 'ASSIGNED_ONLY' },
+        'u1',
+      );
+
+      expect(f.saved[0]).toMatchObject({
+        ai_schedule_mode: 'WORKING_HOURS',
+        ai_assignment_mode: 'ASSIGNED_ONLY',
+      });
+      expect(f.audit.record).toHaveBeenCalledWith({
+        tenantId: 't1',
+        actorUserId: 'u1',
+        action: 'tenant.ai_policy_updated',
+        entityType: 'tenant_settings',
+        entityId: 'ts-1',
+        before: { ai_schedule_mode: 'ALWAYS', ai_assignment_mode: 'ALL' },
+        after: {
+          ai_schedule_mode: 'WORKING_HOURS',
+          ai_assignment_mode: 'ASSIGNED_ONLY',
+        },
+      });
+    });
+
+    it('a request that does not mention them leaves them alone and writes no audit record', async () => {
+      const f = build(
+        stored({
+          ai_schedule_mode: 'OUTSIDE_WORKING_HOURS',
+          ai_assignment_mode: 'ASSIGNED_ONLY',
+        }),
+      );
+
+      await f.service.updateSettings('t1', { currency: 'SAR' }, 'u1');
+
+      expect(f.saved[0]).toMatchObject({
+        ai_schedule_mode: 'OUTSIDE_WORKING_HOURS',
+        ai_assignment_mode: 'ASSIGNED_ONLY',
+      });
+      expect(f.audit.record).not.toHaveBeenCalled();
+    });
+
+    it('re-sending the current values is not a change: nothing audited', async () => {
+      const f = build(stored());
+
+      await f.service.updateSettings(
+        't1',
+        { aiScheduleMode: 'ALWAYS', aiAssignmentMode: 'ALL' },
+        'u1',
+      );
+
+      expect(f.audit.record).not.toHaveBeenCalled();
+    });
+
+    it('do not need the AI entitlement: narrowing or scheduling is not switching the AI on', async () => {
+      const f = build(stored());
+
+      await f.service.updateSettings(
+        't1',
+        { aiScheduleMode: 'WORKING_HOURS' },
+        'u1',
+      );
+
+      expect(f.access.assertAccess).not.toHaveBeenCalled();
     });
   });
 });

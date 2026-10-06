@@ -11,6 +11,7 @@ import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import { Conversation } from '../../entities/Conversations/Conversation';
 import { Customer } from '../../entities/CRM/Customer';
 import { WhatsappAiPolicyService } from './whatsapp-ai-policy.service';
+import { WhatsappAiHoursService } from './whatsapp-ai-hours.service';
 import {
   ContactTurnBusyError,
   ContactTurnLockService,
@@ -205,6 +206,8 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
         // The REAL policy and lock, over mocked infrastructure: the assertions
         // below are about what the bridge does with their answers.
         WhatsappAiPolicyService,
+        // Schedule mode is ALWAYS here, so the hours are never consulted.
+        { provide: WhatsappAiHoursService, useValue: { isOpen: jest.fn() } },
         ContactTurnLockService,
         { provide: DistributedLockService, useValue: locks },
         { provide: MessageStatusService, useValue: messageStatus },
