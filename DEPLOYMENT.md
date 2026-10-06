@@ -204,7 +204,13 @@ a re-encryption pass.
   configurable. Same-origin deployments (SPA behind a Next.js rewrite) want
   `COOKIE_SAMESITE=lax`; a genuinely cross-site SPA needs
   `COOKIE_SAMESITE=none`. Leave `COOKIE_DOMAIN` unset for host-only cookies
-  unless you deliberately want them shared across subdomains.
+  unless you deliberately want them shared across subdomains. Give it as a
+  bare hostname (`example.com`): a leading dot fails env validation. When the
+  browser calls the API host directly (frontend `NEXT_PUBLIC_API_BASE_URL`),
+  set `CSRF_COOKIE_DOMAIN` instead — it shares only the readable session-hint
+  cookie and keeps the access/refresh cookies host-only on the API host.
+  `CORS` exposes `X-Request-Id` and `Content-Disposition` to the browser for
+  that mode; the allow-list is `FRONTEND_ORIGIN`.
 * **CSRF** is double-submit: the API issues a non-HttpOnly `csrf_token` cookie
   and the SPA must echo it in `X-CSRF-Token` on state-changing requests.
 * **Webhooks** must be reachable at the public origin and are

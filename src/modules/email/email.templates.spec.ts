@@ -211,3 +211,73 @@ describe('EMAIL_TEMPLATES — marketing vs transactional separation (T132)', () 
     expect(/unsubscribe/i.test(rendered.html)).toBe(false);
   });
 });
+
+describe('EMAIL_TEMPLATES — minimal appointment notices (residency plan P8)', () => {
+  const appt = {
+    name: 'Sara',
+    service: 'Fertility consultation',
+    doctor: 'Dr Omar',
+    doctorName: 'Dr Omar',
+    specialty: 'Oncology',
+    reason: 'patient reported chest pain',
+    dateTime: '2026-10-07 09:30',
+    clinicName: 'Noor Clinic',
+  };
+  const detail = ['Fertility', 'Omar', 'Oncology', 'chest pain'];
+
+  it.each([
+    'appointment_confirmation',
+    'appointment_reminder',
+    'appointment_cancelled',
+    'appointment_rescheduled',
+  ] as const)('%s carries date and clinic but no care detail by default, in both languages', (key) => {
+    for (const ctx of [enCtx, arCtx]) {
+      const out = renderEmail(key, appt, ctx);
+      const everything = `${out.subject}${out.html}${out.text}`;
+      for (const word of detail) expect(everything).not.toContain(word);
+    }
+    const en = renderEmail(key, appt, enCtx);
+    if (key !== 'appointment_rescheduled' && key !== 'appointment_cancelled') {
+      expect(en.text).toContain('Noor Clinic');
+    }
+    expect(en.text).toContain('2026-10-07 09:30');
+  });
+
+  it('restores the detail only when the platform opts in', () => {
+    const out = renderEmail('appointment_confirmation', appt, {
+      ...enCtx,
+      includeHealthDetail: true,
+    });
+    expect(out.text).toContain('Fertility consultation');
+    const cancelled = renderEmail('appointment_cancelled', appt, {
+      ...enCtx,
+      includeHealthDetail: true,
+    });
+    expect(cancelled.text).toContain('chest pain');
+  });
+
+  it('does not mutate the caller’s variables', () => {
+    const copy = JSON.stringify(appt);
+    renderEmail('appointment_confirmation', appt, enCtx);
+    expect(JSON.stringify(appt)).toBe(copy);
+  });
+
+  it('strips identifiers from caller-supplied notice text but leaves the sentence readable', () => {
+    for (const key of ['patient_notification', 'doctor_notification', 'security_alert', 'generic']) {
+      const out = renderEmail(
+        key,
+        { title: 'Update', message: 'Your ID 1012345678 and card 4111111111111111 changed.' },
+        enCtx,
+      );
+      const everything = `${out.subject}${out.html}${out.text}`;
+      expect(everything).not.toContain('1012345678');
+      expect(everything).not.toContain('4111111111111111');
+      expect(everything).toContain('changed.');
+    }
+  });
+
+  it('does not touch templates that are not appointment or free-text notices', () => {
+    const out = renderEmail('payment_failed', { name: 'Sara', amount: 'SAR 250', reason: 'card declined' }, enCtx);
+    expect(out.text).toContain('card declined');
+  });
+});

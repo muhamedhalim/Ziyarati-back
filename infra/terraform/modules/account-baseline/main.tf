@@ -97,6 +97,19 @@ data "aws_iam_policy_document" "trail_bucket" {
       values   = ["arn:${data.aws_partition.current.partition}:cloudtrail:${var.region}:${local.account_id}:trail/${local.trail_name}"]
     }
   }
+  # Data boundary: nobody (console, CLI or a stolen role) may turn on replication
+  # and copy this bucket's objects to another bucket or region.
+  statement {
+    sid       = "DenyReplicationConfiguration"
+    effect    = "Deny"
+    actions   = ["s3:PutReplicationConfiguration"]
+    resources = [aws_s3_bucket.trail.arn]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+  }
+
   statement {
     sid       = "DenyInsecureTransport"
     effect    = "Deny"
@@ -148,6 +161,7 @@ data "aws_iam_policy_document" "trail_key" {
 # Separate key from the data key: a compromise of app roles (which may use the
 # data key) must not let anyone decrypt or tamper with the audit trail.
 resource "aws_kms_key" "trail" {
+  multi_region            = false
   description             = "${var.name} CloudTrail"
   enable_key_rotation     = true
   deletion_window_in_days = 30

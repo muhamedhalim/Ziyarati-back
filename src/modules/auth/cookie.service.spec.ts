@@ -84,6 +84,59 @@ describe('CookieService', () => {
     });
   });
 
+  describe('CSRF_COOKIE_DOMAIN (residency plan P9)', () => {
+    const domainOf = (res: ReturnType<typeof buildRes>, name: string) =>
+      res.cookie.mock.calls.find((c) => c[0] === name)?.[2]?.domain;
+
+    it('scopes ONLY the readable csrf cookie to the parent domain', () => {
+      const res = buildRes();
+      const svc = build({ CSRF_COOKIE_DOMAIN: 'clinic.app' });
+      svc.setAuthCookies(res as any, { accessToken: 'AT', refreshToken: 'RT' });
+      svc.setCsrfCookie(res as any);
+
+      expect(domainOf(res, CookieService.CSRF_COOKIE)).toBe('clinic.app');
+      // The two cookies that carry authority stay host-only on the API host, so
+      // the page-serving tier never receives them.
+      expect(domainOf(res, CookieService.ACCESS_COOKIE)).toBeUndefined();
+      expect(domainOf(res, CookieService.REFRESH_COOKIE)).toBeUndefined();
+    });
+
+    it('falls back to COOKIE_DOMAIN, so existing deployments do not change', () => {
+      const res = buildRes();
+      const svc = build({ COOKIE_DOMAIN: 'clinic.app' });
+      svc.setAuthCookies(res as any, { accessToken: 'AT', refreshToken: 'RT' });
+      svc.setCsrfCookie(res as any);
+
+      expect(domainOf(res, CookieService.CSRF_COOKIE)).toBe('clinic.app');
+      expect(domainOf(res, CookieService.ACCESS_COOKIE)).toBe('clinic.app');
+    });
+
+    it('lets the two be scoped independently', () => {
+      const res = buildRes();
+      const svc = build({
+        COOKIE_DOMAIN: 'api.clinic.app',
+        CSRF_COOKIE_DOMAIN: 'clinic.app',
+      });
+      svc.setAuthCookies(res as any, { accessToken: 'AT', refreshToken: 'RT' });
+      svc.setCsrfCookie(res as any);
+
+      expect(domainOf(res, CookieService.ACCESS_COOKIE)).toBe('api.clinic.app');
+      expect(domainOf(res, CookieService.CSRF_COOKIE)).toBe('clinic.app');
+    });
+
+    it('clears the csrf cookie with the SAME domain it was set with', () => {
+      const res = buildRes();
+      build({ CSRF_COOKIE_DOMAIN: 'clinic.app' }).clearAuthCookies(res as any);
+
+      const clear = (name: string) =>
+        res.clearCookie.mock.calls.find((c) => c[0] === name)?.[1]?.domain;
+      // A clear that omits or changes the domain deletes nothing — the browser
+      // treats it as a different cookie and the session hint would outlive logout.
+      expect(clear(CookieService.CSRF_COOKIE)).toBe('clinic.app');
+      expect(clear(CookieService.ACCESS_COOKIE)).toBeUndefined();
+    });
+  });
+
   describe('clearAuthCookies', () => {
     it('clears all three cookies with matching paths', () => {
       const res = buildRes();

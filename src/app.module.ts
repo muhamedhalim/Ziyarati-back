@@ -81,6 +81,7 @@ import { PatientQueueModule } from './modules/patient-queue/patient-queue.module
 // process; only worker.module.ts imports it.
 import { ReportExportModule } from './modules/report-export/report-export.module';
 import { ActivityLogModule } from './modules/activity-log/activity-log.module';
+import { DataGovernanceModule } from './modules/data-governance/data-governance.module';
 
 import { validate } from './config/env.validation';
 
@@ -220,6 +221,7 @@ import { validate } from './config/env.validation';
     PatientQueueModule,
     ReportExportModule,
     ActivityLogModule,
+    DataGovernanceModule,
   ],
 
   providers: [

@@ -30,14 +30,20 @@ locals {
     FRONTEND_ORIGIN                      = join(",", var.frontend_origins)
     APP_URL                              = var.app_url
     API_BASE_URL                         = "https://${local.api_domain}"
-    COOKIE_DOMAIN                        = var.cookie_domain
     COOKIE_SAMESITE                      = "lax"
     # SEC-02: trust exactly one reverse proxy (the ALB, xff mode pinned to
     # "append") so req.ip is the ALB's real peer, not the ALB itself.
     TRUST_PROXY_HOPS = "1"
   }
 
-  common_env = merge(var.app_environment, local.fixed_common_env)
+  # Emitted only when set: the API's Joi schema rejects an EMPTY string for a
+  # hostname variable, so "" must mean "absent", not an empty env value.
+  cookie_scope_env = merge(
+    var.cookie_domain != "" ? { COOKIE_DOMAIN = var.cookie_domain } : {},
+    var.csrf_cookie_domain != "" ? { CSRF_COOKIE_DOMAIN = var.csrf_cookie_domain } : {},
+  )
+
+  common_env = merge(var.app_environment, local.fixed_common_env, local.cookie_scope_env)
 
   api_env = {
     API_CLUSTER_WORKERS = "1" # scale with tasks, not in-task cluster (ARCHITECTURE §2.2)

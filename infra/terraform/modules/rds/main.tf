@@ -125,7 +125,7 @@ resource "aws_db_instance" "this" {
   vpc_security_group_ids = [var.security_group_id]
   publicly_accessible    = false
   parameter_group_name   = aws_db_parameter_group.this.name
-  ca_cert_identifier     = "rds-ca-rsa2048-g1"
+  ca_cert_identifier     = var.ca_cert_identifier
   network_type           = "IPV4"
 
   backup_retention_period  = var.backup_retention_days

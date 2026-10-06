@@ -193,3 +193,61 @@ describe('WhatsappMessagingService.sendSession — entitlement + metering seam',
     expect(usage.incrementIfWithinLimit).not.toHaveBeenCalled();
   });
 });
+
+describe('WhatsappMessagingService.sendSession — content policy (residency plan P5)', () => {
+  let provider: { name: string; send: jest.Mock; sendSession: jest.Mock };
+  let usage: { incrementIfWithinLimit: jest.Mock; release: jest.Mock };
+
+  const build = (config?: Record<string, unknown>) =>
+    new WhatsappMessagingService(
+      { resolve: () => provider } as unknown as WhatsappProviderFactory,
+      {
+        resolve: jest.fn().mockResolvedValue({ allowed: true, source: 'PLAN' }),
+        shouldBlock: jest.fn().mockReturnValue(true),
+      } as unknown as AccessControlService,
+      usage as unknown as UsageService,
+      config ? ({ get: (k: string, d?: unknown) => config[k] ?? d } as never) : undefined,
+    );
+
+  beforeEach(() => {
+    provider = {
+      name: 'meta',
+      send: jest.fn(),
+      sendSession: jest.fn().mockResolvedValue({ success: true, providerMessageId: 'w1' }),
+    };
+    usage = {
+      incrementIfWithinLimit: jest.fn().mockResolvedValue({ applied: true, used: 0, limit: null }),
+      release: jest.fn().mockResolvedValue(undefined),
+    };
+  });
+
+  it('refuses a reply carrying a national ID — no provider call, no quota reserved, no value in the error', async () => {
+    const res = await build().sendSession({ ...PAYLOAD, text: 'Your ID is 1012345678' });
+
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('content policy');
+    expect(res.error).toContain('national_id');
+    expect(res.error).not.toContain('1012345678');
+    expect(provider.sendSession).not.toHaveBeenCalled();
+    expect(usage.incrementIfWithinLimit).not.toHaveBeenCalled();
+  });
+
+  it('sends an ordinary reply', async () => {
+    const res = await build().sendSession({ ...PAYLOAD, text: 'See you at 09:30' });
+    expect(res.success).toBe(true);
+  });
+
+  it('monitor mode lets it through (and only logs); off mode does not even look', async () => {
+    const monitored = await build({ WHATSAPP_CONTENT_POLICY: 'monitor' }).sendSession({
+      ...PAYLOAD,
+      text: 'Your ID is 1012345678',
+    });
+    expect(monitored.success).toBe(true);
+
+    const off = await build({ WHATSAPP_CONTENT_POLICY: 'off' }).sendSession({
+      ...PAYLOAD,
+      text: 'Your ID is 1012345678',
+    });
+    expect(off.success).toBe(true);
+  });
+});

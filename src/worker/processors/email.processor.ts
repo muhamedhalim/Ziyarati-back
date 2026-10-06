@@ -1,12 +1,16 @@
 import { Logger } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
-import { Job } from 'bullmq';
+import { Job, UnrecoverableError } from 'bullmq';
 
 import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { EmailSendJob } from '../../queue/job-data.interface';
 import { EmailDeliveryService } from '../../modules/email/email-delivery.service';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { validateJobPayload } from '../../queue/job-payload-validator';
+import {
+  isMinimized,
+  minimizeCompletedJob,
+} from '../../queue/job-pii-redaction';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 
@@ -43,10 +47,26 @@ export class EmailProcessor extends WorkerHost {
   async process(job: Job<EmailSendJob>) {
     const data = job.data;
     validateJobPayload(job.name, data);
+    if (isMinimized(data)) {
+      // A completed job whose recipient/variables were dropped (P6) cannot be replayed.
+      throw new UnrecoverableError(
+        `${job.name} payload was minimised after completion`,
+      );
+    }
     return runInTenantContext(this.ctx, this.authz, job.name, data, async () => {
       await this.delivery.deliver(data);
       return { ok: true };
     });
+  }
+
+  /**
+   * Residency plan P6: once the job has succeeded nothing reads its payload
+   * again, so the recipient and variables (a staff member's temporary password
+   * among them) are not left in Redis for the completed-job retention window.
+   */
+  @OnWorkerEvent('completed')
+  async onCompleted(job: Job) {
+    await minimizeCompletedJob(job, this.logger);
   }
 
   @OnWorkerEvent('failed')

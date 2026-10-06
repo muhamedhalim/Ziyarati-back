@@ -2,9 +2,16 @@
 # single-AZ where that only costs availability. SYNTHETIC DATA ONLY — never
 # restore production data here (SECURITY.md §5).
 #
-# Separate registrable domain on purpose: with COOKIE_DOMAIN=.ziyaratech.com
+# Separate registrable domain on purpose: with COOKIE_DOMAIN=ziyaratech.com
 # in production, any *.ziyaratech.com staging host would receive production
 # auth cookies (ARCHITECTURE.md §2.3). Replace with the domain chosen in D-2.
+
+# Regions this environment may be deployed to. EMPTY ON PURPOSE: no hosting
+# location is approved yet (infra/docs/SECURITY.md §6, decision D-1). With an
+# empty list every plan fails closed (modules/platform variable validation and
+# infra/scripts/region-gate.sh). Add a region ONLY after the hosting-location
+# decision is approved in writing; aws_region below must then be a member.
+approved_regions = []
 
 aws_region            = "me-central-1"
 availability_zone_ids = ["mec1-az1", "mec1-az2"]

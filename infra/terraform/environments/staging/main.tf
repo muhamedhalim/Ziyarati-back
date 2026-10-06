@@ -12,12 +12,10 @@ terraform {
     }
   }
 
-  # Partial configuration: bucket + kms_key_id come from backend.hcl
+  # Partial configuration: bucket + region + key + kms_key_id come from backend.hcl
   # (terraform init -backend-config=backend.hcl). Native S3 lockfile — no
   # DynamoDB table.
   backend "s3" {
-    key          = "platform/terraform.tfstate"
-    region       = "me-central-1"
     encrypt      = true
     use_lockfile = true
   }
@@ -28,6 +26,9 @@ locals {
     Project     = "ZiyaraTech"
     Environment = var.environment
     ManagedBy   = "Terraform"
+    # Conservative label for the whole stack: it holds patient health data.
+    # It is a classification, NOT a statement about where the data may live.
+    DataClassification = "restricted-health"
   }
 }
 
@@ -35,7 +36,7 @@ provider "aws" {
   region              = var.aws_region
   allowed_account_ids = [var.account_id]
   default_tags {
-    tags = local.default_tags
+    tags = merge(local.default_tags, { Region = var.aws_region })
   }
 }
 
@@ -68,17 +69,24 @@ module "platform" {
     aws.dr        = aws.dr
   }
 
-  environment           = var.environment
-  aws_region            = var.aws_region
-  availability_zone_ids = var.availability_zone_ids
-  vpc_cidr              = var.vpc_cidr
-  nat_gateway_count     = var.nat_gateway_count
+  environment              = var.environment
+  approved_regions         = var.approved_regions
+  approved_dr_destinations = var.approved_dr_destinations
+  aws_region               = var.aws_region
+  availability_zone_ids    = var.availability_zone_ids
+  vpc_cidr                 = var.vpc_cidr
+  nat_gateway_count        = var.nat_gateway_count
 
-  domain           = var.domain
-  email_domain     = var.domain
-  cookie_domain    = ".${var.domain}"
-  frontend_origins = var.frontend_origins
-  app_url          = var.app_url
+  domain       = var.domain
+  email_domain = var.domain
+  # Cookie scope. Same-origin proxy (default): all three staff cookies on the parent
+  # domain. Direct API routing (P9): only the readable csrf hint is shared; the
+  # access/refresh cookies stay host-only on the API host. No leading dot — the
+  # API rejects ".example.com" at boot.
+  cookie_domain      = var.direct_api_routing ? "" : var.domain
+  csrf_cookie_domain = var.direct_api_routing ? var.domain : ""
+  frontend_origins   = var.frontend_origins
+  app_url            = var.app_url
 
   image_tag               = var.image_tag
   api                     = var.api

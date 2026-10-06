@@ -72,6 +72,9 @@ resource "aws_kms_key" "data" {
   description             = "${var.name} data key (RDS, S3, ElastiCache, Secrets, Logs, SNS/SQS)"
   enable_key_rotation     = true
   rotation_period_in_days = 365
+  # Single-Region by design: a multi-Region key is a replicated copy of the key
+  # material in another Region, which would defeat the data boundary.
+  multi_region            = false
   deletion_window_in_days = var.deletion_window_in_days
   policy                  = data.aws_iam_policy_document.key.json
   tags                    = local.tags

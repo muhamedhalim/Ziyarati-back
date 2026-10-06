@@ -44,3 +44,37 @@ run "uploads_bucket_is_private_encrypted_versioned" {
     error_message = "No CORS unless explicitly required"
   }
 }
+
+# Data boundary: replication of patient documents is denied by the bucket policy
+# for every principal, TLS is mandatory, and only the env key may encrypt.
+run "bucket_policy_denies_replication_and_pins_the_key" {
+  command = plan
+
+  assert {
+    condition = anytrue([
+      for s in data.aws_iam_policy_document.this.statement :
+      s.sid == "DenyReplicationConfiguration" && s.effect == "Deny" && contains(s.actions, "s3:PutReplicationConfiguration")
+    ])
+    error_message = "The uploads bucket must deny s3:PutReplicationConfiguration"
+  }
+
+  assert {
+    condition = alltrue([
+      for sid in ["DenyInsecureTransport", "DenyOutsideAccount", "DenyWrongEncryptionKey", "DenyReplicationConfiguration"] :
+      contains([for s in data.aws_iam_policy_document.this.statement : s.sid], sid)
+    ])
+    error_message = "All four deny statements are part of the data boundary"
+  }
+
+  assert {
+    condition = alltrue([
+      for s in data.aws_iam_policy_document.this.statement : s.effect == "Deny"
+    ])
+    error_message = "The bucket policy must contain only Deny statements (access is granted by IAM roles, not the bucket)"
+  }
+
+  assert {
+    condition     = length(aws_s3_bucket_cors_configuration.this) == 0
+    error_message = "No CORS rule unless origins are configured"
+  }
+}

@@ -26,6 +26,7 @@ import {
 } from '@nestjs/swagger';
 
 import { CustomerService } from './customer.service';
+import { ClinicalAccessLogService } from '../medical-records/clinical-access-log.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 import { QueryCustomersDto } from './dto/query-customers.dto';
@@ -67,6 +68,8 @@ export class CustomerController {
   constructor(
     private readonly customers: CustomerService,
     private readonly ctx: TenantContextService,
+    // Residency plan P14 — reads of D4 data are accounted for (who, which patient, when).
+    private readonly accessLog: ClinicalAccessLogService,
   ) {}
 
   @ApiOperation({
@@ -165,7 +168,7 @@ export class CustomerController {
   })
   @Get(':id')
   @RequirePermissions(PERMISSION.CRM_CUSTOMERS_READ)
-  getDetails(@Param('id', ParseUUIDPipe) id: string) {
+  async getDetails(@Param('id', ParseUUIDPipe) id: string) {
     const user = this.ctx.getUser();
     // Mirrors PermissionsGuard's own super_admin bypass (role-based, not a
     // literal '*' in `permissions`) — a super_admin who reaches this
@@ -173,11 +176,18 @@ export class CustomerController {
     const hasClinicalAccess =
       Boolean(user?.roles.includes(ROLE.SUPER_ADMIN)) ||
       Boolean(user?.permissions.includes(PERMISSION.CLINICAL_RECORDS_READ));
-    return this.customers.getDetails(
-      this.ctx.requireTenantId(),
+    const tenantId = this.ctx.requireTenantId();
+    const details = await this.customers.getDetails(
+      tenantId,
       id,
       hasClinicalAccess,
     );
+    // Residency plan P14: the detail view carries health intake (chronic disease,
+    // insurance) ONLY for a caller with clinical access — that is the read to account for.
+    if (hasClinicalAccess && user?.id) {
+      await this.accessLog.record(tenantId, id, user.id, 'profile');
+    }
+    return details;
   }
 
   @ApiOperation({

@@ -222,3 +222,91 @@ describe('sanitizeForLog', () => {
     });
   });
 });
+
+// ── Residency plan P7 — free text and capability tokens ───────────────────── //
+describe('free-text and token redaction (residency plan P7)', () => {
+  it('redacts keys that hold text a person typed', () => {
+    const out = sanitizeForLog({
+      content: 'I have chest pain',
+      notes: 'allergic to penicillin',
+      body: 'Hello Sara',
+      prompt: 'summarise my record',
+      diagnosis: 'x',
+      first_name: 'Sara',
+      lastName: 'Ahmed',
+      patientName: 'Sara Ahmed',
+      address: '12 Olaya St',
+      jobId: 'job-1',
+      status: 'FAILED',
+    }) as Record<string, unknown>;
+
+    for (const key of [
+      'content',
+      'notes',
+      'body',
+      'prompt',
+      'diagnosis',
+      'first_name',
+      'lastName',
+      'patientName',
+      'address',
+    ]) {
+      expect(out[key]).toBe('[REDACTED]');
+    }
+    expect(out.jobId).toBe('job-1');
+    expect(out.status).toBe('FAILED');
+  });
+
+  it('scrubs an identifier embedded in a string value that no key rule can see', () => {
+    const out = sanitizeForLog({
+      reason: 'invalid input syntax for type uuid: "0501234567"',
+      detail: 'Key (email)=(sara@example.com) already exists.',
+      nested: { error: 'recipient 29801011234567 rejected' },
+      list: ['call +966501234567'],
+    }) as any;
+
+    const serialized = JSON.stringify(out);
+    expect(serialized).not.toMatch(/0501234567|sara@example\.com|29801011234567|966501234567/);
+    expect(out.reason).toContain('invalid input syntax for type uuid');
+  });
+
+  it('scrubs a top-level string and leaves other primitives alone', () => {
+    expect(sanitizeForLog('call 0501234567')).toBe('call [NUMBER]');
+    expect(sanitizeForLog(7)).toBe(7);
+  });
+
+  it('keeps operational keys readable', () => {
+    const out = sanitizeForLog({
+      emailProvider: 'resend',
+      contentType: 'application/json',
+      bodyLength: 120,
+      textSearchEnabled: true,
+    }) as Record<string, unknown>;
+    expect(out).toEqual({
+      emailProvider: 'resend',
+      contentType: 'application/json',
+      bodyLength: 120,
+      textSearchEnabled: true,
+    });
+  });
+});
+
+describe('sanitizeUrlForLog — capability tokens in the path', () => {
+  it('replaces a random token segment but keeps UUIDs and slugs', () => {
+    expect(sanitizeUrlForLog('/api/v1/public/payments/Xk3PqR9vTn2LmB7wYz4HdC8s/status')).toBe(
+      '/api/v1/public/payments/:token/status',
+    );
+    expect(
+      sanitizeUrlForLog('/api/v1/appointments/3f2b8c4d-1a2b-4c3d-9e8f-0a1b2c3d4e5f'),
+    ).toBe('/api/v1/appointments/3f2b8c4d-1a2b-4c3d-9e8f-0a1b2c3d4e5f');
+    expect(sanitizeUrlForLog('/api/v1/public/clinics/noor-dental-clinic-riyadh')).toBe(
+      '/api/v1/public/clinics/noor-dental-clinic-riyadh',
+    );
+  });
+
+  it('handles a tokenised path that also has a query string', () => {
+    expect(
+      sanitizeUrlForLog('/api/v1/public/unsubscribe/Xk3PqR9vTn2LmB7wYz4HdC8s?q=abc&page=1'),
+    ).toBe('/api/v1/public/unsubscribe/:token?q=[REDACTED]&page=1');
+  });
+});

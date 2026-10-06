@@ -1,3 +1,5 @@
+import { scrubText } from './log-scrubber.util';
+
 /**
  * Keys whose values must never be written to logs. Matched case-insensitively,
  * with separators (`-`, `_`, spaces) stripped from both sides first, and as
@@ -48,6 +50,30 @@ const SENSITIVE_KEY_EXACT = [
   // Government identity number (`Customer.national_id`) — normalizes from
   // `national_id` / `nationalId`. Exact-match so unrelated keys stay readable.
   'nationalid',
+  // Free text a patient, clinician or staff member wrote (residency plan P7).
+  // None of these is operational config, so exact-match is safe; the value is
+  // whatever was typed, which is exactly what must not reach a log.
+  'content',
+  'notes',
+  'note',
+  'text',
+  'prompt',
+  'reply',
+  'body',
+  'diagnosis',
+  'symptoms',
+  'complaint',
+  'medication',
+  'medications',
+  'allergies',
+  'address',
+  'firstname',
+  'lastname',
+  'patientname',
+  'customername',
+  'recipientname',
+  'guestname',
+  'insurancenumber',
 ];
 
 /**
@@ -73,6 +99,34 @@ function isSensitiveKey(key: string): boolean {
   );
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const LOWERCASE_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)+$/;
+
+/**
+ * Capability tokens ride in the PATH of the public routes
+ * (`/pay/:token`, `/appointment-action/:token`, `/unsubscribe/:token`, ...).
+ * A segment that looks like a random token — long, base64url/hex, mixing
+ * letters and digits, not a UUID and not a plain lowercase slug — is replaced.
+ * UUIDs stay: they are the record ids an engineer needs, and are not secrets.
+ */
+function redactPathTokens(path: string): string {
+  return path
+    .split('/')
+    .map((segment) => {
+      if (segment.length < 24 || !/^[A-Za-z0-9_-]+$/.test(segment)) {
+        return segment;
+      }
+      if (UUID_RE.test(segment) || LOWERCASE_SLUG_RE.test(segment)) {
+        return segment;
+      }
+      return /[A-Za-z]/.test(segment) && /[0-9]/.test(segment)
+        ? ':token'
+        : segment;
+    })
+    .join('/');
+}
+
 /**
  * Returns a request URL that is safe to log: the path and every parameter NAME
  * are kept (so an operator can still see which filters were used), but the
@@ -82,9 +136,9 @@ function isSensitiveKey(key: string): boolean {
  */
 export function sanitizeUrlForLog(url: string): string {
   const queryStart = url.indexOf('?');
-  if (queryStart === -1) return url;
+  if (queryStart === -1) return redactPathTokens(url);
 
-  const path = url.slice(0, queryStart);
+  const path = redactPathTokens(url.slice(0, queryStart));
   const query = url
     .slice(queryStart + 1)
     .split('&')
@@ -114,6 +168,9 @@ export function sanitizeUrlForLog(url: string): string {
  * Caps recursion depth to avoid blowing up on cyclic/huge payloads.
  */
 export function sanitizeForLog(value: unknown, depth = 0): unknown {
+  // Key-based redaction cannot see an identifier embedded in a string value
+  // (a driver message, a provider error, a pasted URL) — scrub those by shape.
+  if (typeof value === 'string') return scrubText(value);
   if (value === null || typeof value !== 'object') {
     return value;
   }

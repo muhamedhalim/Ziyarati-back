@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
+import { scrubFailureReason } from '../../common/utils/log-scrubber.util';
 import { ConfigService } from '@nestjs/config';
 import { Job, UnrecoverableError } from 'bullmq';
 
@@ -240,7 +241,7 @@ export class WebhookDeliveryProcessor extends WorkerHost {
         sourceQueue: QUEUE.WEBHOOKS_DELIVER,
         sourceJobName: job.name,
         originalJobId: String(job?.id ?? ''),
-        failedReason: err?.message ?? 'unknown',
+        failedReason: scrubFailureReason(err),
         attemptsMade: job?.attemptsMade ?? 0,
         diedAt: new Date().toISOString(),
       })

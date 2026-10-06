@@ -44,6 +44,8 @@ locals {
 
 # ── State encryption key ─────────────────────────────────────────────────────
 resource "aws_kms_key" "state" {
+  # Single-Region: a multi-Region key would replicate key material to another Region.
+  multi_region            = false
   description             = "Terraform state (zt-${var.environment})"
   enable_key_rotation     = true
   deletion_window_in_days = 30

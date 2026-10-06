@@ -13,8 +13,19 @@ variable "environment" {
   default = "production"
 }
 
+variable "approved_regions" {
+  description = "Regions this environment may deploy to. Empty until the hosting location is approved in writing."
+  type        = list(string)
+}
+
 variable "aws_region" {
   type = string
+}
+
+variable "approved_dr_destinations" {
+  description = "Regions a backup copy may be sent to. Empty until the DR scenario is approved in writing."
+  type        = list(string)
+  default     = []
 }
 
 variable "availability_zone_ids" {
@@ -31,6 +42,12 @@ variable "nat_gateway_count" {
 
 variable "domain" {
   type = string
+}
+
+variable "direct_api_routing" {
+  description = "Residency plan P9: the browser calls api.<domain> directly instead of through the Next.js /api rewrite. Switches the cookie layout (csrf hint shared across the domain, auth cookies host-only on the API host). Must match the frontend build (NEXT_PUBLIC_API_BASE_URL set + no /api rewrite). Default false = current same-origin-proxy topology."
+  type        = bool
+  default     = false
 }
 
 variable "frontend_origins" {

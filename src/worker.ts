@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 
 import { WorkerModule } from './worker.module';
+import { RedactingLogger } from './common/logging/redacting-logger';
 import { MetricsService } from './metrics/metrics.service';
 import { startMetricsHttpServer } from './metrics/start-metrics-http-server';
 
@@ -28,6 +29,9 @@ async function bootstrap(): Promise<void> {
   const logger = new Logger('Worker');
   const app = await NestFactory.createApplicationContext(WorkerModule, {
     bufferLogs: false,
+    // Job failures log `err.message` verbatim in ~20 processors; the redacting
+    // logger is the one place that scrubs them all (residency plan P7).
+    logger: new RedactingLogger(),
   });
 
   // Minimal /metrics listener (M14 — docs/CACHING_QUEUES_AUDIT.md), a plain

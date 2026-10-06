@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { scrubFailureReason } from '../../common/utils/log-scrubber.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, IsNull, LessThan, Repository } from 'typeorm';
 
@@ -399,7 +400,7 @@ export class CampaignDispatchService {
         sourceJobName: JOB.CAMPAIGNS_PROCESS_RECIPIENT,
         originalJobId: recipientId,
         originalData: { tenantId: ctx.tenantId, runId, recipientId },
-        failedReason: reason,
+        failedReason: scrubFailureReason(reason),
         attemptsMade: ctx.attemptsMade ?? 0,
         diedAt: new Date().toISOString(),
       });

@@ -14,6 +14,7 @@ import { QueueService } from '../../../queue/queue.service';
 import { cacheKeyPrefix } from '../../../queue/queue.constants';
 import { MetricsService } from '../../../metrics/metrics.service';
 import { AiCostLedgerService } from '../cost/ai-cost-ledger.service';
+import { scrubForEmbedding } from '../minimization/ai-minimizer';
 
 /**
  * Binary Float32 encoding for a cached embedding vector (M5 —
@@ -182,7 +183,18 @@ export class OpenAiEmbeddingProvider implements AiEmbeddingProvider {
         const attempt = await this.policy.execute(
           () =>
             client.embeddings.create(
-              { model: this.model, input: uniqueMisses.map((m) => m.text) },
+              {
+                model: this.model,
+                // QUERY and MEMORY text can carry what a patient typed; identifiers are
+                // removed before it leaves the process (residency plan P2). Anything
+                // else (the clinic's own knowledge content) is embedded as written. The
+                // cache key above is derived from the ORIGINAL text, unchanged.
+                input: uniqueMisses.map((m) =>
+                  context.kind === 'QUERY' || context.kind === 'MEMORY'
+                    ? scrubForEmbedding(m.text)
+                    : m.text,
+                ),
+              },
               context.signal ? { signal: context.signal } : undefined,
             ),
           'embeddings',

@@ -12,6 +12,7 @@ import { EmailSendJob } from '../../queue/job-data.interface';
 import { EmailProviderFactory } from './providers/email-provider.factory';
 import { resolveEmailConfig } from './email.config';
 import { renderEmail } from './email.templates';
+import { scrubFailureReason } from '../../common/utils/log-scrubber.util';
 
 /** Keys stripped from stored metadata (never persist tokens/links/PII). */
 const SENSITIVE = /token|url|password|secret|code|otp/i;
@@ -92,6 +93,9 @@ export class EmailDeliveryService {
       appUrl: cfg.appUrl,
       locale: job.locale ?? cfg.defaultLocale,
       brand: 'Ziyarati',
+      // Appointment notices are minimal unless the platform opts in (residency plan P8).
+      includeHealthDetail:
+        String(this.config.get('EMAIL_INCLUDE_HEALTH_DETAIL', 'false')) === 'true',
     };
     const rendered = renderEmail(job.template, job.variables ?? {}, ctx);
     const provider = this.factory.resolve();
@@ -111,10 +115,12 @@ export class EmailDeliveryService {
     await this.record(job, rendered.subject, provider.name, ctx.locale, toAddr, result, claimedKey);
 
     if (!result.success) {
-      const reason = (result.error ?? 'unknown provider error').slice(0, 300);
+      // A provider error can echo the recipient address; this reason ends up in
+      // BullMQ's failedReason (Redis) and the logs, so it is scrubbed first.
+      const reason = scrubFailureReason(result.error ?? 'unknown provider error', 300);
       if (result.transient) {
         // Re-throw so BullMQ retries with the configured backoff.
-        throw new Error(result.error ?? 'Transient email delivery failure');
+        throw new Error(scrubFailureReason(result.error ?? 'Transient email delivery failure'));
       }
       // Permanent (bad sender/recipient/credentials): retrying cannot succeed.
       throw new UnrecoverableError(
@@ -161,7 +167,7 @@ export class EmailDeliveryService {
         log.sent_at = new Date();
       } else {
         log.status = 'FAILED';
-        log.error = result.error?.slice(0, 1000);
+        log.error = result.error ? scrubFailureReason(result.error, 1000) : undefined;
       }
       await this.logs.save(log);
     } catch (err) {

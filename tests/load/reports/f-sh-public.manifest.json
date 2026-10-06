@@ -54,5 +54,12 @@
     "RUN_TAG": "f-sh-public",
     "LT_RUN_SEED": "53429"
   },
-  "throttleMode": "lifted via NODE_ENV=test"
+  "throttleMode": "lifted via NODE_ENV=test",
+  "endedAt": "2026-10-05T13:16:51.825Z",
+  "k6ExitCodes": [
+    {
+      "seg": "0of1",
+      "code": 99
+    }
+  ]
 }

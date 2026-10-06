@@ -47,6 +47,24 @@ export class CookieService {
     return this.config.get<string>('COOKIE_DOMAIN') || undefined;
   }
 
+  /**
+   * Scope of the readable `csrf_token` / session-presence cookie ONLY.
+   *
+   * Falls back to `COOKIE_DOMAIN`, so a deployment that sets neither (or only
+   * `COOKIE_DOMAIN`) behaves exactly as before. It exists for direct API routing
+   * (residency plan P9): the SPA, on the app host, must be able to read this
+   * cookie (to echo it as `X-CSRF-Token` and for the route gate in `proxy.ts`),
+   * so it has to be scoped to the parent domain. The access/refresh cookies do
+   * NOT have to be — left host-only on the API host they are never sent to the
+   * app host, so the page-serving tier (Vercel) does not receive a bearer
+   * credential on every document request. `COOKIE_DOMAIN` would widen all three
+   * together; this splits the one cookie that has no authority from the two
+   * that do.
+   */
+  private get csrfDomain(): string | undefined {
+    return this.config.get<string>('CSRF_COOKIE_DOMAIN') || this.domain;
+  }
+
   /** Shared options for the HttpOnly auth cookies. */
   private httpOnlyBase(): CookieOptions {
     return {
@@ -86,7 +104,7 @@ export class CookieService {
       httpOnly: false,
       secure: this.secure,
       sameSite: this.sameSite,
-      domain: this.domain,
+      domain: this.csrfDomain,
       path: '/',
       maxAge: ttlToMs(this.config.get<string>('JWT_REFRESH_TTL', '7d')),
     });
@@ -107,7 +125,7 @@ export class CookieService {
       httpOnly: false,
       secure: this.secure,
       sameSite: this.sameSite,
-      domain: this.domain,
+      domain: this.csrfDomain,
       path: '/',
     });
   }

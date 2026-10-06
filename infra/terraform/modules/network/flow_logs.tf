@@ -97,6 +97,18 @@ data "aws_iam_policy_document" "flow_logs" {
     }
   }
 
+  # Data boundary: nobody may turn on replication and copy the log objects elsewhere.
+  statement {
+    sid       = "DenyReplicationConfiguration"
+    effect    = "Deny"
+    actions   = ["s3:PutReplicationConfiguration"]
+    resources = [aws_s3_bucket.flow_logs[0].arn]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+  }
+
   statement {
     sid       = "DenyInsecureTransport"
     effect    = "Deny"

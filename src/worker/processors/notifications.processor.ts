@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
+import { scrubFailureReason } from '../../common/utils/log-scrubber.util';
 import { DelayedError, Job, UnrecoverableError } from 'bullmq';
 
 import { JOB, QUEUE, workerConcurrency } from '../../queue/queue.constants';
@@ -212,7 +213,7 @@ export class NotificationsProcessor extends WorkerHost {
           sourceQueue: QUEUE.NOTIFICATIONS,
           sourceJobName: JOB.NOTIFICATIONS_DISPATCH,
           originalJobId: String(job?.id ?? ''),
-          failedReason: err?.message ?? 'unknown',
+          failedReason: scrubFailureReason(err),
           attemptsMade: job?.attemptsMade ?? 0,
           diedAt: new Date().toISOString(),
         })

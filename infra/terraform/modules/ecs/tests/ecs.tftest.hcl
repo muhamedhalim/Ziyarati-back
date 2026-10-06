@@ -138,3 +138,21 @@ run "worker_has_a_container_health_check" {
     error_message = "The API is health-checked by the ALB; do not double up in the task definition"
   }
 }
+
+# Application logs may hold personal data if scrubbing misses something:
+# every group has a finite retention and the env CMK.
+run "log_groups_are_retained_and_encrypted" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for g in aws_cloudwatch_log_group.this : g.retention_in_days > 0 && g.kms_key_id == var.kms_key_arn
+    ])
+    error_message = "ECS log groups need a finite retention and the env CMK"
+  }
+
+  assert {
+    condition     = length(aws_cloudwatch_log_group.this) == 4
+    error_message = "api, worker, migrate and ops log groups are expected"
+  }
+}

@@ -89,6 +89,9 @@ describe('GuestAttachmentExtractionService', () => {
     service = new GuestAttachmentExtractionService(
       providers as unknown as AiProviderFactory,
       router,
+      // Vision is OFF by default (residency plan P3); the image tests below
+      // exercise the pass itself, so they switch it on.
+      new ConfigService({ AI_VISION_ENABLED: 'true' }),
     );
   });
 
@@ -137,6 +140,24 @@ describe('GuestAttachmentExtractionService', () => {
       const [request] = complete.mock.calls[0];
       expect(request.messages[0].imageParts[0]).toMatch(/^data:image\/png;base64,/);
       expect(request.messages[0].role).toBe('user');
+    });
+
+    it('sends NOTHING to the provider unless vision is explicitly enabled (residency plan P3)', async () => {
+      for (const config of [
+        new ConfigService({}),
+        new ConfigService({ AI_VISION_ENABLED: 'false' }),
+      ]) {
+        const off = new GuestAttachmentExtractionService(
+          providers as unknown as AiProviderFactory,
+          router,
+          config,
+        );
+        const result = await off.extract(PNG, 'image/png', { tenantId: 't' });
+        // The widget's existing "unreadable → offer to pass it to the clinic" path.
+        expect(result).toEqual({ text: '', status: 'unreadable' });
+      }
+      expect(complete).not.toHaveBeenCalled();
+      expect(providers.resolve).not.toHaveBeenCalled();
     });
 
     it('asks the model to transcribe and forbids it from interpreting or obeying', async () => {
@@ -206,7 +227,9 @@ describe('GuestAttachmentExtractionService', () => {
         require.resolve('./guest-attachment-extraction.service.ts'),
         'utf8',
       );
-      expect(source).not.toMatch(/config\.get|ConfigService|process\.env/);
+      // The ONE permitted read is the platform on/off switch for the vision
+      // pass (residency plan P3), which selects nothing about the model.
+      expect(source).not.toMatch(/config\.get\((?!\s*'AI_VISION_ENABLED')|process\.env/);
     });
   });
 });

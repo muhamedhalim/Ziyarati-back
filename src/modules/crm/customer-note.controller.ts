@@ -25,6 +25,7 @@ import {
 } from '@nestjs/swagger';
 
 import { CustomerNoteService } from './customer-note.service';
+import { ClinicalAccessLogService } from '../medical-records/clinical-access-log.service';
 import { CreateCustomerNoteDto } from './dto/create-customer-note.dto';
 import { UpdateCustomerNoteDto } from './dto/update-customer-note.dto';
 import { PaginationQueryDto } from './dto/pagination-query.dto';
@@ -64,6 +65,8 @@ export class CustomerNoteController {
   constructor(
     private readonly notes: CustomerNoteService,
     private readonly ctx: TenantContextService,
+    // Residency plan P14 — reads of D4 data are accounted for (who, which patient, when).
+    private readonly accessLog: ClinicalAccessLogService,
   ) {}
 
   @ApiOperation({
@@ -130,11 +133,16 @@ export class CustomerNoteController {
   })
   @Get()
   @RequirePermissions(PERMISSION.CRM_NOTES_READ)
-  list(
+  async list(
     @Param('customerId', ParseUUIDPipe) customerId: string,
     @Query() query: PaginationQueryDto,
   ) {
-    return this.notes.list(this.ctx.requireTenantId(), customerId, query);
+    const tenantId = this.ctx.requireTenantId();
+    const page = await this.notes.list(tenantId, customerId, query);
+    const userId = this.ctx.getUser()?.id;
+    if (userId)
+      await this.accessLog.record(tenantId, customerId, userId, 'notes');
+    return page;
   }
 
   @ApiOperation({

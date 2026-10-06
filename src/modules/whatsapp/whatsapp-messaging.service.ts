@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
 import { WhatsappProviderFactory } from './providers/whatsapp-provider.factory';
 import {
@@ -10,6 +11,11 @@ import { AccessControlService } from '../subscription-billing/access-control.ser
 import { UsageService } from '../subscription-billing/usage.service';
 import { FeatureKey } from '../subscription-billing/feature-registry';
 import { USAGE_METRIC } from '../subscription-billing/usage-metric';
+import {
+  assessSessionContent,
+  describeViolations,
+  resolveContentPolicyMode,
+} from './whatsapp-content-policy';
 
 /**
  * Thin messaging wrapper over the provider abstraction. Resolves the right
@@ -42,6 +48,8 @@ export class WhatsappMessagingService {
     private readonly factory: WhatsappProviderFactory,
     private readonly access: AccessControlService,
     private readonly usage: UsageService,
+    // Optional so direct-construction tests keep working; Nest injects it.
+    @Optional() private readonly config?: ConfigService,
   ) {}
 
   send(payload: WhatsappSendPayload): Promise<WhatsappSendResult> {
@@ -67,6 +75,32 @@ export class WhatsappMessagingService {
   ): Promise<WhatsappSendResult> {
     const denial = await this.refuseIfNotEntitled(payload.tenantId);
     if (denial) return denial;
+
+    // Residency plan P5: a free-form reply (AI bot, agent handover, workflow)
+    // must not carry a national ID, card number, insurance number or credential.
+    // Refuses like every other denial here — a normal, recorded failure, never a
+    // throw — and reports categories only, never the text.
+    const mode = resolveContentPolicyMode(
+      this.config?.get('WHATSAPP_CONTENT_POLICY', 'enforce'),
+    );
+    if (mode !== 'off') {
+      const violations = assessSessionContent(payload);
+      if (violations.length > 0) {
+        const reason = describeViolations(violations);
+        if (mode === 'enforce') {
+          this.logger.warn(
+            `Blocked WhatsApp session send (tenant=${payload.tenantId}): ${reason}`,
+          );
+          return {
+            success: false,
+            error: `Blocked by the WhatsApp content policy: ${reason}`,
+          };
+        }
+        this.logger.warn(
+          `[monitor] WhatsApp content policy would block this session send (tenant=${payload.tenantId}): ${reason}`,
+        );
+      }
+    }
 
     const provider = this.factory.resolve();
     if (!provider.sendSession) {
