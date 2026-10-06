@@ -10,6 +10,7 @@ import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Customer } from '../../entities/CRM/Customer';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { User } from '../../entities/Auth&RBAC/User';
+import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { StorageModule } from '../storage/storage.module';
 import { ActivityLogModule } from '../activity-log/activity-log.module';
 
@@ -21,6 +22,7 @@ import { MessageStatusService } from './message-status.service';
 import { ConversationExecutionService } from './conversation-execution.service';
 import { ConversationAnalyticsService } from './conversation-analytics.service';
 import { ConversationAiControlService } from './conversation-ai-control.service';
+import { ConversationAiTakeoverService } from './conversation-ai-takeover.service';
 import { ConversationsSchemaBootstrap } from './conversations-schema.bootstrap';
 
 import { ConversationController } from './conversation.controller';
@@ -53,6 +55,8 @@ import { ConversationAnalyticsController } from './conversation-analytics.contro
       Customer,
       WhatsappAccount,
       User,
+      // READ-ONLY: `ai_human_takeover_minutes` (ConversationAiTakeoverService).
+      TenantSetting,
     ]),
     StorageModule,
     // Audit records for pausing/resuming the AI. Acyclic: ActivityLogModule imports only TypeORM.
@@ -74,11 +78,13 @@ import { ConversationAnalyticsController } from './conversation-analytics.contro
     ConversationExecutionService,
     ConversationAnalyticsService,
     ConversationAiControlService,
+    ConversationAiTakeoverService,
     ConversationsSchemaBootstrap,
   ],
   exports: [
     ConversationService,
     ConversationAiControlService,
+    ConversationAiTakeoverService,
     MessageService,
     MessageStatusService,
     ConversationExecutionService,
