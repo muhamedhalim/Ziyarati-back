@@ -72,7 +72,7 @@ export class RecipientDeliveryService {
       return { updated: false, reason: 'recipient-not-found' };
 
     const tenantId = rec.run.tenant.id;
-    const email = rec.email ?? rec.customer?.email;
+    const email = rec.email ?? rec.customer?.email ?? undefined;
     const result = await this.recordDelivery({ providerRef, event, tenantId });
     return { ...result, tenantId, email };
   }

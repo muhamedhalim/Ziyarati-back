@@ -314,7 +314,9 @@ export class CustomerImportService {
           })
         : Promise.resolve([]),
     ]);
-    const emailSet = new Set(existingEmails.map((c) => c.email.toLowerCase()));
+    const emailSet = new Set(
+      existingEmails.flatMap((c) => (c.email ? [c.email.toLowerCase()] : [])),
+    );
     const nationalIdSet = new Set(
       existingNationalIds.map((c) => (c.national_id ?? '').toLowerCase()),
     );

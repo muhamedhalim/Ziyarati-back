@@ -60,13 +60,13 @@ export class Customer {
   @Column({ nullable: true })
   whatsapp_name?: string;
 
-  // NOT NULL at the DB level (verified live, D-1) — tightened from the
-  // previous `email?: string` so application code cannot attempt an insert
-  // the column would reject. Uniqueness is expressed by the tenant-scoped
-  // class-level @Index above, not `unique: true` here (that would be a
-  // GLOBAL constraint, which is exactly the defect FND-040 fixes).
-  @Column()
-  email!: string;
+  // OPTIONAL — nullable at the DB level (migration CustomerEmailNullable1730112000000).
+  // Uniqueness is expressed by the tenant-scoped class-level @Index above, not
+  // `unique: true` here (that would be a GLOBAL constraint, which is exactly
+  // the defect FND-040 fixes). Postgres treats NULLs as distinct in unique
+  // indexes, so any number of email-less customers may coexist per tenant.
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  email?: string | null;
 
   @Column({ nullable: true })
   gender?: string;
