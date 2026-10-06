@@ -73,8 +73,10 @@ export const ACTIVITY_VISIBLE_AUDIT_ACTIONS = [
   // A clinic deciding when the AI may answer patients: the clinic-wide switch,
   // a single conversation, or a single patient.
   'tenant.ai_assistant_toggled',
+  'tenant.ai_policy_updated',
   'conversation.ai_paused',
   'conversation.ai_resumed',
+  'conversation.ai_enabled',
   'customer.ai_replies_disabled',
   'customer.ai_replies_enabled',
   // ── Data egress ─────────────────────────────────────────────────────────

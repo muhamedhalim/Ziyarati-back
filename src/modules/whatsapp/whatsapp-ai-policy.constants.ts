@@ -21,6 +21,16 @@ export const AI_POLICY_REASON = {
    * window (`conversations.ai_paused_until` in the future).
    */
   HUMAN_TAKEOVER: 'HUMAN_TAKEOVER',
+  /**
+   * The clinic limits the AI to (or away from) its working hours and the current
+   * moment is outside what is allowed (`tenant_settings.ai_schedule_mode`).
+   */
+  OUTSIDE_ALLOWED_HOURS: 'OUTSIDE_ALLOWED_HOURS',
+  /**
+   * The clinic answers with the AI only on conversations staff assigned to it
+   * (`ai_assignment_mode = ASSIGNED_ONLY`) and this one is not.
+   */
+  NOT_ASSIGNED_TO_AI: 'NOT_ASSIGNED_TO_AI',
   /** A setting the decision depends on could not be read — fails closed. */
   POLICY_READ_FAILED: 'POLICY_READ_FAILED',
 } as const;
@@ -57,3 +67,20 @@ export interface AiPolicySubject {
 export type AiPolicyDecision =
   | { allowed: true }
   | { allowed: false; reason: AiPolicyReason };
+
+/** `tenant_settings.ai_schedule_mode` — when the AI may answer. */
+export const AI_SCHEDULE_MODE = {
+  ALWAYS: 'ALWAYS',
+  WORKING_HOURS: 'WORKING_HOURS',
+  OUTSIDE_WORKING_HOURS: 'OUTSIDE_WORKING_HOURS',
+} as const;
+export type AiScheduleMode =
+  (typeof AI_SCHEDULE_MODE)[keyof typeof AI_SCHEDULE_MODE];
+
+/** `tenant_settings.ai_assignment_mode` — which conversations the AI answers. */
+export const AI_ASSIGNMENT_MODE = {
+  ALL: 'ALL',
+  ASSIGNED_ONLY: 'ASSIGNED_ONLY',
+} as const;
+export type AiAssignmentMode =
+  (typeof AI_ASSIGNMENT_MODE)[keyof typeof AI_ASSIGNMENT_MODE];

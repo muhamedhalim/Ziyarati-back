@@ -5,6 +5,7 @@ import { Repository } from 'typeorm';
 import { Conversation } from '../../entities/Conversations/Conversation';
 import { Customer } from '../../entities/CRM/Customer';
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
+import { WhatsappAiHoursService } from './whatsapp-ai-hours.service';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { MetricsService } from '../../metrics/metrics.service';
@@ -17,7 +18,9 @@ import {
   CONVERSATION_OWNER_TYPE,
 } from '../conversations/conversation.constants';
 import {
+  AI_ASSIGNMENT_MODE,
   AI_POLICY_REASON,
+  AI_SCHEDULE_MODE,
   AiPolicyDecision,
   AiPolicyReason,
   AiPolicyStage,
@@ -40,6 +43,8 @@ import {
  *   3. the patient is excluded              → PATIENT_AI_DISABLED
  *   4. staff paused this conversation       → CONVERSATION_AI_DISABLED
  *   5. a person owns the conversation       → HUMAN_TAKEOVER
+ *   6. the clinic's AI schedule             → OUTSIDE_ALLOWED_HOURS
+ *   7. assigned-only mode, not assigned     → NOT_ASSIGNED_TO_AI
  *
  * A refusal is a NORMAL outcome, never an error: the caller halts before the
  * model runs and sends nothing. Entitlement is never bypassed — a clinic's own
@@ -71,6 +76,7 @@ export class WhatsappAiPolicyService {
     @InjectRepository(Customer)
     private readonly customers: Repository<Customer>,
     private readonly access: AccessControlService,
+    private readonly hours: WhatsappAiHoursService,
     private readonly metrics: MetricsService,
     private readonly ctx: TenantContextService,
   ) {}
@@ -106,7 +112,8 @@ export class WhatsappAiPolicyService {
       const notEntitled = await this.entitlementRefusal(tenantId);
       if (notEntitled) return { allowed: false, reason: notEntitled };
 
-      if (!(await this.clinicSwitchedOn(tenantId))) {
+      const clinic = await this.readClinicSettings(tenantId);
+      if (!clinic.botEnabled) {
         return { allowed: false, reason: AI_POLICY_REASON.CLINIC_AI_DISABLED };
       }
 
@@ -122,6 +129,31 @@ export class WhatsappAiPolicyService {
       }
       if (state.humanOwns) {
         return { allowed: false, reason: AI_POLICY_REASON.HUMAN_TAKEOVER };
+      }
+
+      if (clinic.scheduleMode !== AI_SCHEDULE_MODE.ALWAYS) {
+        // `null` = the clinic has no working hours on file: the schedule cannot
+        // be judged, so it does not apply (and the settings screen says so).
+        const open = await this.hours.isOpen(tenantId, state.branchId);
+        if (open !== null) {
+          const wantsOpen =
+            clinic.scheduleMode === AI_SCHEDULE_MODE.WORKING_HOURS;
+          if (open !== wantsOpen) {
+            return {
+              allowed: false,
+              reason: AI_POLICY_REASON.OUTSIDE_ALLOWED_HOURS,
+            };
+          }
+        }
+      }
+
+      // `ENABLED` is the staff's "assign this conversation to the AI". It lifts
+      // only this rule — never the clinic, patient, handover or schedule rules.
+      if (
+        clinic.assignmentMode === AI_ASSIGNMENT_MODE.ASSIGNED_ONLY &&
+        state.aiMode !== CONVERSATION_AI_MODE.ENABLED
+      ) {
+        return { allowed: false, reason: AI_POLICY_REASON.NOT_ASSIGNED_TO_AI };
       }
 
       return { allowed: true };
@@ -167,16 +199,30 @@ export class WhatsappAiPolicyService {
   }
 
   /**
-   * The clinic's OWN switch (Settings → Booking & operations → "AI assistant",
-   * `tenant_settings.bot_enabled`). A clinic with no settings row yet has the
-   * column default (`true`).
+   * The clinic's own settings (`tenant_settings`): the on/off switch
+   * (`bot_enabled`) and the phase-2 schedule / assignment modes. A clinic with no
+   * settings row yet has the column defaults (on, ALWAYS, ALL) — exactly the
+   * behaviour before any of these existed.
    */
-  private async clinicSwitchedOn(tenantId: string): Promise<boolean> {
+  private async readClinicSettings(tenantId: string): Promise<{
+    botEnabled: boolean;
+    scheduleMode: string;
+    assignmentMode: string;
+  }> {
     const row = await this.tenantSettings.findOne({
       where: { tenant: { id: tenantId } },
-      select: { id: true, bot_enabled: true },
+      select: {
+        id: true,
+        bot_enabled: true,
+        ai_schedule_mode: true,
+        ai_assignment_mode: true,
+      },
     });
-    return row?.bot_enabled ?? true;
+    return {
+      botEnabled: row?.bot_enabled ?? true,
+      scheduleMode: row?.ai_schedule_mode ?? AI_SCHEDULE_MODE.ALWAYS,
+      assignmentMode: row?.ai_assignment_mode ?? AI_ASSIGNMENT_MODE.ALL,
+    };
   }
 
   /**
@@ -203,6 +249,9 @@ export class WhatsappAiPolicyService {
     patientExcluded: boolean;
     conversationPaused: boolean;
     humanOwns: boolean;
+    aiMode: string | undefined;
+    /** The branch whose hours apply: the thread's own, else its number's; null = the whole clinic. */
+    branchId: string | null;
   }> {
     // The inbound bridge knows the contact's AI session. A staff-facing read
     // only knows the thread, so it looks the session up by its link instead.
@@ -225,13 +274,19 @@ export class WhatsappAiPolicyService {
     const conversation = subject.conversationId
       ? await this.conversations.findOne({
           where: { id: subject.conversationId, tenant: { id: tenantId } },
-          relations: { customer: true },
+          relations: {
+            customer: true,
+            branch: true,
+            whatsapp_account: { branch: true },
+          },
           select: {
             id: true,
             owner_type: true,
             ai_mode: true,
             ai_paused_until: true,
             customer: { id: true },
+            branch: { id: true },
+            whatsapp_account: { id: true, branch: { id: true } },
           },
         })
       : null;
@@ -251,6 +306,11 @@ export class WhatsappAiPolicyService {
 
     const pausedUntil = conversation?.ai_paused_until;
     return {
+      aiMode: conversation?.ai_mode,
+      branchId:
+        conversation?.branch?.id ??
+        conversation?.whatsapp_account?.branch?.id ??
+        null,
       patientExcluded: customer?.ai_replies_disabled === true,
       conversationPaused:
         conversation?.ai_mode === CONVERSATION_AI_MODE.DISABLED,
