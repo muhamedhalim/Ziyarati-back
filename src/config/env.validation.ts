@@ -485,19 +485,18 @@ export const validate = (config: Record<string, unknown>) => {
     // (Vercel rewrite). Unset = inert. Requires TRUST_PROXY_HOPS=1.
     EDGE_PROXY_TOKEN: Joi.string().min(32).max(256),
 
-    // ── Payments / Moyasar (PLATFORM-level only) ──────────────────────────
+    // ── Payments / Tap (PLATFORM-level only) ──────────────────────────
     // PAYMENT_PROVIDER is the single, central gateway selection. In dev/test
     // the keys may stay unset (the factory falls back to the Noop provider so
     // the app boots and runs without a live integration); in PRODUCTION a real
     // provider with missing essential keys fails the boot — see the explicit
     // check after schema validation below.
     // `.empty('')`: an empty `PAYMENT_PROVIDER=` line means "unset" (default), not an
-    // invalid value that would refuse to boot. 'moyasar' stays the default until
-    // an operator sets `tap` deliberately.
+    // invalid value that would refuse to boot. `tap` is the default.
     PAYMENT_PROVIDER: Joi.string()
-      .valid('moyasar', 'tap', 'noop')
+      .valid('tap', 'noop')
       .empty('')
-      .default('moyasar'),
+      .default('tap'),
     // Tap Payments (platform-level, https://developers.tap.company). Secret keys
     // are validated by PREFIX in the post-validation block below — never with a
     // Joi pattern, whose error message would echo the secret into boot logs.
@@ -531,16 +530,6 @@ export const validate = (config: Record<string, unknown>) => {
     // [OPTIONAL] Tap documents a separate "segment" secret key for the Lead /
     // Connect (clinic onboarding) calls. Unset = the active merchant secret key.
     TAP_SEGMENT_SECRET_KEY: Joi.string().allow('', null),
-    // MOYASAR_SECRET_KEY: Joi.string().allow('', null),
-    // MOYASAR_PUBLISHABLE_KEY: Joi.string().allow('', null),
-    // MOYASAR_WEBHOOK_SECRET: Joi.string().allow('', null),
-    // MOYASAR_API_BASE: Joi.string().allow('', null),
-    // Split payments (Moyasar `splits`) require a commercial Marketplace /
-    // Platforms contract + per-clinic recipient ids. OFF until enabled by
-    // Moyasar — a technically-supported feature is never assumed active.
-    MOYASAR_MARKETPLACE_ENABLED: Joi.string()
-      .valid('true', 'false')
-      .default('false'),
 
     // Marketplace platform commission frozen onto each payment at capture.
     // Both default to 0 (platform takes no cut) until a fee policy is set.
@@ -583,7 +572,7 @@ export const validate = (config: Record<string, unknown>) => {
     EMAIL_UNSUBSCRIBE_SECRET: Joi.string().allow('', null),
     // Phase 11 (US7, T136) — HMAC secret configured on the Resend webhook
     // endpoint. Unset means bounce/complaint feedback is rejected outright
-    // (fail closed), same posture as META_APP_SECRET/MOYASAR_WEBHOOK_SECRET.
+    // (fail closed), same posture as META_APP_SECRET.
     RESEND_WEBHOOK_SECRET: Joi.string().allow('', null),
 
     // ── Amazon SES (EMAIL_PROVIDER=ses — AWS migration) ───────────────────
@@ -933,7 +922,7 @@ export const validate = (config: Record<string, unknown>) => {
     // (e.g. a `bearer_token` scrape config). Required in production; in
     // dev/test an unset token means the endpoint is open (matches this
     // repo's existing "unconfigured secret ⇒ dev-only warning, not a hard
-    // failure" convention for e.g. MOYASAR_WEBHOOK_SECRET).
+    // failure" convention).
     METRICS_TOKEN: Joi.string().allow('', null),
     // Worker process only — the API exposes GET /metrics on its normal HTTP
     // port via MetricsController; the worker has no HTTP adapter at all (see
@@ -1252,37 +1241,15 @@ export const validate = (config: Record<string, unknown>) => {
     }
   }
 
-  // ── Payments fail-fast (production only) ─────────────────────────────────
-  // A real gateway with missing essential credentials must never boot in
-  // production: the factory would fall back to the Noop provider, which
-  // SIMULATES successful payments — silently faking revenue. Dev/test keep the
-  // keyless Noop flow. The message names only the missing VARIABLES, never
-  // values. Opting out is explicit: PAYMENT_PROVIDER=noop.
-  // if (value.NODE_ENV === 'production' && value.PAYMENT_PROVIDER !== 'noop') {
-  //   const missing: string[] = [];
-  //   if (!String(value.MOYASAR_SECRET_KEY ?? '').trim())
-  //     missing.push('MOYASAR_SECRET_KEY');
-  //   if (!String(value.MOYASAR_WEBHOOK_SECRET ?? '').trim())
-  //     missing.push('MOYASAR_WEBHOOK_SECRET');
-  //   if (missing.length > 0) {
-  //     throw new Error(
-  //       `❌ Env validation error: PAYMENT_PROVIDER is "${value.PAYMENT_PROVIDER}" but ` +
-  //         `${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not set. ` +
-  //         `Payments cannot run in production without gateway credentials. ` +
-  //         `Set the missing variable(s), or set PAYMENT_PROVIDER=noop to explicitly disable live payments.`,
-  //     );
-  //   }
-  // }
-
   // ── Tap checks ───────────────────────────────────────────────────────────
   // (a) Key PREFIXES, in every environment, whenever a key is present: a live key
   //     pasted into the test slot (or the reverse) is how real money gets charged
   //     from "sandbox", so it must not boot. Names only — never the value.
   // (b) Production + PAYMENT_PROVIDER=tap: the active credentials, the explicit
-  //     environment and a reachable webhook URL are mandatory. Unlike the legacy
-  //     Moyasar block above (disabled in commit 3c28259), this one is scoped to
-  //     the provider being chosen deliberately, so it cannot block an existing
-  //     deployment. Opt out explicitly with PAYMENT_PROVIDER=noop.
+  //     environment and a reachable webhook URL are mandatory. `tap` is the default
+  //     provider, so a production boot without credentials fails closed rather
+  //     than falling back to the Noop simulator. Opt out explicitly with
+  //     PAYMENT_PROVIDER=noop.
   {
     const tapTestKey = String(value.TAP_TEST_SECRET_KEY ?? '').trim();
     const tapLiveKey = String(value.TAP_LIVE_SECRET_KEY ?? '').trim();

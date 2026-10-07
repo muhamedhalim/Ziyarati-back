@@ -25,7 +25,7 @@ export interface WebhookLogInput {
 
 /**
  * Webhook audit log (`webhook_logs`) — visibility over inbound/outbound webhooks
- * (WhatsApp, Moyasar, future integrations).
+ * (WhatsApp, Tap, future integrations).
  *
  * Tenant-scoped via the `tenant` relation. Read-only to clients except `retry`;
  * `record()` is the ingestion seam for webhook handlers. Schema note: there is

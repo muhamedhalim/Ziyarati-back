@@ -4,7 +4,7 @@
 > marketplace, partner API, auth herd, worker/outbox, multi-generator runs, target guard) lives in
 > [`lab/README.md`](lab/README.md) and is started ONLY through `lab/run-campaign.mjs`. The September
 > scenarios below are kept as the regression baseline and now also pass through the target guard
-> (`helpers/guard.js`). Where this file and `lab/README.md` disagree — payments are Tap, not Moyasar;
+> (`helpers/guard.js`). Where this file and `lab/README.md` disagree — payments are Tap;
 > the lab uses its own pgvector Postgres/Redis and a sanitized environment — `lab/README.md` is current.
 
 Runs entirely from Docker. Nothing is installed on the host.
@@ -135,13 +135,12 @@ SELECT (SELECT count(*) FROM notification_rules) AS rules,
        (SELECT count(*) FROM whatsapp_accounts WHERE access_token <> '') AS live_wa;
 ```
 
-`start-api.ps1` additionally blanks `OPENAI_API_KEY`, `RESEND_API_KEY`,
-`MOYASAR_SECRET_KEY`, sets `EMAIL_ENABLED=false`, `PAYMENT_PROVIDER=noop` and
+`start-api.ps1` additionally blanks `OPENAI_API_KEY`, `RESEND_API_KEY`, sets `EMAIL_ENABLED=false`, `PAYMENT_PROVIDER=noop` and
 namespaces queues with `QUEUE_ENV_PREFIX=loadtest`. **The tracked `.env`
 contains live OpenAI and Resend credentials**, so these overrides matter.
 
-Routes deliberately excluded from every scenario: the Moyasar webhook (it
-**fails open** outside production and can mark payments PAID), WhatsApp
+Routes deliberately excluded from every scenario: the payment webhooks (they
+can mark payments PAID), WhatsApp
 webhooks, patient-action token routes, `forgot-password` and `register-owner`
 (both send real email), and `POST /ai/orchestrator/message` (real token spend).
 

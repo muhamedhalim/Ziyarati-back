@@ -19,7 +19,7 @@ const records: EvidenceRecordInput[] = [
     tool: { name: '.env inspection + provider factory code review', version: 'n/a', invocation: 'grep for credential env vars, cross-referenced with provider selection logic' },
     subject: {
       realCredentials: ['OPENAI_API_KEY', 'RESEND_API_KEY (active provider)', 'R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY (real bucket)'],
-      emptyCredentials: ['MOYASAR_SECRET_KEY (routes to NoopGatewayProvider by construction)', 'META_APP_ID/META_APP_SECRET'],
+      emptyCredentials: ['TAP_TEST_SECRET_KEY (routes to NoopGatewayProvider by construction)', 'META_APP_ID/META_APP_SECRET'],
       safetyDecision: 'no live call to OpenAI, Resend, or R2 this phase; extended the same caution to Meta despite empty credentials',
     },
     context: { locale: null, role: null, viewport: null, theme: null, loadProfile: null },
@@ -43,7 +43,7 @@ const records: EvidenceRecordInput[] = [
       timeoutsConfirmedConfigured: { openai: 30000, meta: 10000, webhookDelivery: 10000 },
       timeoutsEmpiricallyProven: 0,
       withTimeoutUtilCallSites: 1,
-      noopProviderBlastRadius: 'zero (Moyasar always no-ops in this env by construction)',
+      noopProviderBlastRadius: 'zero (the payment gateway always no-ops in this env by construction)',
       aiCostDriversMeasured: 0,
     },
     context: { locale: null, role: null, viewport: null, theme: null, loadProfile: null },

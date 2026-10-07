@@ -23,7 +23,7 @@ import {
  * restricts access to super admins. There is deliberately NO tenant scoping
  * here — tenants only ever CONSUME payment services, never configure them.
  *
- * Live gateway secrets (Moyasar keys) are NOT stored here — they live in env /
+ * Live gateway secrets (Tap keys) are NOT stored here — they live in env /
  * ConfigService and are read only by the gateway adapter. `config` holds
  * non-secret operational settings.
  */

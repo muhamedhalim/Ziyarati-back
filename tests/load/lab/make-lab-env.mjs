@@ -115,7 +115,6 @@ export function buildLab(opts = {}) {
     RESEND_API_KEY: '',
     EMAIL_ENABLED: 'false',
     EMAIL_PROVIDER: 'noop',
-    MOYASAR_SECRET_KEY: '',
     // ---- Tap: a FAKE sandbox key against the LOCAL stub (see tap-stub.mjs)
     ...(k.payments === 'tap' ? {
       PAYMENT_PROVIDER: 'tap',

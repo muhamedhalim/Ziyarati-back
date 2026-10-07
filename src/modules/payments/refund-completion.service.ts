@@ -50,7 +50,7 @@ export interface CompleteRefundInput {
   raw?: Record<string, any>;
   /**
    * Also announce `payment.refunded` (notifications / workflows / outbound
-   * webhooks). Only the WEBHOOK path does, exactly as the Moyasar webhook always
+   * webhooks). Only the WEBHOOK path does, exactly as the payment webhook always
    * has — staff-initiated and reaper-recovered refunds never fired it, and
    * starting to would message patients from paths that never did (see
    * `refund.events.ts`).

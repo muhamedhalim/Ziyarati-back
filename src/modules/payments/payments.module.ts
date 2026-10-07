@@ -60,11 +60,9 @@ import { TapOnboardingCallbackController } from './tap-onboarding-callback.contr
 import { PublicPaymentController } from './public-payment.controller';
 import { PlatformReconciliationController } from './reconciliation/platform-reconciliation.controller';
 
-import { MoyasarProvider } from './providers/moyasar.provider';
 import { NoopGatewayProvider } from './providers/noop-gateway.provider';
 import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
 import { PAYMENT_GATEWAY_PROVIDERS } from './providers/payment-gateway.provider.interface';
-import { MoyasarWebhookVerifier } from './webhooks/moyasar-webhook.verifier';
 import { TapGatewayProvider } from './providers/tap/tap-gateway.provider';
 import { TapWebhookVerifier } from './webhooks/tap-webhook.verifier';
 import { TapWebhookHandler } from './webhooks/tap-webhook.handler';
@@ -82,7 +80,7 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
  *  - Everything else is strictly tenant-scoped; tenants only CONSUME payments.
  *
  * The gateway integration is decoupled behind a strategy/factory: real adapters
- * (MoyasarProvider legacy, TapGatewayProvider) register into
+ * (TapGatewayProvider) register into
  * PAYMENT_GATEWAY_PROVIDERS; PaymentGatewayFactory resolves one and falls back
  * to NoopGatewayProvider when none is configured, so the app runs end-to-end
  * locally with no live credentials. Gateway credentials + webhook secrets are
@@ -171,25 +169,19 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     ProviderReconciliationService,
     // PaymentsConfig (typed config), TapApiClient and OnlinePaymentCapabilityService
     // come from PaymentsCoreModule.
-    // Gateway provider abstraction (Moyasar adapter + Noop fallback + factory).
-    MoyasarProvider,
+    // Gateway provider abstraction (Tap adapter + Noop fallback + factory).
     TapGatewayProvider,
     NoopGatewayProvider,
     PaymentGatewayFactory,
-    MoyasarWebhookVerifier,
     TapWebhookVerifier,
     TapWebhookHandler,
     PaymentsSchemaBootstrap,
     {
       provide: PAYMENT_GATEWAY_PROVIDERS,
       // Resolution is by NAME (PAYMENT_PROVIDER for new payments, the stored
-      // Payment.gateway for historic rows), so listing both is what keeps
-      // legacy Moyasar rows verifiable/refundable once Tap is the default.
-      useFactory: (moyasar: MoyasarProvider, tap: TapGatewayProvider) => [
-        moyasar,
-        tap,
-      ],
-      inject: [MoyasarProvider, TapGatewayProvider],
+      // Payment.gateway for historic rows).
+      useFactory: (tap: TapGatewayProvider) => [tap],
+      inject: [TapGatewayProvider],
     },
   ],
   exports: [

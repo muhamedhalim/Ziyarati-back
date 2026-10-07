@@ -182,14 +182,6 @@ export class PaymentService {
     // onto a provider the platform did not intend.
     const provider = this.gateways.resolve();
 
-    // Marketplace split context (null unless the feature is contractually
-    // enabled AND the clinic is approved with a gateway recipient id).
-    // Forced null for platform-revenue charges — never split money back to
-    // the payer when the payer IS the platform's own beneficiary.
-    const split = platformRevenue
-      ? null
-      : await this.merchants.splitContext(tenantId);
-
     // Where a CLINIC charge settles: the clinic's own merchant (Tap Platform).
     // Resolved by the same capability rule that already gated this charge above,
     // so a charge can never carry routing the gate would have refused. Null for a
@@ -228,7 +220,6 @@ export class PaymentService {
           purpose,
           settlement_mode: settlementMode,
           idempotency_key: idempotencyKey,
-          sub_merchant_id: split?.recipientId,
         }),
       );
     } catch (err) {
@@ -289,21 +280,6 @@ export class PaymentService {
         reference: dto.appointmentId ? { order: dto.appointmentId } : undefined,
         metadata: { tenantId, paymentId: payment.id },
         idempotencyKey: dto.idempotencyKey,
-        // Single split routing the clinic's net (gross − platform fee) to its
-        // gateway recipient; the platform fee stays with the platform account.
-        splits: split
-          ? [
-              {
-                recipientId: split.recipientId,
-                amount: round2(
-                  Number(payment.amount) -
-                    this.financials.platformFeeFor(Number(payment.amount)),
-                ),
-                reference: payment.id,
-                refundable: true,
-              },
-            ]
-          : undefined,
       });
       redirectUrl = result.redirectUrl;
 
@@ -318,7 +294,7 @@ export class PaymentService {
         // Freeze the fee breakdown (adapter-parsed when it reports them).
         this.financials.applyOnPaid(
           payment,
-          result.fees ?? this.financials.extractFromRaw(result.raw),
+          result.fees,
         );
       } else if (result.status === 'failed') {
         payment.status = PaymentStatus.FAILED;
@@ -711,7 +687,7 @@ export class PaymentService {
           payment.paid_at = new Date();
           this.financials.applyOnPaid(
             payment,
-            result.fees ?? this.financials.extractFromRaw(result.raw),
+            result.fees,
           );
           const saved = await repo.save(payment);
           // REL-005: same transaction as the PAID flip.

@@ -363,7 +363,7 @@ export class PaymentReconciliationService {
         locked.paid_at = new Date();
         this.financials.applyOnPaid(
           locked,
-          verify.fees ?? this.financials.extractFromRaw(verify.raw),
+          verify.fees,
         );
         await repo.save(locked);
         // REL-005: THIS is the path that recovers a lost webhook — and it runs in

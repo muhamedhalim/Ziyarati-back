@@ -11,11 +11,11 @@ import { NoopGatewayProvider } from './noop-gateway.provider';
 /**
  * Resolves the active payment gateway provider (strategy selection).
  *
- * Real adapters (MoyasarProvider, …) register into the
+ * Real adapters (TapGatewayProvider, …) register into the
  * `PAYMENT_GATEWAY_PROVIDERS` array; the first one whose `supports()` matches
  * the requested gateway wins. The DEFAULT gateway comes from the central
  * `PAYMENT_PROVIDER` config — callers never hardcode a gateway name. If none
- * matches (e.g. Moyasar isn't configured), the Noop provider is used in
+ * matches (e.g. Tap isn't configured), the Noop provider is used in
  * dev/test so the app runs end-to-end with no live credentials.
  *
  * Production guard: the Noop provider SIMULATES successful payments, so when

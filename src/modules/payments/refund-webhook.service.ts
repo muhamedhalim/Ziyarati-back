@@ -37,7 +37,7 @@ const safeId = (v: unknown): string =>
 /**
  * Applies an AUTHENTICATED, RE-FETCHED per-refund gateway event (Tap).
  *
- * The Moyasar path reconciles a cumulative refunded total on the PAYMENT event
+ * The payment-event path reconciles a cumulative refunded total
  * (`PaymentWebhookService.reconcileRefund`). A Tap refund is its own object with
  * its own lifecycle (`PENDING` → `REFUNDED` / `DECLINED` …), so it is matched to
  * OUR refund row instead — and the tenant, as everywhere, comes from our rows,

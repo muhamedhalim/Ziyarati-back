@@ -10,9 +10,9 @@ import { ConfigService } from '@nestjs/config';
  * is secret, and one place that reasons about "is the gateway live?".
  *
  * Scope boundary:
- *  - `.env` holds ONLY platform-level gateway credentials (one Moyasar account
+ *  - `.env` holds ONLY platform-level gateway credentials (one Tap account
  *    owned by the platform). Tenants NEVER supply gateway credentials.
- *  - Secrets (secret key, webhook secret) are read by the Moyasar adapter and
+ *  - Secrets (secret key, webhook secret) are read by the Tap adapter and
  *    webhook verifier only — never returned by any API, never logged.
  *
  * Startup safety: `src/config/env.validation.ts` fails the boot in production
@@ -27,9 +27,9 @@ export class PaymentsConfig {
 
   constructor(private readonly config: ConfigService) {}
 
-  /** Active gateway name (`PAYMENT_PROVIDER`, default `moyasar`). */
+  /** Active gateway name (`PAYMENT_PROVIDER`, default `tap`). */
   get providerName(): string {
-    return (this.trimmed('PAYMENT_PROVIDER') ?? 'moyasar').toLowerCase();
+    return (this.trimmed('PAYMENT_PROVIDER') ?? 'tap').toLowerCase();
   }
 
   get isProduction(): boolean {
@@ -44,25 +44,6 @@ export class PaymentsConfig {
    */
   get paymentsLive(): boolean {
     return this.isProduction && this.providerName !== 'noop';
-  }
-
-  // ── Moyasar (SECRET values never leave the adapter/verifier) ──────────────
-
-  get moyasarSecretKey(): string | undefined {
-    return this.trimmed('MOYASAR_SECRET_KEY');
-  }
-
-  /** Publishable key — safe for the browser (client-side form / tokenization). */
-  get moyasarPublishableKey(): string | undefined {
-    return this.trimmed('MOYASAR_PUBLISHABLE_KEY');
-  }
-
-  get moyasarWebhookSecret(): string | undefined {
-    return this.trimmed('MOYASAR_WEBHOOK_SECRET');
-  }
-
-  get moyasarApiBase(): string {
-    return this.trimmed('MOYASAR_API_BASE') ?? 'https://api.moyasar.com/v1';
   }
 
   // ── Tap (SECRET values never leave the adapter/verifier/client) ───────────
@@ -212,8 +193,7 @@ export class PaymentsConfig {
   /**
    * TRUE when the public pay page can actually complete a patient's payment: Tap,
    * or any non-production environment (the simulator). In PRODUCTION only Tap
-   * qualifies: the legacy Moyasar create call was never proven and has no return
-   * flow, and `noop` there is "payments explicitly disabled" — a pay URL handed to
+   * qualifies: `noop` there is "payments explicitly disabled" — a pay URL handed to
    * a patient in either case would be a dead end. When FALSE no pay URL is issued
    * and the page itself reads "unavailable"; booking behaviour for such a
    * deployment is untouched.
@@ -252,22 +232,8 @@ export class PaymentsConfig {
   /** TRUE when the selected real gateway has its essential credential set. */
   get gatewayConfigured(): boolean {
     if (this.providerName === 'noop') return true;
-    if (this.providerName === 'moyasar') return !!this.moyasarSecretKey;
     if (this.providerName === 'tap') return !!this.tapSecretKey;
     return false;
-  }
-
-  /**
-   * Marketplace split payments (`splits` on Moyasar Create Payment) require a
-   * commercial "Moyasar for Platforms" contract and per-clinic recipient ids
-   * issued by Moyasar. OFF by default: a technically-supported feature is not
-   * assumed to be contractually enabled. When OFF, the money lands in the
-   * platform account and the internal ledger still tracks each clinic's net
-   * (settled via the settlements flow); when ON, an approved clinic's
-   * `provider_recipient_id` is attached as a split recipient.
-   */
-  get marketplaceSplitsEnabled(): boolean {
-    return this.config.get<string>('MOYASAR_MARKETPLACE_ENABLED') === 'true';
   }
 
   // ── Reconciliation sweep knobs ────────────────────────────────────────────

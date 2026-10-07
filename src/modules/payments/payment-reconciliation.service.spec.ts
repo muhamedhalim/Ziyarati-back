@@ -35,14 +35,14 @@ describe('PaymentReconciliationService (webhook-loss recovery)', () => {
   let emitter: { emit: jest.Mock };
   let subscriptionProvider: { verifyCharge: jest.Mock; name: string };
   let settlement: { settleInvoicePaid: jest.Mock };
-  let financials: { applyOnPaid: jest.Mock; extractFromRaw: jest.Mock };
+  let financials: { applyOnPaid: jest.Mock };
 
   const stalePending = () => ({
     id: 'pay-1',
     amount: 100,
     currency: 'SAR',
     status: PaymentStatus.PENDING,
-    gateway: 'moyasar',
+    gateway: 'tap',
     gateway_payment_id: 'gw-1',
     created_at: new Date(Date.now() - 60 * 60_000),
     tenant: { id: 't1' },
@@ -70,10 +70,7 @@ describe('PaymentReconciliationService (webhook-loss recovery)', () => {
         invoice: { id: 'inv-1', status: InvoiceStatus.PAID },
       }),
     };
-    financials = {
-      applyOnPaid: jest.fn(),
-      extractFromRaw: jest.fn().mockReturnValue({}),
-    };
+    financials = { applyOnPaid: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -209,7 +206,7 @@ describe('PaymentReconciliationService (webhook-loss recovery)', () => {
     expect(emitter.emit).not.toHaveBeenCalled();
   });
 
-  it('books PAID using the ADAPTER-parsed fees, not the legacy Moyasar-shaped parser', async () => {
+  it('books PAID using the ADAPTER-parsed fees', async () => {
     payments.find.mockResolvedValueOnce([stalePending()]);
     gateway.verifyPayment.mockResolvedValueOnce({
       success: true,
@@ -227,7 +224,6 @@ describe('PaymentReconciliationService (webhook-loss recovery)', () => {
     expect(financials.applyOnPaid).toHaveBeenCalledWith(locked, {
       paymentMethod: 'mada',
     });
-    expect(financials.extractFromRaw).not.toHaveBeenCalled();
   });
 
   it('no-ops when a webhook resolved the payment between phases (never regresses)', async () => {

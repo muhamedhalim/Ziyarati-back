@@ -12,7 +12,7 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 
 /** Filter + pagination for webhook logs (always tenant-scoped). */
 export class QueryWebhookLogsDto {
-  @ApiPropertyOptional({ description: 'Filter by source.', example: 'moyasar' })
+  @ApiPropertyOptional({ description: 'Filter by source.', example: 'tap' })
   @IsOptional()
   @IsString()
   @MaxLength(50)

@@ -12,15 +12,15 @@ describe('PaymentGatewayFactory (strategy selection)', () => {
     new PaymentsConfig(createMockConfigService(overrides) as unknown as ConfigService);
 
   it('returns the first provider whose supports() matches', () => {
-    const moyasar = { name: 'moyasar', supports: jest.fn().mockReturnValue(true) };
+    const tap = { name: 'tap', supports: jest.fn().mockReturnValue(true) };
     const other = { name: 'other', supports: jest.fn().mockReturnValue(false) };
-    const factory = new PaymentGatewayFactory([other, moyasar] as any, fallback, config());
-    expect(factory.resolve('moyasar')).toBe(moyasar);
+    const factory = new PaymentGatewayFactory([other, tap] as any, fallback, config());
+    expect(factory.resolve('tap')).toBe(tap);
   });
 
   it('falls back to the noop provider when none matches (dev/test)', () => {
-    const moyasar = { name: 'moyasar', supports: jest.fn().mockReturnValue(false) };
-    const factory = new PaymentGatewayFactory([moyasar] as any, fallback, config());
+    const tap = { name: 'tap', supports: jest.fn().mockReturnValue(false) };
+    const factory = new PaymentGatewayFactory([tap] as any, fallback, config());
     expect(factory.resolve('stripe')).toBe(fallback);
   });
 
@@ -30,45 +30,44 @@ describe('PaymentGatewayFactory (strategy selection)', () => {
   });
 
   it('defaults the requested gateway to the configured PAYMENT_PROVIDER', () => {
-    const moyasar = { name: 'moyasar', supports: jest.fn().mockReturnValue(true) };
+    const tap = { name: 'tap', supports: jest.fn().mockReturnValue(true) };
     const factory = new PaymentGatewayFactory(
-      [moyasar] as any,
+      [tap] as any,
       fallback,
-      config({ PAYMENT_PROVIDER: 'moyasar' }),
+      config({ PAYMENT_PROVIDER: 'tap' }),
     );
     factory.resolve();
-    expect(moyasar.supports).toHaveBeenCalledWith('moyasar');
+    expect(tap.supports).toHaveBeenCalledWith('tap');
   });
 
-  describe('Tap alongside legacy Moyasar (resolution is by NAME)', () => {
-    const moyasar = () => ({ name: 'moyasar', supports: jest.fn((n?: string) => n === 'moyasar') });
+  describe('Tap (resolution is by NAME)', () => {
     const tap = () => ({ name: 'tap', supports: jest.fn((n?: string) => n === 'tap') });
 
     it('PAYMENT_PROVIDER=tap sends NEW payments to Tap', () => {
-      const m = moyasar();
       const t = tap();
-      const factory = new PaymentGatewayFactory([m, t] as any, fallback, config({ PAYMENT_PROVIDER: 'tap' }));
+      const factory = new PaymentGatewayFactory([t] as any, fallback, config({ PAYMENT_PROVIDER: 'tap' }));
       expect(factory.resolve()).toBe(t);
     });
 
-    it('historic Moyasar rows still resolve to Moyasar once Tap is the default (verify/refund keep working)', () => {
-      const m = moyasar();
+    it('a stored gateway="tap" resolves to Tap even while the default is noop', () => {
       const t = tap();
-      const factory = new PaymentGatewayFactory([m, t] as any, fallback, config({ PAYMENT_PROVIDER: 'tap' }));
-      expect(factory.resolve('moyasar')).toBe(m);
+      const factory = new PaymentGatewayFactory([t] as any, fallback, config({ PAYMENT_PROVIDER: 'noop' }));
+      expect(factory.resolve('tap')).toBe(t);
     });
 
-    it('a stored gateway="tap" resolves to Tap even while the default is still moyasar', () => {
-      const m = moyasar();
-      const t = tap();
-      const factory = new PaymentGatewayFactory([m, t] as any, fallback, config({ PAYMENT_PROVIDER: 'moyasar' }));
-      expect(factory.resolve('tap')).toBe(t);
+    it('a stored gateway no adapter handles FAILS CLOSED in production (nothing fabricates a PAID)', () => {
+      const factory = new PaymentGatewayFactory(
+        [tap()] as any,
+        fallback,
+        config({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'tap' }),
+      );
+      expect(() => factory.resolve('legacy-gateway')).toThrow(/not available/i);
     });
 
     it('FAILS CLOSED in production when tap is selected but unconfigured (no silent Noop that fakes PAID)', () => {
       const unconfigured = { name: 'tap', supports: jest.fn().mockReturnValue(false) };
       const factory = new PaymentGatewayFactory(
-        [moyasar(), unconfigured] as any,
+        [unconfigured] as any,
         fallback,
         config({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'tap' }),
       );
@@ -81,7 +80,7 @@ describe('PaymentGatewayFactory (strategy selection)', () => {
     const factory = new PaymentGatewayFactory(
       [] as any,
       fallback,
-      config({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'moyasar' }),
+      config({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'tap' }),
     );
     expect(() => factory.resolve()).toThrow(/not available/i);
   });

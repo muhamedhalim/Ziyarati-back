@@ -172,7 +172,7 @@ The five flows that define the system:
 
 1. **Booking** — `AppointmentsService.create` → `AvailabilityService.assertBookable`
    (in-transaction) → DB `EXCLUDE` constraint backstop.
-2. **Payment truth** — Moyasar webhook → verify → atomic dedup → reconcile-vs-ledger →
+2. **Payment truth** — Tap webhook → verify → atomic dedup → reconcile-vs-ledger →
    settlement clawback.
 3. **Campaign send** — launch → keyset fanout → CLAIM/GATE/SEND/CLASSIFY/PERSIST with
    per-tenant rate limiting + DLQ.
@@ -195,7 +195,7 @@ graph TB
     SPA[SPA / Admin UI]
     PORTAL[Customer Portal]
     META[Meta WhatsApp]
-    MOY[Moyasar]
+    TAP[Tap]
   end
 
   subgraph API["API root — main.ts (HTTP)"]
@@ -219,7 +219,7 @@ graph TB
   SPA --> MW
   PORTAL --> MW
   META --> CTRL
-  MOY --> CTRL
+  TAP --> CTRL
   SVC --> DB
   SVC -->|enqueue producer-profile| REDIS
   SVC -->|outbox row| DB
@@ -442,17 +442,17 @@ deleted_at IS NULL`. App check + DB constraint = defense in depth (collision →
 
 ### 3.6 Payments (`src/modules/payments`)
 
-Provider seam: `PaymentGatewayProvider` → `MoyasarProvider` / `NoopGatewayProvider` (factory
-falls back to Noop when no key). `PaymentWebhookService.handleMoyasar` hardening:
+Provider seam: `PaymentGatewayProvider` → `TapGatewayProvider` / `NoopGatewayProvider` (factory
+falls back to Noop when no key, outside production). `TapWebhookHandler` → `PaymentWebhookService.process` hardening:
 
-1. Authenticate (`MoyasarWebhookVerifier`, constant-time, **fail-closed in prod**).
+1. Authenticate (`TapWebhookVerifier`, HMAC `hashstring`, constant-time, **fail-closed**; the charge is re-fetched from Tap before it is trusted).
 2. Resolve payment by `gateway_payment_id`; **tenant from the payment row, never the body**.
 3. **Atomic dedup** (`recordWebhookOnce`, partial UNIQUE `uq_txn_webhook_event`).
-4. **Refund reconciliation** — never flips REFUNDED directly; compares gateway cumulative
-   `refunded` vs the Refund ledger, appends a delta, clamps `[0, paymentCents]`.
+4. **Refund reconciliation** — never flips REFUNDED directly; compares the gateway-reported refunded
+   total vs the Refund ledger, appends a delta, clamps `[0, paymentCents]`.
 5. **Clawback** — reconciled refund on a settled payment nets out of next settlement.
 6. **Anti-tampering** — honors `paid` only if reported amount **and** currency match.
-7. **Sanitization** — strips `secret_token` before persisting to the tenant-readable ledger.
+7. **Sanitization** — only a sanitised payload is persisted to the tenant-readable ledger.
 
 Settlement (`UNSETTLED/IN_BATCH/SETTLED` on payment) and payout (`PENDING/PROCESSING/PAID/
 FAILED` on settlement) are separate axes. `transactions` is append-only (immutability
@@ -575,7 +575,6 @@ append-only financial ledger.
    the try/catch, not inside it) rather than silently signing or accepting tokens under a
    public literal.
 2. `JWT_EXPIRES_IN` is validated but **unused**; code reads `JWT_ACCESS_TTL` (default 15m).
-3. Moyasar verifier has a dev "accept-all" bypass (WhatsApp does not) — asymmetric.
 4. **No login/brute-force throttling** — only the campaign/notification send paths are
    rate-limited; the token-bucket primitive already exists and could be reused.
 5. ABAC ownership correctness relies on each service remembering to check ownership
@@ -637,7 +636,7 @@ run both with one command via `npm run dev` (this backend's `package.json`, wrap
 | Enums | Deprecated `CampaignStatus`/`RecipientStatus` still exported | Drift risk |
 | FK naming | camelCase FK columns + raw QB strings | Latent bug surface |
 | Module size | Payments (40+), AI (50), WhatsApp (38) files | Onboarding friction |
-| Provider IO | Real Moyasar/Meta paths reach `globalThis.fetch` via `any`, untested in dev (Noop) | Untested real path |
+| Provider IO | Real Tap/Meta paths reach `globalThis.fetch` via `any`, untested in dev (Noop) | Untested real path |
 | Tests | Only `app.controller.spec` + e2e scaffold; hardened money/queue logic has no unit tests | Regression risk |
 
 

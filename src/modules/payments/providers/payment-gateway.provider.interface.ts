@@ -1,8 +1,8 @@
 /**
  * Payment GATEWAY provider abstraction.
  *
- * The Payments domain depends ONLY on this interface — never on Moyasar (or any
- * other gateway SDK/HTTP) directly. Concrete adapters (MoyasarProvider, …) are
+ * The Payments domain depends ONLY on this interface — never on Tap (or any
+ * other gateway SDK/HTTP) directly. Concrete adapters (TapGatewayProvider, …) are
  * registered into the `PAYMENT_GATEWAY_PROVIDERS` array and resolved by
  * `PaymentGatewayFactory`, so the gateway is swappable and the domain logic
  * stays testable.
@@ -22,8 +22,8 @@ export interface GatewayCreatePaymentRequest {
   description?: string;
   /**
    * @deprecated Client-influenced return URLs are an open redirect; use the
-   * server-built `returnUrl`. Only the legacy Moyasar adapter still reads this,
-   * and `PaymentService` no longer sets it.
+   * server-built `returnUrl`. No adapter reads this and `PaymentService` never
+   * sets it.
    */
   callbackUrl?: string;
   /** Free-form, client-safe metadata forwarded to the gateway. NEVER secrets. */
@@ -54,22 +54,6 @@ export interface GatewayCreatePaymentRequest {
   payee?: 'platform' | 'clinic';
   /** Business reference the gateway echoes back (e.g. the appointment id). */
   reference?: { order?: string };
-  /**
-   * Marketplace split instructions (documented Moyasar `splits`): route part of
-   * the charge to a provider-issued recipient (the clinic's sub-merchant).
-   * Amounts are in MAJOR units. Only attached when the marketplace feature is
-   * contractually enabled AND the clinic has a `provider_recipient_id`;
-   * adapters for gateways without split support MUST ignore this field (the
-   * internal ledger still records the clinic's net for manual settlement).
-   */
-  splits?: Array<{
-    recipientId: string;
-    amount: number;
-    reference?: string;
-    /** Marks the split as the platform's fee/commission (provider semantics). */
-    feeSource?: boolean;
-    refundable?: boolean;
-  }>;
 }
 
 /** Who is paying — only what a gateway needs to create a charge. */
@@ -116,7 +100,7 @@ export interface GatewayPaymentResult {
   correlationId?: string;
   /**
    * Fee facts parsed BY THE ADAPTER. When present the domain uses this instead
-   * of the legacy Moyasar-shaped `PaymentFinancialsService.extractFromRaw`.
+   * of any payload-shaped guess: when absent, no gateway fee is recorded.
    */
   fees?: GatewayFeeInfo;
   /**
@@ -202,7 +186,7 @@ export interface GatewayRefundResult {
 }
 
 export interface PaymentGatewayProvider {
-  /** Stable gateway identifier, stored on `Payment.gateway` (e.g. 'moyasar', 'tap'). */
+  /** Stable gateway identifier, stored on `Payment.gateway` (e.g. 'tap'). */
   readonly name: string;
 
   /**
@@ -236,7 +220,7 @@ export interface PaymentGatewayProvider {
    * Looks ONE refund up by the provider's own refund id. Gateways whose refunds
    * are asynchronous (Tap) implement it: the refund reaper and the refund
    * webhook use it to learn the refund's real outcome. A gateway without it
-   * (legacy Moyasar) keeps the old behaviour — the reaper infers the refund from
+   * keeps the old behaviour — the reaper infers the refund from
    * the payment's cumulative refunded total.
    *
    * `unknown` (transport error, 5xx, 429, an unmapped status) is NEVER a failure:

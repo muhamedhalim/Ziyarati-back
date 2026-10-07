@@ -169,7 +169,7 @@ describe('SupportIntegrationService', () => {
     merchants.findOne.mockResolvedValue({
       id: 'm1',
       status: 'APPROVED',
-      provider: 'moyasar',
+      provider: 'tap',
       submitted_at: new Date('2026-02-01T00:00:00Z'),
       approved_at: new Date('2026-02-05T00:00:00Z'),
     });

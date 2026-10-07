@@ -136,46 +136,9 @@ describe('MerchantAccountService', () => {
 
   describe('assertChargeable (marketplace gate)', () => {
     it('is a no-op when payments are not live (dev/test)', async () => {
-      const service = await build(); // NODE_ENV unset ⇒ not live
+      const service = await build({ PAYMENT_PROVIDER: 'noop' }); // simulator: not live
       await expect(service.assertChargeable(TENANT)).resolves.toBeUndefined();
       expect(accounts.findOne).not.toHaveBeenCalled();
-    });
-
-    it('BLOCKS an unapproved clinic when payments are live', async () => {
-      const service = await build({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'moyasar' });
-      accounts.findOne.mockResolvedValueOnce({ id: 'm1', status: S.SUBMITTED });
-      await expect(service.assertChargeable(TENANT)).rejects.toMatchObject({
-        code: ErrorCode.UNPROCESSABLE_ENTITY,
-      });
-    });
-
-    it('allows an APPROVED clinic when payments are live', async () => {
-      const service = await build({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'moyasar' });
-      accounts.findOne.mockResolvedValueOnce({ id: 'm1', status: S.APPROVED });
-      await expect(service.assertChargeable(TENANT)).resolves.toBeUndefined();
-    });
-  });
-
-  describe('splitContext', () => {
-    it('is null while the marketplace feature is not enabled', async () => {
-      const service = await build({ MOYASAR_MARKETPLACE_ENABLED: 'false' });
-      expect(await service.splitContext(TENANT)).toBeNull();
-    });
-
-    it('is null for an approved clinic with no recipient id', async () => {
-      const service = await build({ MOYASAR_MARKETPLACE_ENABLED: 'true' });
-      accounts.findOne.mockResolvedValueOnce({ id: 'm1', status: S.APPROVED });
-      expect(await service.splitContext(TENANT)).toBeNull();
-    });
-
-    it('returns the recipient for an approved clinic when the feature is enabled', async () => {
-      const service = await build({ MOYASAR_MARKETPLACE_ENABLED: 'true' });
-      accounts.findOne.mockResolvedValueOnce({
-        id: 'm1',
-        status: S.APPROVED,
-        provider_recipient_id: 'rcp_1',
-      });
-      expect(await service.splitContext(TENANT)).toEqual({ recipientId: 'rcp_1' });
     });
   });
 
@@ -265,7 +228,7 @@ describe('MerchantAccountService', () => {
 
     it('does not treat a clinic approved under ANOTHER provider as chargeable on Tap', async () => {
       const service = await build({ ...TAP_ENV_ON });
-      accounts.findOne.mockResolvedValue(approvedTapAccount({ provider: 'moyasar' }));
+      accounts.findOne.mockResolvedValue(approvedTapAccount({ provider: 'legacy-provider' }));
       await expect(service.assertChargeable(TENANT)).rejects.toBeDefined();
       expect(await service.routingContext(TENANT)).toBeNull();
     });
@@ -276,11 +239,6 @@ describe('MerchantAccountService', () => {
       expect(accounts.findOne).not.toHaveBeenCalled();
     });
 
-    it('splitContext is null on Tap even if the legacy marketplace flag is left on', async () => {
-      const service = await build({ ...TAP_ENV_ON, MOYASAR_MARKETPLACE_ENABLED: 'true' });
-      expect(await service.splitContext(TENANT)).toBeNull();
-      expect(accounts.findOne).not.toHaveBeenCalled();
-    });
   });
 
   describe('Tap — getClinicView / tapOnboardingConfigured', () => {
@@ -302,7 +260,7 @@ describe('MerchantAccountService', () => {
         expect(service.tapOnboardingConfigured()).toBe(false);
       }
       expect((await build({ ...TAP_ENV_ON })).tapOnboardingConfigured()).toBe(true);
-      expect((await build({ PAYMENT_PROVIDER: 'moyasar' })).tapOnboardingConfigured()).toBe(false);
+      expect((await build({ PAYMENT_PROVIDER: 'noop' })).tapOnboardingConfigured()).toBe(false);
     });
   });
 
@@ -324,7 +282,7 @@ describe('MerchantAccountService', () => {
       const account = {
         id: 'm1',
         status: S.APPROVED,
-        provider: 'moyasar',
+        provider: 'legacy-provider',
         provider_recipient_id: 'rcp_legacy',
       } as never;
       const saved = await service.recordTapLeadCreated(account, 'led_1', 'user-1');

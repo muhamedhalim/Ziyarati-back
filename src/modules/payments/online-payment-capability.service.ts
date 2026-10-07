@@ -31,7 +31,7 @@ export interface OnlinePaymentCapability {
  * nothing it could be paid through, and a patient was handed a link that could
  * only ever fail.
  *
- *  - NOT Tap (Noop simulator / legacy Moyasar): nothing changes. Their own
+ *  - NOT Tap (Noop simulator): nothing changes. Their own
  *    gating (`MerchantAccountService.assertChargeable`, the dev Noop flow)
  *    stays exactly as it was, so this adds no behaviour to a deployment that is
  *    not on Tap.

@@ -142,7 +142,7 @@ describe('subprocessor register ↔ code', () => {
       [/^@aws-sdk\//, 'aws'],
       [/^@sentry\//, 'sentry'],
       [
-        /^stripe$|^moyasar$|^twilio$|^@sendgrid\//,
+        /^stripe$|^twilio$|^@sendgrid\//,
         'payments-or-messaging-vendor',
       ],
       [

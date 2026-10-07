@@ -18,7 +18,7 @@ export interface ApplyFeesInput {
  *
  * Gross is `payment.amount`. The platform commission is config-driven
  * (`PLATFORM_FEE_PERCENT` + `PLATFORM_FEE_FIXED`, both default 0). The gateway
- * fee comes from the provider when available (Moyasar reports `data.fee`), else
+ * fee comes from the provider when available (reported by the adapter), else
  * 0. `net = gross − gateway_fee − platform_fee`. These figures are PERSISTED so
  * later fee-schedule changes never retroactively alter historical records.
  */
@@ -73,22 +73,5 @@ export class PaymentFinancialsService {
     if (input.metadata) {
       payment.metadata = { ...(payment.metadata ?? {}), ...input.metadata };
     }
-  }
-
-  /**
-   * Extracts the gateway fee (major units) + payment method from a Moyasar-shaped
-   * raw payload (`{ fee, source: { type } }`, fee in halalas). Defensive: returns
-   * undefined fields for non-Moyasar / Noop providers.
-   */
-  extractFromRaw(raw?: Record<string, unknown>): ApplyFeesInput {
-    if (!raw || typeof raw !== 'object') return {};
-    const data = (raw.data as Record<string, unknown>) ?? raw;
-    const feeMinor = Number((data as { fee?: unknown }).fee);
-    const source = (data as { source?: { type?: string; company?: string } }).source;
-    return {
-      gatewayFee: Number.isFinite(feeMinor) ? round2(feeMinor / 100) : undefined,
-      paymentMethod: source?.type,
-      metadata: undefined,
-    };
   }
 }

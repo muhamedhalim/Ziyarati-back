@@ -139,21 +139,6 @@ export const SUBPROCESSORS: readonly Subprocessor[] = [
       'No card number or CVV ever enters this system; hosted payment page only',
   }),
   proc({
-    id: 'moyasar',
-    name: 'Moyasar',
-    purpose: 'Previous payment provider (being replaced by Tap)',
-    state: 'legacy',
-    dataClasses: ['D2', 'D5'],
-    flows: ['F13'],
-    healthData: false,
-    egressHosts: ['api.moyasar.com'],
-    region: 'VC',
-    retention: 'VC',
-    control:
-      'Decommission once no clinic uses it; obtain deletion confirmation',
-    note: 'Still referenced by configuration; remove from the register only after the code path is removed.',
-  }),
-  proc({
     id: 'resend',
     name: 'Resend',
     purpose: 'Transactional email (default provider today)',

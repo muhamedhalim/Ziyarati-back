@@ -1,7 +1,7 @@
 /**
  * Payment domain events.
  *
- * Emitted by PaymentWebhookService after the Moyasar webhook confirms a
+ * Emitted by PaymentWebhookService after the gateway webhook confirms a
  * payment state change. The emitter has already validated the webhook
  * signature, de-duplicated the event, and persisted the state change before
  * emitting — so consumers can trust the payload without re-checking.

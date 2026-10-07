@@ -208,7 +208,7 @@ describe('SupportBookingService', () => {
       id: 'pay-1',
       appointment_id: APPT_ID,
       status: 'PENDING',
-      gateway: 'moyasar',
+      gateway: 'tap',
       amount: '250.00',
       currency: 'SAR',
       payment_method: 'creditcard',
@@ -297,7 +297,7 @@ describe('SupportBookingService', () => {
                 ...paymentRow,
                 status: 'FAILED',
                 failure_reason:
-                  'declined; see https://api.moyasar.com/v1/payments/abc?secret=sk_live_1 card 4111111111111111',
+                  'declined; see https://api.gateway.example/v1/payments/abc?secret=sk_live_1 card 4111111111111111',
               },
             ],
       );
@@ -306,7 +306,7 @@ describe('SupportBookingService', () => {
 
       expect(data[0].failureReason).not.toContain('sk_live_1');
       expect(data[0].failureReason).not.toContain('4111111111111111');
-      expect(data[0].failureReason).not.toContain('moyasar.com');
+      expect(data[0].failureReason).not.toContain('gateway.example');
     });
 
     it('reports the live payment-link state so "can the patient still pay?" is answerable', async () => {

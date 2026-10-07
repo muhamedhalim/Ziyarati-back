@@ -8,10 +8,7 @@ import { Refund } from '../../entities/Payments/Refund';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
 import { InvoiceStatus, PaymentStatus } from '../../entities/enums';
-import { AppError, ErrorCode } from '../../common/errors';
 
-import { MoyasarWebhookVerifier } from './webhooks/moyasar-webhook.verifier';
-import { MoyasarWebhookEvent } from './webhooks/moyasar-webhook.types';
 import { GatewayWebhookEvent } from './webhooks/gateway-webhook.types';
 import { TransactionService } from './transaction.service';
 import { SettlementAdjustmentService } from './settlement-adjustment.service';
@@ -38,40 +35,10 @@ import {
   PaymentSucceededEvent,
 } from '../../events/payment.events';
 import { RefundRecordedEvent } from '../../events/refund.events';
-import { verifyTimestamp } from '../integration-platform/inbound/inbound-signature';
-import { WEBHOOK_SIGNATURE_SCHEME } from '../integration-platform/integration-platform.constants';
 import {
   PlatformAdminAuditService,
   PLATFORM_ADMIN_AUDIT_ACTION,
 } from '../platform/platform-admin-audit.service';
-
-type TargetStatus = 'paid' | 'failed' | 'refunded' | 'pending';
-
-/**
- * ZT-H02 — Moyasar webhook replay-freshness tolerance.
- *
- * Sourced from Moyasar's own documentation, not intuition: "If the webhook
- * recipient does not return a 2xx HTTP code we will retry to send the
- * webhook 5 more times and then drop the message," with a published
- * backoff schedule (immediate, +1m, +10m, +30m, +1h, +2h) whose total
- * window is documented as approximately 3 hours 43 minutes
- * (docs.moyasar.com, Webhook Reference, verified 2026-08-12). 4 hours is a
- * safe round buffer above that documented maximum, so a legitimate final
- * retry is never rejected as stale.
- */
-const MOYASAR_WEBHOOK_FRESHNESS_TOLERANCE_SECONDS = 4 * 60 * 60; // 14400 — 4 hours
-
-/**
- * Best-effort ISO-8601 → Unix-seconds string, for `verifyTimestamp` (which
- * expects Unix seconds). An unparseable non-empty value is passed through
- * unchanged so `verifyTimestamp`'s own `Number.isFinite` check reports
- * `'malformed'` rather than this helper silently swallowing a bad value.
- */
-function toUnixSecondsString(raw: string | undefined): string | undefined {
-  if (!raw) return undefined;
-  const ms = Date.parse(raw);
-  return Number.isFinite(ms) ? String(Math.floor(ms / 1000)) : raw;
-}
 
 export interface WebhookResult {
   accepted: boolean;
@@ -86,7 +53,7 @@ export interface WebhookResult {
  * Gateway webhook orchestration — the platform-side ingestion seam.
  *
  * Two layers:
- *   - an ADAPTER per gateway (`handleMoyasar` here; `TapWebhookHandler` for Tap)
+ *   - an ADAPTER per gateway (`TapWebhookHandler` for Tap)
  *     authenticates the gateway's own wire format and reduces it to a neutral
  *     `GatewayWebhookEvent`;
  *   - `process()` — provider-neutral — does everything after authentication.
@@ -112,7 +79,6 @@ export class PaymentWebhookService {
     @InjectRepository(SubscriptionInvoice)
     private readonly invoices: Repository<SubscriptionInvoice>,
     private readonly dataSource: DataSource,
-    private readonly verifier: MoyasarWebhookVerifier,
     private readonly transactions: TransactionService,
     private readonly adjustments: SettlementAdjustmentService,
     private readonly financials: PaymentFinancialsService,
@@ -124,43 +90,6 @@ export class PaymentWebhookService {
     @Optional()
     private readonly exceptions?: ReconciliationExceptionService,
   ) {}
-
-  async handleMoyasar(
-    event: MoyasarWebhookEvent,
-    headerToken?: string,
-  ): Promise<WebhookResult> {
-    // 1. Authenticate (header token preferred, body secret_token as fallback).
-    const token = headerToken ?? event?.secret_token;
-    if (!this.verifier.verify(token)) {
-      throw new AppError(ErrorCode.UNAUTHORIZED, {
-        message: 'Invalid webhook signature',
-      });
-    }
-
-    // ZT-H02 — defence-in-depth freshness check against `created_at`.
-    // IMPORTANT: unlike Meta's HMAC (which covers the whole raw body, so a
-    // tampered timestamp fails signature verification), Moyasar
-    // authenticates with a STATIC SHARED TOKEN that does not bind to the
-    // body at all — `verifier.verify(token)` above only proves the caller
-    // knows the shared secret, not that `created_at` (or anything else in
-    // the payload) is untampered. This check is therefore
-    // **defence-in-depth against verbatim replay of a captured request
-    // only, and is NOT cryptographically equivalent to Meta's HMAC-bound
-    // freshness check** — an attacker who can forge a request at all can
-    // also forge `created_at`. The partial unique index on
-    // `gateway_transaction_id` (H4, below) remains the PRIMARY replay
-    // control for this path; this check narrows the window a captured,
-    // unmodified request stays replayable, nothing more.
-    this.enforceEventFreshness(event);
-
-    // 3. Nothing to resolve without the gateway payment id.
-    if (!event?.data?.id) {
-      this.logger.warn('Moyasar webhook without data.id — ignored');
-      return { accepted: true, matched: false };
-    }
-
-    return this.process(this.toGatewayEvent(event));
-  }
 
   /**
    * Provider-neutral processing of an ALREADY AUTHENTICATED gateway event:
@@ -360,7 +289,7 @@ export class PaymentWebhookService {
           // Freeze the fee breakdown from the gateway-reported figures.
           this.financials.applyOnPaid(
             payment,
-            event.fees ?? this.financials.extractFromRaw(event.raw),
+            event.fees,
           );
           changed = true;
           pendingEventName = PaymentSucceededEvent.eventName;
@@ -575,7 +504,7 @@ export class PaymentWebhookService {
    * Reconcile a refund webhook against our Refund ledger (H2). The gateway's
    * cumulative refunded amount is the source of truth; we NEVER flip the payment
    * straight to REFUNDED. If the gateway has refunded more than we have recorded
-   * (e.g. a refund issued directly in the Moyasar dashboard), we append a
+   * (e.g. a refund issued directly in the gateway dashboard), we append a
    * SUCCEEDED Refund row for the delta + a REFUND transaction, then recompute the
    * payment status from the cumulative SUCCEEDED total.
    *
@@ -592,7 +521,8 @@ export class PaymentWebhookService {
     const eventId = event.dedupeKey;
     const paymentCents = Math.round(Number(payment.amount) * 100);
 
-    // Moyasar reports `refunded` in halalas (== our cents). Absent on a refund
+    // The provider reports the cumulative refunded total in minor units (== our
+    // cents). Absent on a refund
     // event ⇒ treat as full refund. Clamp to [0, paymentCents] so a unit
     // mismatch / gateway anomaly can never over-refund the ledger.
     const reported = event.refundedMinorUnits;
@@ -703,18 +633,6 @@ export class PaymentWebhookService {
   }
 
   /**
-   * Strip the shared webhook secret before the event is persisted to the
-   * append-only `transactions` ledger (which is readable via the tenant-facing
-   * transactions API). Moyasar echoes `secret_token` in the body; storing it
-   * verbatim would leak the platform-wide webhook secret to any tenant with
-   * `payments.read`. Tenants must never see it.
-   */
-  private sanitizeEvent(event: MoyasarWebhookEvent): Record<string, any> {
-    const { secret_token: _omit, ...safe } = event as Record<string, any>;
-    return safe;
-  }
-
-  /**
    * Reconcile the webhook-reported captured amount/currency against our payment
    * before honoring a 'paid' event. Returns true when they match OR the provider
    * did not report them (no false negatives — preserves the existing flow when a
@@ -737,86 +655,5 @@ export class PaymentWebhookService {
       return false;
     }
     return true;
-  }
-
-  /**
-   * ZT-H02 — refuses a payload whose `created_at` falls outside
-   * `MOYASAR_WEBHOOK_FRESHNESS_TOLERANCE_SECONDS`. Every `TimestampVerdict`
-   * is handled explicitly; none falls through unhandled (FR-050). Reuses
-   * `verifyTimestamp` from the integration platform's inbound-signature
-   * module (Constitution V) — `HMAC_SHA256_TIMESTAMPED` selects the branch
-   * that performs the comparison; see the code comment at the call site for
-   * why this check is defence-in-depth only, not a cryptographic guarantee.
-   */
-  private enforceEventFreshness(event: MoyasarWebhookEvent): void {
-    const presented = toUnixSecondsString(event?.created_at);
-    const verdict = verifyTimestamp(
-      WEBHOOK_SIGNATURE_SCHEME.HMAC_SHA256_TIMESTAMPED,
-      presented,
-      MOYASAR_WEBHOOK_FRESHNESS_TOLERANCE_SECONDS,
-    );
-    switch (verdict) {
-      case 'ok':
-        return;
-      case 'stale':
-        throw new AppError(ErrorCode.UNAUTHORIZED, {
-          message:
-            'Webhook event timestamp is outside the accepted freshness window',
-        });
-      case 'future':
-        throw new AppError(ErrorCode.UNAUTHORIZED, {
-          message: 'Webhook event timestamp is in the future',
-        });
-      case 'malformed':
-        throw new AppError(ErrorCode.UNAUTHORIZED, {
-          message: 'Webhook event timestamp is malformed',
-        });
-      case 'missing':
-        throw new AppError(ErrorCode.UNAUTHORIZED, {
-          message: 'Webhook event carries no verifiable timestamp',
-        });
-    }
-  }
-
-  /**
-   * Reduce an authenticated Moyasar event to the neutral shape. Moyasar reports
-   * amounts in halalas (== the domain's cents), `refunded` as a CUMULATIVE
-   * total, and echoes our subscription invoice id in `data.metadata`.
-   */
-  private toGatewayEvent(event: MoyasarWebhookEvent): GatewayWebhookEvent {
-    const target = this.mapEvent(event);
-    const data = event.data as Record<string, any> | undefined;
-    return {
-      provider: 'moyasar',
-      gatewayPaymentId: event.data!.id!,
-      dedupeKey: event.id,
-      target,
-      eventLabel: event.type ?? target,
-      capturedMinorUnits:
-        data?.amount != null ? Math.round(Number(data.amount)) : undefined,
-      capturedCurrency: data?.currency,
-      refundedMinorUnits:
-        data?.refunded != null ? Math.round(Number(data.refunded)) : undefined,
-      failureReason:
-        data?.source?.message ?? data?.status ?? 'Gateway reported failure',
-      subscriptionInvoiceId: data?.metadata?.subscriptionInvoiceId,
-      raw: this.sanitizeEvent(event),
-    };
-  }
-
-  /** Normalize a Moyasar event/status into our target transition. */
-  private mapEvent(event: MoyasarWebhookEvent): TargetStatus {
-    const type = (event?.type ?? '').toLowerCase();
-    if (type.includes('refund')) return 'refunded';
-    if (type.includes('paid') || type.includes('captur')) return 'paid';
-    if (type.includes('fail') || type.includes('void')) return 'failed';
-
-    const status = (event?.data?.status ?? '').toLowerCase();
-    if (status === 'paid' || status === 'captured' || status === 'authorized') {
-      return 'paid';
-    }
-    if (status === 'failed' || status === 'voided') return 'failed';
-    if (status === 'refunded') return 'refunded';
-    return 'pending';
   }
 }

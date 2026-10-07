@@ -191,7 +191,7 @@ export class PaymentLinkService {
    * produces the same URL — and none of them ever builds one itself.
    *
    * `undefined` when the deployment cannot complete a patient payment on that
-   * page (legacy Moyasar in production): a patient is never handed a dead link.
+   * page (a non-Tap provider in production): a patient is never handed a dead link.
    */
   payUrlFor(token: string): string | undefined {
     return this.config.patientPayPageServed

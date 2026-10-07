@@ -12,7 +12,7 @@ BASE_ENV=(
   REDIS_URL='redis://127.0.0.1:6380' PORT=3002 NODE_ENV=test
   TYPEORM_SYNCHRONIZE=false SEED_ON_STARTUP=false
   OPENAI_API_KEY='' RESEND_API_KEY='' EMAIL_ENABLED=false
-  PAYMENT_PROVIDER=noop MOYASAR_SECRET_KEY='' QUEUE_ENV_PREFIX=loadtest
+  PAYMENT_PROVIDER=noop QUEUE_ENV_PREFIX=loadtest
 )
 psql_q() { MSYS_NO_PATHCONV=1 docker exec ziyarati-perfaudit-postgres \
   psql -U postgres -d ziyarati_perf -t -A -c "$1" 2>/dev/null | tr -d '\r'; }

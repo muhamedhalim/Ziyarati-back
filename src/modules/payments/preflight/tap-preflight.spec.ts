@@ -85,7 +85,7 @@ describe('runTapPreflight', () => {
       const report = await run(
         {
           NODE_ENV: 'production',
-          PAYMENT_PROVIDER: 'moyasar',
+          PAYMENT_PROVIDER: 'noop',
           APP_URL: 'https://www.example-clinic.com',
         },
         { tap },
@@ -98,17 +98,17 @@ describe('runTapPreflight', () => {
       expect(status(report.checks, 'frontend')).toBe('PASS');
     });
 
-    it('treats an unset PAYMENT_PROVIDER as the legacy default, not as Tap', async () => {
+    it('treats an unset PAYMENT_PROVIDER as the default, Tap', async () => {
       const report = await run({
         NODE_ENV: 'production',
         APP_URL: 'https://x.example.com',
       });
-      expect(status(report.checks, 'provider')).toBe('SKIP');
+      expect(status(report.checks, 'provider')).toBe('PASS');
     });
 
     it('--expect-active turns the skip into a failure', async () => {
       const report = await run(
-        { NODE_ENV: 'production', PAYMENT_PROVIDER: 'moyasar' },
+        { NODE_ENV: 'production', PAYMENT_PROVIDER: 'noop' },
         {},
         { expectActive: true, checkFrontend: false },
       );
@@ -263,7 +263,7 @@ describe('runTapPreflight', () => {
       ],
       [
         'the wrong path',
-        'https://api.example-clinic.com/api/v1/payments/webhooks/moyasar',
+        'https://api.example-clinic.com/api/v1/payments/webhooks/wrong',
         'FAIL',
       ],
       ['not a URL', 'api.example-clinic.com', 'FAIL'],
@@ -540,7 +540,7 @@ describe('runTapPreflight', () => {
     it('ends with an unambiguous verdict line', async () => {
       const ok = formatPreflight(
         await run(
-          { NODE_ENV: 'production', PAYMENT_PROVIDER: 'moyasar' },
+          { NODE_ENV: 'production', PAYMENT_PROVIDER: 'noop' },
           {},
           { checkFrontend: false },
         ),

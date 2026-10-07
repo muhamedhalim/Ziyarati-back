@@ -33,7 +33,6 @@ describe('PaymentService.create (booking payments)', () => {
   let gateway: { name: string; createPayment: jest.Mock; verifyPayment: jest.Mock };
   let merchants: {
     assertChargeable: jest.Mock;
-    splitContext: jest.Mock;
     routingContext: jest.Mock;
   };
 
@@ -59,7 +58,6 @@ describe('PaymentService.create (booking payments)', () => {
     };
     merchants = {
       assertChargeable: jest.fn().mockResolvedValue(undefined),
-      splitContext: jest.fn().mockResolvedValue(null),
       routingContext: jest.fn().mockResolvedValue(null),
     };
 
@@ -74,7 +72,6 @@ describe('PaymentService.create (booking payments)', () => {
           provide: PaymentFinancialsService,
           useValue: {
             applyOnPaid: jest.fn(),
-            extractFromRaw: jest.fn().mockReturnValue({}),
             platformFeeFor: jest.fn().mockReturnValue(0),
           },
         },
@@ -182,31 +179,12 @@ describe('PaymentService.create (booking payments)', () => {
     expect(gateway.createPayment).not.toHaveBeenCalled();
   });
 
-  it('stamps the split recipient and passes a net split when the marketplace is enabled', async () => {
-    merchants.splitContext.mockResolvedValueOnce({ recipientId: 'rcp_1' });
-    appointments.findOne.mockResolvedValueOnce(bookedAppointment());
-
-    const res = await service.create(TENANT, { appointmentId: 'appt-1' } as any);
-    expect(res.payment.sub_merchant_id).toBe('rcp_1');
-    expect(gateway.createPayment).toHaveBeenCalledWith(
-      expect.objectContaining({
-        splits: [
-          expect.objectContaining({ recipientId: 'rcp_1', amount: 200, refundable: true }),
-        ],
-      }),
-    );
-  });
-
   // Phase 1.5 (plan §12) — the platform purposes are a service-only option,
   // never a DTO field: `payment.controller.ts` calls `create(tenantId, dto)`
   // with exactly two arguments, so nothing over HTTP can ever reach this branch.
   // (Tap Phase 2: the `platformRevenue` boolean became `purpose`.)
   describe('platform purposes (ADDON / BILLING_UPGRADE — Phase 1.5 plan §12, Tap Phase 2)', () => {
-    it('a platform purpose bypasses the marketplace entirely — no merchant gate, no split', async () => {
-      // Splits ARE contractually enabled — proves the bypass is deliberate,
-      // not just "nothing to split anyway".
-      merchants.splitContext.mockResolvedValueOnce({ recipientId: 'rcp_1' });
-
+    it('a platform purpose bypasses the marketplace entirely — no merchant gate', async () => {
       const res = await service.create(
         TENANT,
         { amount: 50 } as any,
@@ -214,26 +192,13 @@ describe('PaymentService.create (booking payments)', () => {
       );
 
       expect(merchants.assertChargeable).not.toHaveBeenCalled();
-      expect(merchants.splitContext).not.toHaveBeenCalled();
-      expect(gateway.createPayment).toHaveBeenCalledWith(
-        expect.objectContaining({ splits: undefined }),
-      );
       expect(res.payment.sub_merchant_id).toBeUndefined();
     });
 
-    it('WITHOUT a platform purpose (default), the merchant gate runs and splits ARE populated when enabled — the negative case', async () => {
-      merchants.splitContext.mockResolvedValueOnce({ recipientId: 'rcp_1' });
-
-      const res = await service.create(TENANT, { amount: 50 } as any);
+    it('WITHOUT a platform purpose (default), the merchant gate runs — the negative case', async () => {
+      await service.create(TENANT, { amount: 50 } as any);
 
       expect(merchants.assertChargeable).toHaveBeenCalledWith(TENANT);
-      expect(merchants.splitContext).toHaveBeenCalledWith(TENANT);
-      expect(gateway.createPayment).toHaveBeenCalledWith(
-        expect.objectContaining({
-          splits: [expect.objectContaining({ recipientId: 'rcp_1' })],
-        }),
-      );
-      expect(res.payment.sub_merchant_id).toBe('rcp_1');
     });
 
     it('a platform purpose still proceeds even when the clinic\'s OWN merchant account would fail the gate', async () => {
@@ -488,7 +453,7 @@ describe('PaymentService.create (booking payments)', () => {
     function pendingPayment(overrides: Record<string, unknown> = {}) {
       return {
         id: 'pay-1', status: PaymentStatus.PENDING, amount: 100, currency: 'SAR',
-        gateway: 'moyasar', gateway_payment_id: 'gw-1', ...overrides,
+        gateway: 'tap', gateway_payment_id: 'gw-1', ...overrides,
       };
     }
 
@@ -748,7 +713,7 @@ describe('PaymentService.create (booking payments)', () => {
         status: PaymentStatus.PENDING,
         amount: 100,
         currency: 'SAR',
-        gateway: 'moyasar',
+        gateway: 'tap',
         gateway_payment_id: 'gw-1',
         ...over,
       });

@@ -217,8 +217,7 @@ export class MerchantAccountService {
    *
    * Tap: ALWAYS enforced, in every environment — where a patient's money lands
    * must not depend on NODE_ENV, and a sandbox charge still needs a (sandbox)
-   * clinic merchant. Other providers: unchanged — enforced only when payments
-   * are LIVE, open in the dev/test Noop flow.
+   * clinic merchant. Noop (dev/test simulator, or payments disabled): open.
    */
   async assertChargeable(tenantId: string): Promise<void> {
     if (this.capability.tapGoverned) {
@@ -234,33 +233,6 @@ export class MerchantAccountService {
       }
       return;
     }
-    if (!this.config.paymentsLive) return;
-    const account = await this.getOrCreate(tenantId);
-    if (account.status !== S.APPROVED) {
-      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message:
-          'This clinic cannot accept payments yet: its merchant account is not approved. ' +
-          `Current onboarding status: ${account.status}.`,
-      });
-    }
-  }
-
-  /**
-   * The split-recipient context for a new payment, or null when splits must
-   * not be attached (feature disabled, not approved, or no recipient id).
-   */
-  async splitContext(
-    tenantId: string,
-  ): Promise<{ recipientId: string } | null> {
-    // Splits are a Moyasar mechanism. Tap routes by merchant (`routingContext`);
-    // a leftover MOYASAR_MARKETPLACE_ENABLED must never attach a split to a Tap charge.
-    if (this.capability.tapGoverned) return null;
-    if (!this.config.marketplaceSplitsEnabled) return null;
-    const account = await this.getOrCreate(tenantId);
-    if (account.status !== S.APPROVED || !account.provider_recipient_id) {
-      return null;
-    }
-    return { recipientId: account.provider_recipient_id };
   }
 
   /**
@@ -318,7 +290,7 @@ export class MerchantAccountService {
    *
    * Switching an account that previously belonged to another provider does NOT
    * carry that provider's approval or recipient id across — an approval under
-   * Moyasar says nothing about a Tap merchant. The old recipient id is copied
+   * another provider says nothing about a Tap merchant. The old recipient id is copied
    * into the audit trail before it is cleared, so nothing is lost, and the
    * status goes back to NOT_STARTED so a retry (should the Connect call that
    * follows fail) is allowed to proceed.

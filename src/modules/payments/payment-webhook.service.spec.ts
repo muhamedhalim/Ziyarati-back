@@ -8,7 +8,7 @@ import { Payment } from '../../entities/Payments/Payment';
 import { Refund } from '../../entities/Payments/Refund';
 import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
 import { InvoiceStatus, PaymentStatus } from '../../entities/enums';
-import { MoyasarWebhookVerifier } from './webhooks/moyasar-webhook.verifier';
+import { GatewayWebhookEvent } from './webhooks/gateway-webhook.types';
 import { TransactionService } from './transaction.service';
 import { SettlementAdjustmentService } from './settlement-adjustment.service';
 import { PaymentFinancialsService } from './payment-financials.service';
@@ -17,7 +17,6 @@ import {
   PlatformAdminAuditService,
   PLATFORM_ADMIN_AUDIT_ACTION,
 } from '../platform/platform-admin-audit.service';
-import { ErrorCode } from '../../common/errors';
 import {
   createMockRepository,
   createMockEntityManager,
@@ -28,22 +27,60 @@ import {
   MockEntityManager,
 } from '../../../test/utils/mock-factories';
 
-describe('PaymentWebhookService.handleMoyasar', () => {
+describe('PaymentWebhookService.process', () => {
   let service: PaymentWebhookService;
   let payments: MockRepository;
   let invoices: MockRepository;
   let dataSource: MockDataSource;
   let manager: MockEntityManager;
-  let verifier: { verify: jest.Mock };
   let transactions: { recordWebhookOnce: jest.Mock; record: jest.Mock };
   let adjustments: { recordClawbackIfSettled: jest.Mock };
-  let financials: { applyOnPaid: jest.Mock; extractFromRaw: jest.Mock };
+  let financials: { applyOnPaid: jest.Mock };
   let audit: { record: jest.Mock };
   let emitter: { emit: jest.Mock };
   let settlement: { settleInvoicePaid: jest.Mock };
 
-  /** ZT-H02 — a fresh ISO-8601 timestamp, well inside the freshness window. */
-  const freshCreatedAt = () => new Date().toISOString();
+  /**
+   * Terse test input -> the provider-neutral event `process()` consumes. The
+   * gateway adapter (authentication + wire parsing) is covered by its own spec
+   * (TapWebhookHandler); here only the neutral processing is under test.
+   */
+  type TestEvent = {
+    id?: string;
+    type?: string;
+    data: {
+      id: string;
+      status?: string;
+      amount?: number;
+      currency?: string;
+      refunded?: number;
+      metadata?: { subscriptionInvoiceId?: string };
+    };
+  };
+  const toEvent = (e: TestEvent): GatewayWebhookEvent => {
+    const type = (e.type ?? '').toLowerCase();
+    const target = type.includes('refund')
+      ? 'refunded'
+      : type.includes('paid')
+        ? 'paid'
+        : type.includes('fail')
+          ? 'failed'
+          : 'pending';
+    return {
+      provider: 'tap',
+      gatewayPaymentId: e.data.id,
+      dedupeKey: e.id,
+      target,
+      eventLabel: e.type ?? target,
+      capturedMinorUnits: e.data.amount,
+      capturedCurrency: e.data.currency,
+      refundedMinorUnits: e.data.refunded,
+      failureReason: e.data.status ?? 'Gateway reported failure',
+      subscriptionInvoiceId: e.data.metadata?.subscriptionInvoiceId,
+      raw: { ...e },
+    };
+  };
+  const handle = (e: TestEvent) => service.process(toEvent(e));
 
   const ownerPayment = () => ({
     id: 'pay-1',
@@ -63,7 +100,6 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     invoices = createMockRepository();
     manager = createMockEntityManager();
     dataSource = createMockDataSource(manager);
-    verifier = { verify: jest.fn().mockReturnValue(true) };
     transactions = {
       recordWebhookOnce: jest.fn().mockResolvedValue({ created: true }),
       record: jest.fn().mockResolvedValue(undefined),
@@ -71,10 +107,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     adjustments = {
       recordClawbackIfSettled: jest.fn().mockResolvedValue(undefined),
     };
-    financials = {
-      applyOnPaid: jest.fn(),
-      extractFromRaw: jest.fn().mockReturnValue({}),
-    };
+    financials = { applyOnPaid: jest.fn() };
     audit = { record: jest.fn().mockResolvedValue(undefined) };
     emitter = { emit: jest.fn() };
     settlement = { settleInvoicePaid: jest.fn() };
@@ -88,7 +121,6 @@ describe('PaymentWebhookService.handleMoyasar', () => {
           useValue: invoices,
         },
         { provide: DataSource, useValue: dataSource },
-        { provide: MoyasarWebhookVerifier, useValue: verifier },
         { provide: TransactionService, useValue: transactions },
         { provide: SettlementAdjustmentService, useValue: adjustments },
         { provide: PaymentFinancialsService, useValue: financials },
@@ -105,34 +137,12 @@ describe('PaymentWebhookService.handleMoyasar', () => {
   const paymentRepo = () =>
     manager.getRepository(Payment) as unknown as MockRepository;
 
-  it('rejects a webhook with an invalid signature', async () => {
-    verifier.verify.mockReturnValueOnce(false);
-    await expect(
-      service.handleMoyasar(
-        { id: 'e1', type: 'payment_paid', data: { id: 'gw1' } } as any,
-        'bad',
-      ),
-    ).rejects.toMatchObject({ code: ErrorCode.UNAUTHORIZED });
-  });
-
-  it('accepts-but-ignores a webhook with no gateway payment id', async () => {
-    const res = await service.handleMoyasar({
-      id: 'e1',
-      type: 'x',
-      created_at: freshCreatedAt(),
-      data: {},
-    } as any);
-    expect(res).toEqual({ accepted: true, matched: false });
-  });
-
   it('accepts-but-ignores a webhook for an unknown gateway payment', async () => {
     payments.findOne.mockResolvedValueOnce(null);
-    const res = await service.handleMoyasar({
+    const res = await handle({
       id: 'e1',
-      type: 'x',
-      created_at: freshCreatedAt(),
-      data: { id: 'gw-unknown' },
-    } as any);
+      type: 'x',      data: { id: 'gw-unknown' },
+    });
     expect(res).toEqual({ accepted: true, matched: false });
   });
 
@@ -141,12 +151,10 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     paymentRepo().findOne.mockResolvedValueOnce(lockedPayment());
     transactions.recordWebhookOnce.mockResolvedValueOnce({ created: false }); // lost the insert race
 
-    const res = await service.handleMoyasar({
+    const res = await handle({
       id: 'e1',
-      type: 'payment_paid',
-      created_at: freshCreatedAt(),
-      data: { id: 'gw1', status: 'paid', amount: 10000, currency: 'SAR' },
-    } as any);
+      type: 'payment_paid',      data: { id: 'gw1', status: 'paid', amount: 10000, currency: 'SAR' },
+    });
 
     expect(res.deduplicated).toBe(true);
     expect(paymentRepo().save).not.toHaveBeenCalled();
@@ -157,12 +165,10 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     const payment = lockedPayment();
     paymentRepo().findOne.mockResolvedValueOnce(payment);
 
-    const res = await service.handleMoyasar({
+    const res = await handle({
       id: 'e1',
-      type: 'payment_paid',
-      created_at: freshCreatedAt(),
-      data: { id: 'gw1', status: 'paid', amount: 10000, currency: 'SAR' },
-    } as any);
+      type: 'payment_paid',      data: { id: 'gw1', status: 'paid', amount: 10000, currency: 'SAR' },
+    });
 
     expect(payment.status).toBe(PaymentStatus.PAID);
     expect(res.status).toBe(PaymentStatus.PAID);
@@ -174,12 +180,10 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     const payment = lockedPayment();
     paymentRepo().findOne.mockResolvedValueOnce(payment);
 
-    const res = await service.handleMoyasar({
+    const res = await handle({
       id: 'e1',
-      type: 'payment_paid',
-      created_at: freshCreatedAt(),
-      data: { id: 'gw1', status: 'paid', amount: 9999, currency: 'SAR' }, // wrong amount
-    } as any);
+      type: 'payment_paid',      data: { id: 'gw1', status: 'paid', amount: 9999, currency: 'SAR' }, // wrong amount
+    });
 
     expect(payment.status).toBe(PaymentStatus.PENDING); // untouched
     expect(res.status).toBe(PaymentStatus.PENDING);
@@ -191,12 +195,10 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     const payment = lockedPayment();
     paymentRepo().findOne.mockResolvedValueOnce(payment);
 
-    const res = await service.handleMoyasar({
+    const res = await handle({
       id: 'e1',
-      type: 'payment_failed',
-      created_at: freshCreatedAt(),
-      data: { id: 'gw1', status: 'failed' },
-    } as any);
+      type: 'payment_failed',      data: { id: 'gw1', status: 'failed' },
+    });
 
     expect(res.status).toBe(PaymentStatus.FAILED);
   });
@@ -213,12 +215,10 @@ describe('PaymentWebhookService.handleMoyasar', () => {
       .mockResolvedValueOnce({ sum: '100' }); // 100 major == 10000 cents == full
     manager.createQueryBuilder.mockReturnValue(refundQb);
 
-    const res = await service.handleMoyasar({
+    const res = await handle({
       id: 'e1',
-      type: 'payment_refunded',
-      created_at: freshCreatedAt(),
-      data: { id: 'gw1', refunded: 10000 },
-    } as any);
+      type: 'payment_refunded',      data: { id: 'gw1', refunded: 10000 },
+    });
 
     // A reconciling Refund row is appended for the delta and clawback is checked.
     expect(manager.getRepository(Refund).save).toHaveBeenCalled();
@@ -244,12 +244,10 @@ describe('PaymentWebhookService.handleMoyasar', () => {
         .mockResolvedValueOnce({ sum: '100' }); // succeeded total = 10000 cents = full
       manager.createQueryBuilder.mockReturnValue(refundQb);
 
-      await service.handleMoyasar({
+      await handle({
         id: 'e1',
-        type: 'payment_refunded',
-        created_at: freshCreatedAt(),
-        data: { id: 'gw1', refunded: 10000 },
-      } as any);
+        type: 'payment_refunded',        data: { id: 'gw1', refunded: 10000 },
+      });
 
       expect(emitter.emit).toHaveBeenCalledWith(
         'refund.recorded',
@@ -276,12 +274,10 @@ describe('PaymentWebhookService.handleMoyasar', () => {
         .mockResolvedValueOnce({ sum: '100' });
       manager.createQueryBuilder.mockReturnValue(refundQb);
 
-      await service.handleMoyasar({
+      await handle({
         id: 'e1',
-        type: 'payment_refunded',
-        created_at: freshCreatedAt(),
-        data: { id: 'gw1', refunded: 10000 },
-      } as any);
+        type: 'payment_refunded',        data: { id: 'gw1', refunded: 10000 },
+      });
 
       expect(emitter.emit).not.toHaveBeenCalledWith(
         'refund.recorded',
@@ -294,12 +290,10 @@ describe('PaymentWebhookService.handleMoyasar', () => {
       payments.findOne.mockResolvedValueOnce(ownerPayment());
       paymentRepo().findOne.mockResolvedValueOnce(lockedPayment());
 
-      const res = await service.handleMoyasar({
+      const res = await handle({
         id: 'e1',
-        type: 'payment_refunded',
-        created_at: freshCreatedAt(),
-        data: { id: 'gw1', refunded: 10000 },
-      } as any);
+        type: 'payment_refunded',        data: { id: 'gw1', refunded: 10000 },
+      });
 
       expect(res.deduplicated).toBe(true);
       expect(emitter.emit).not.toHaveBeenCalled();
@@ -319,12 +313,10 @@ describe('PaymentWebhookService.handleMoyasar', () => {
       .mockResolvedValueOnce({ sum: '100' }); // succeeded 10000c
     manager.createQueryBuilder.mockReturnValue(refundQb);
 
-    await service.handleMoyasar({
+    await handle({
       id: 'e1',
-      type: 'payment_refunded',
-      created_at: freshCreatedAt(),
-      data: { id: 'gw1', refunded: 10000 },
-    } as any);
+      type: 'payment_refunded',      data: { id: 'gw1', refunded: 10000 },
+    });
 
     expect(manager.getRepository(Refund).save).not.toHaveBeenCalled();
     expect(adjustments.recordClawbackIfSettled).not.toHaveBeenCalled();
@@ -335,11 +327,9 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     const payment = lockedPayment();
     paymentRepo().findOne.mockResolvedValueOnce(payment);
 
-    const res = await service.handleMoyasar({
-      type: 'payment_paid',
-      created_at: freshCreatedAt(),
-      data: { id: 'gw1', status: 'paid', amount: 10000, currency: 'SAR' },
-    } as any);
+    const res = await handle({
+      type: 'payment_paid',      data: { id: 'gw1', status: 'paid', amount: 10000, currency: 'SAR' },
+    });
 
     expect(transactions.record).toHaveBeenCalled();
     expect(transactions.recordWebhookOnce).not.toHaveBeenCalled();
@@ -378,9 +368,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     const paidEvent = (overrides: Record<string, unknown> = {}) =>
       ({
         id: 'e1',
-        type: 'payment_paid',
-        created_at: freshCreatedAt(),
-        data: {
+        type: 'payment_paid',        data: {
           id: 'gw-sub-1',
           status: 'paid',
           amount: 10000,
@@ -402,7 +390,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
         invoice: { ...lockedInvoice(), status: InvoiceStatus.PAID },
       });
 
-      await service.handleMoyasar(paidEvent());
+      await handle(paidEvent());
 
       expect(invoices.findOne).toHaveBeenCalledWith(
         expect.objectContaining({ where: { id: 'inv-1' } }),
@@ -416,13 +404,13 @@ describe('PaymentWebhookService.handleMoyasar', () => {
         invoice: { ...lockedInvoice(), status: InvoiceStatus.PAID },
       });
 
-      const res = await service.handleMoyasar(paidEvent());
+      const res = await handle(paidEvent());
 
       expect(settlement.settleInvoicePaid).toHaveBeenCalledWith(
         'inv-1',
         expect.objectContaining({
           source: 'webhook',
-          provider: 'moyasar',
+          provider: 'tap',
           reference: 'gw-sub-1',
           webhookEventId: 'e1',
           capturedMinorUnits: 10000,
@@ -446,7 +434,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
           outcome,
           invoice: { ...lockedInvoice(), status: InvoiceStatus.OPEN },
         });
-        const res = await service.handleMoyasar(paidEvent());
+        const res = await handle(paidEvent());
         expect(res.deduplicated).toBe(true);
       }
     });
@@ -455,7 +443,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
       invoices.findOne.mockResolvedValueOnce(ownerInvoice());
       settlement.settleInvoicePaid.mockRejectedValueOnce(new Error('db down'));
 
-      await expect(service.handleMoyasar(paidEvent())).rejects.toThrow(
+      await expect(handle(paidEvent())).rejects.toThrow(
         'db down',
       );
     });
@@ -469,16 +457,14 @@ describe('PaymentWebhookService.handleMoyasar', () => {
       };
       invoiceRepo().findOne.mockResolvedValueOnce(invoice);
 
-      await service.handleMoyasar({
+      await handle({
         id: 'e1',
-        type: 'payment_failed',
-        created_at: freshCreatedAt(),
-        data: {
+        type: 'payment_failed',        data: {
           id: 'gw-sub-1',
           status: 'failed',
           metadata: { subscriptionInvoiceId: 'inv-1' },
         },
-      } as any);
+      });
 
       expect(settlement.settleInvoicePaid).not.toHaveBeenCalled();
       expect(invoice.status).toBe(InvoiceStatus.OPEN); // unchanged — decline doesn't move status
@@ -501,16 +487,14 @@ describe('PaymentWebhookService.handleMoyasar', () => {
       };
       invoiceRepo().findOne.mockResolvedValueOnce(invoice);
 
-      await service.handleMoyasar({
+      await handle({
         id: 'e1',
-        type: 'payment_failed',
-        created_at: freshCreatedAt(),
-        data: {
+        type: 'payment_failed',        data: {
           id: 'gw-sub-1',
           status: 'failed',
           metadata: { subscriptionInvoiceId: 'inv-1' },
         },
-      } as any);
+      });
 
       expect(invoice.checkout_started_at).toBeNull();
     });
@@ -525,16 +509,14 @@ describe('PaymentWebhookService.handleMoyasar', () => {
       };
       invoiceRepo().findOne.mockResolvedValueOnce(invoice);
 
-      await service.handleMoyasar({
+      await handle({
         id: 'e1',
-        type: 'payment_failed',
-        created_at: freshCreatedAt(),
-        data: {
+        type: 'payment_failed',        data: {
           id: 'gw-sub-1',
           status: 'failed',
           metadata: { subscriptionInvoiceId: 'inv-1' },
         },
-      } as any);
+      });
 
       expect(invoice.checkout_started_at).toBe(started);
     });
@@ -544,16 +526,14 @@ describe('PaymentWebhookService.handleMoyasar', () => {
       const invoice = { ...lockedInvoice(), status: InvoiceStatus.PAID };
       invoiceRepo().findOne.mockResolvedValueOnce(invoice);
 
-      const res = await service.handleMoyasar({
+      const res = await handle({
         id: 'e1',
-        type: 'payment_failed',
-        created_at: freshCreatedAt(),
-        data: {
+        type: 'payment_failed',        data: {
           id: 'gw-sub-1',
           status: 'failed',
           metadata: { subscriptionInvoiceId: 'inv-1' },
         },
-      } as any);
+      });
 
       expect(invoice.status).toBe(InvoiceStatus.PAID); // never regresses
       expect(res.deduplicated).toBe(true);
@@ -565,16 +545,14 @@ describe('PaymentWebhookService.handleMoyasar', () => {
       const invoice = { ...lockedInvoice(), webhook_event_id: 'e1' };
       invoiceRepo().findOne.mockResolvedValueOnce(invoice);
 
-      const res = await service.handleMoyasar({
+      const res = await handle({
         id: 'e1',
-        type: 'payment_failed',
-        created_at: freshCreatedAt(),
-        data: {
+        type: 'payment_failed',        data: {
           id: 'gw-sub-1',
           status: 'failed',
           metadata: { subscriptionInvoiceId: 'inv-1' },
         },
-      } as any);
+      });
 
       expect(res.deduplicated).toBe(true);
       expect(invoiceRepo().save).not.toHaveBeenCalled();
@@ -583,12 +561,10 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     it('falls through to the unmatched-event outcome when neither a Payment nor an invoice correlates', async () => {
       invoices.findOne.mockResolvedValueOnce(null);
 
-      const res = await service.handleMoyasar({
+      const res = await handle({
         id: 'e1',
-        type: 'payment_paid',
-        created_at: freshCreatedAt(),
-        data: { id: 'gw-totally-unknown', status: 'paid' },
-      } as any);
+        type: 'payment_paid',        data: { id: 'gw-totally-unknown', status: 'paid' },
+      });
 
       expect(res).toEqual({ accepted: true, matched: false });
       expect(settlement.settleInvoicePaid).not.toHaveBeenCalled();

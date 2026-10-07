@@ -41,13 +41,13 @@ describe('PaymentGatewayService', () => {
     it('audits a successful create with the acting super admin, WITHOUT leaking `config`', async () => {
       gateways.save.mockResolvedValueOnce({
         id: 'gw1',
-        gateway_name: 'moyasar',
+        gateway_name: 'tap',
         is_active: true,
         config: { publicId: 'pub_123', liveSecretLookingField: 'sk_live_should_never_be_here' },
       });
 
       await service.create({
-        gatewayName: 'moyasar',
+        gatewayName: 'tap',
         isActive: true,
         config: { publicId: 'pub_123', liveSecretLookingField: 'sk_live_should_never_be_here' },
       } as any);
@@ -60,7 +60,7 @@ describe('PaymentGatewayService', () => {
         entityType: 'payment_gateway',
         entityId: 'gw1',
         before: null,
-        after: { gatewayName: 'moyasar', isActive: true, hasConfig: true },
+        after: { gatewayName: 'tap', isActive: true, hasConfig: true },
       });
       // The raw config object (and anything it might contain) must never appear.
       expect(JSON.stringify(call)).not.toContain('sk_live_should_never_be_here');
@@ -69,7 +69,7 @@ describe('PaymentGatewayService', () => {
     it('audits a successful update with the before and after activation state', async () => {
       gateways.findOne.mockResolvedValueOnce({
         id: 'gw1',
-        gateway_name: 'moyasar',
+        gateway_name: 'tap',
         is_active: true,
         config: null,
       });
@@ -83,8 +83,8 @@ describe('PaymentGatewayService', () => {
           userId: 'super-admin-1',
           entityType: 'payment_gateway',
           entityId: 'gw1',
-          before: { gatewayName: 'moyasar', isActive: true, hasConfig: false },
-          after: { gatewayName: 'moyasar', isActive: false, hasConfig: false },
+          before: { gatewayName: 'tap', isActive: true, hasConfig: false },
+          after: { gatewayName: 'tap', isActive: false, hasConfig: false },
         }),
       );
     });

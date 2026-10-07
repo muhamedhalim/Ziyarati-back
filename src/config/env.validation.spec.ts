@@ -43,6 +43,9 @@ const prodBase = {
   FRONTEND_ORIGIN: PROD_FRONTEND_ORIGIN,
   DB_SSL_CA: PROD_DB_SSL_CA,
   AUTH_REGISTER_OWNER_ENDPOINT_CEILING: PROD_REGISTER_OWNER_CEILING,
+  // `tap` is the default provider and (correctly) refuses to boot in production
+  // without credentials; tests about OTHER concerns opt out explicitly.
+  PAYMENT_PROVIDER: 'noop',
 };
 
 describe('env.validation', () => {
@@ -535,18 +538,17 @@ describe('env.validation', () => {
   });
 
   describe('payments fail-fast (production)', () => {
-    // The legacy Moyasar production fail-fast was DISABLED in commit 3c28259
-    // ("deploy"): it required MOYASAR_SECRET_KEY/MOYASAR_WEBHOOK_SECRET at boot
-    // and the production env does not necessarily carry them. These tests pin
-    // the behaviour that actually ships — the runtime still fails CLOSED
-    // (PaymentGatewayFactory refuses to fall back to the Noop simulator) — and
-    // the new Tap rules, which are scoped to Tap being chosen deliberately.
-    it('legacy default (moyasar) still boots in production without keys — its boot-time check is disabled, the runtime fails closed instead', () => {
-      const value = validate({
-        ...prodBase,
-        CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
-      });
-      expect(value.PAYMENT_PROVIDER).toBe('moyasar');
+    // `tap` is the default provider, so a production boot that does not opt out
+    // (PAYMENT_PROVIDER=noop) fails closed without Tap credentials instead of
+    // falling back to the Noop simulator.
+    it('the default provider (tap) refuses to boot in production without credentials', () => {
+      expect(() =>
+        validate({
+          ...prodBase,
+          PAYMENT_PROVIDER: undefined,
+          CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+        }),
+      ).toThrow(/TAP_ENV/);
     });
 
     describe('Tap (PAYMENT_PROVIDER=tap) in production', () => {
@@ -636,10 +638,7 @@ describe('env.validation', () => {
         );
       });
 
-      it('Tap variables are NOT required when a different provider is selected, even in production', () => {
-        expect(() =>
-          validate({ ...prodBase, CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY, PAYMENT_PROVIDER: 'moyasar' }),
-        ).not.toThrow();
+      it('Tap variables are NOT required when payments are explicitly disabled, even in production', () => {
         expect(() =>
           validate({ ...prodBase, CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY, PAYMENT_PROVIDER: 'noop' }),
         ).not.toThrow();
@@ -690,7 +689,7 @@ describe('env.validation', () => {
 
       it('the prefix check applies even when Tap is not the selected provider (the key is still wrong)', () => {
         expect(() =>
-          validate({ ...base, PAYMENT_PROVIDER: 'moyasar', TAP_TEST_SECRET_KEY: 'sk_live_wrongSlot000000' }),
+          validate({ ...base, PAYMENT_PROVIDER: 'noop', TAP_TEST_SECRET_KEY: 'sk_live_wrongSlot000000' }),
         ).toThrow(/TAP_TEST_SECRET_KEY/);
       });
     });
@@ -714,7 +713,7 @@ describe('env.validation', () => {
       });
 
       it('an EMPTY PAYMENT_PROVIDER line means "unset" (default), not an invalid value that refuses to boot', () => {
-        expect(validate({ ...base, PAYMENT_PROVIDER: '' }).PAYMENT_PROVIDER).toBe('moyasar');
+        expect(validate({ ...base, PAYMENT_PROVIDER: '' }).PAYMENT_PROVIDER).toBe('tap');
       });
 
       it('accepts tap as a provider', () => {
@@ -783,8 +782,7 @@ describe('env.validation', () => {
 
     it('boots keyless outside production (Noop dev flow)', () => {
       const value = validate({ ...base });
-      expect(value.PAYMENT_PROVIDER).toBe('moyasar');
-      expect(value.MOYASAR_MARKETPLACE_ENABLED).toBe('false');
+      expect(value.PAYMENT_PROVIDER).toBe('tap');
     });
 
     it('rejects an unknown PAYMENT_PROVIDER', () => {
@@ -809,8 +807,6 @@ describe('env.validation', () => {
     it('boots in production with NO Meta config at all (legitimately optional — not every deployment uses WhatsApp)', () => {
       const value = validate({
         ...prodBase,
-        MOYASAR_SECRET_KEY: 'sk',
-        MOYASAR_WEBHOOK_SECRET: 'whs',
         CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
       });
       expect(value.META_APP_ID).toBeUndefined();
@@ -820,8 +816,6 @@ describe('env.validation', () => {
       expect(() =>
         validate({
           ...prodBase,
-          MOYASAR_SECRET_KEY: 'sk',
-          MOYASAR_WEBHOOK_SECRET: 'whs',
           CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
           META_APP_ID: 'app-123',
         }),
@@ -835,8 +829,6 @@ describe('env.validation', () => {
       try {
         validate({
           ...prodBase,
-          MOYASAR_SECRET_KEY: 'sk',
-          MOYASAR_WEBHOOK_SECRET: 'whs',
           CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
           META_APP_ID: 'app-123',
           META_APP_SECRET: 'top-secret-value',
@@ -855,8 +847,6 @@ describe('env.validation', () => {
     it('boots in production once all four Meta variables are set', () => {
       const value = validate({
         ...prodBase,
-        MOYASAR_SECRET_KEY: 'sk',
-        MOYASAR_WEBHOOK_SECRET: 'whs',
         CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
         META_APP_ID: 'app-123',
         META_APP_SECRET: 'top-secret-value',
@@ -869,8 +859,6 @@ describe('env.validation', () => {
     it('the legacy WHATSAPP_APP_SECRET/WHATSAPP_VERIFY_TOKEN aliases also count as configured (MetaConfig honours them as a fallback — this check must not force a premature migration)', () => {
       const value = validate({
         ...prodBase,
-        MOYASAR_SECRET_KEY: 'sk',
-        MOYASAR_WEBHOOK_SECRET: 'whs',
         CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
         META_APP_ID: 'app-123',
         META_EMBEDDED_SIGNUP_CONFIG_ID: 'config-123',

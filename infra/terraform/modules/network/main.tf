@@ -80,7 +80,7 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# ── NAT (egress for OpenAI / Meta / Moyasar / AWS APIs) ─────────────────────
+# ── NAT (egress for OpenAI / Meta / Tap / AWS APIs) ─────────────────────
 # nat_gateway_count NATs in the first N AZs; app subnet i routes to NAT
 # (i mod N). Production uses 2 so one AZ loss cannot stop new tasks pulling
 # images or reading secrets; staging uses 1.

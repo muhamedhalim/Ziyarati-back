@@ -14,7 +14,7 @@ import { Payment } from '../Payments/Payment';
 
 /**
  * A clinic owner's request to enable a plan-excluded feature or raise a usage
- * limit, quoted by a super admin and paid through the existing Moyasar/Payment
+ * limit, quoted by a super admin and paid through the existing Payment
  * flow (there is no wallet/stored-balance entity in this codebase — money
  * movement is always a charge-per-payment, see PaymentService).
  *

@@ -100,7 +100,7 @@ export class SubscriptionInvoice {
   failure_class?: string | null;
 
   /**
-   * T083 (spec 014, US5) — dedup key for a Moyasar webhook confirming this
+   * T083 (spec 014, US5) — dedup key for a gateway webhook confirming this
    * invoice's charge. `Transaction.payment` is a required FK, so the
    * one-time-payment ledger's own dedup mechanism cannot be reused here
    * (subscription charges are a deliberately separate financial stream —

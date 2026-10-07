@@ -576,7 +576,7 @@ describe('Platform + clinic finance read APIs (Phase 6) — real Postgres + Redi
       ]);
       // stamped when the invoice is issued under Tap, so the unpaid one carries it too
       expect((await q('provider=tap')).total).toBe(3);
-      expect((await q('provider=moyasar')).total).toBe(0);
+      expect((await q('provider=noop')).total).toBe(0);
       expect((await q('issuedFrom=2999-01-01T00:00:00Z')).total).toBe(0);
     });
 

@@ -25,7 +25,7 @@ import { PlatformBillingUpgradeController } from './platform-billing-upgrade.con
  * Billing Upgrade Requests domain.
  *
  * Orchestrates the existing entitlement primitives (FeatureFlag, the new
- * TenantUsageLimitOverride) and the existing Payment/Moyasar flow — it owns NO
+ * TenantUsageLimitOverride) and the existing Payment flow — it owns NO
  * parallel billing or payment system. `SubscriptionBillingModule` supplies
  * UsageService/FeatureFlagService/TenantUsageLimitOverrideService;
  * `PaymentsModule` supplies PaymentService (the charge is created here but

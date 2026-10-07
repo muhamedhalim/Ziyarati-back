@@ -61,7 +61,6 @@ describe('ProviderReconciliationService', () => {
     it.each([
       ['tap with a key', 'tap', true, true],
       ['tap without a key', 'tap', false, false],
-      ['moyasar', 'moyasar', true, false],
       ['noop', 'noop', true, false],
     ])('%s → %s', (_l, provider, configured, expected) => {
       config.providerName = provider;
@@ -72,7 +71,7 @@ describe('ProviderReconciliationService', () => {
 
   describe('run', () => {
     it('does nothing — asks Tap nothing, reads nothing — while Tap is not the active provider', async () => {
-      config.providerName = 'moyasar';
+      config.providerName = 'noop';
       const res = await build().run({ lookbackDays: 3 });
       expect(res).toEqual({
         skipped: 'tap_not_active',

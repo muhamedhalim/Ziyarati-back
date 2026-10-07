@@ -16,10 +16,9 @@ import {
 /**
  * Production stand-in until recurring charges are actually enabled.
  *
- * Moyasar DOES support saved-card tokenization + recurring charges, but that
- * flow needs (a) tokenization enabled on the merchant account and (b) a stored
+ * Saved-card tokenization + recurring charges need (a) tokenization enabled on the merchant account and (b) a stored
  * per-clinic card token captured through the client-side form — neither exists
- * yet. Until then, a LIVE deployment must not "simulate" a subscription charge:
+ * on this binding yet. Until then, a LIVE deployment must not "simulate" a subscription charge:
  * the stub marking invoices PAID with no money moved is exactly the incorrect
  * financial behavior the platform must never exhibit.
  *

@@ -92,7 +92,7 @@ describe('TapGatewayProvider', () => {
       expect(p.supports('tap')).toBe(true);
       expect(p.supports('TAP')).toBe(true);
       expect(p.supports(undefined)).toBe(false);
-      expect(p.supports('moyasar')).toBe(false);
+      expect(p.supports('noop')).toBe(false);
     });
 
     it('does not support anything without a secret key (factory then falls back / fails closed)', () => {

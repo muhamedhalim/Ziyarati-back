@@ -7,10 +7,16 @@
  * swapping the tenant's subscription onto different plans after a purchase
  * and re-reading the enforced limit each time.
  */
+import './utils/tap-e2e-env.setup';
+import { TEST_META_ENV } from './utils/whatsapp-meta-env-configured.setup';
+void TEST_META_ENV;
+
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
 
 import { createE2eApp, authHeader, type E2eApp } from './utils/whatsapp-e2e-app';
+import { TapSandbox, settle } from './utils/tap-e2e';
+import { TapApiClient } from '../src/modules/payments/providers/tap/tap-api.client';
 import {
   createSubscribedOwnerFixture,
   setPaidMode,
@@ -36,24 +42,21 @@ async function activateCatalogItem(
   await catalog.save(item);
 }
 
-async function payWebhook(e2e: E2eApp, gwId: string, amountCents: number, currency: string): Promise<void> {
-  await request(e2e.app.getHttpServer())
-    .post(`${API}/payments/webhooks/moyasar`)
-    .send({
-      id: randomUUID(),
-      type: 'payment_paid',
-      created_at: new Date().toISOString(),
-      data: { id: gwId, status: 'paid', amount: amountCents, currency },
-    })
-    .expect(200);
-  await new Promise((r) => setTimeout(r, 300));
+const tap = new TapSandbox();
+
+/** Confirms the payment the way Tap does: a signed webhook for the captured charge. */
+async function payWebhook(e2e: E2eApp, gatewayPaymentId: string): Promise<void> {
+  await tap.deliver(e2e.app, tap.capture(gatewayPaymentId)).expect(200);
+  await settle();
 }
 
 describe('Add-on capacity survives a plan change (plan §6/§24) — real Postgres', () => {
   let e2e: E2eApp;
 
   beforeAll(async () => {
-    e2e = await createE2eApp();
+    e2e = await createE2eApp((b) =>
+      b.overrideProvider(TapApiClient).useValue(tap.asClient()),
+    );
     await setPaidMode(e2e);
     await activateCatalogItem(e2e, 'branches', '5000');
   }, 60_000);
@@ -77,7 +80,7 @@ describe('Add-on capacity survives a plan change (plan §6/§24) — real Postgr
       where: { id: purchaseRes.body.purchase.id },
       relations: { payment: true },
     });
-    await payWebhook(e2e, purchase.payment!.gateway_payment_id!, Number(purchase.total_minor), purchase.currency);
+    await payWebhook(e2e, purchase.payment!.gateway_payment_id!);
 
     const breakdown1 = await request(e2e.app.getHttpServer())
       .get(`${API}/usage/breakdown`)

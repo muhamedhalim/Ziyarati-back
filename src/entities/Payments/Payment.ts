@@ -94,7 +94,7 @@ idempotency_key?: string;
   // at capture rather than recomputing later. Populated when the gateway/config
   // provide them; default 0 keeps `net = gross` until fee data is available.
 
-  /** Gateway processing fee in major units (e.g. Moyasar `data.fee`/100). */
+  /** Gateway processing fee in major units (as reported by the gateway adapter). */
   @Column({
     type: 'decimal',
     precision: 14,

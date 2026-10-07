@@ -45,7 +45,7 @@ function build(env: Record<string, unknown>, row: unknown = null) {
  */
 describe('OnlinePaymentCapabilityService', () => {
   describe('NOT on Tap — adds no behaviour to a deployment that has not switched', () => {
-    it.each(['moyasar', 'noop', ''])(
+    it.each(['noop'])(
       'is always available for PAYMENT_PROVIDER=%p and never reads the database',
       async (provider) => {
         const { service, findOne } = build({ PAYMENT_PROVIDER: provider });
@@ -120,7 +120,7 @@ describe('OnlinePaymentCapabilityService', () => {
       ],
       [
         'an account approved under ANOTHER provider',
-        approved({ provider: 'moyasar' }),
+        approved({ provider: 'legacy-provider' }),
       ],
     ])('CLINIC_NOT_ONBOARDED for %s', async (_label, row) => {
       const { service } = build(TAP_ON, row);

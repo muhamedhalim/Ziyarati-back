@@ -2,7 +2,7 @@
 
 Companion to `specs/017-tap-payments/phase-8-production-rollout.md` (the evidence and status of Phase 8). This file is the procedure; it lives in the backend repo so it is versioned with the code, the alarms and the preflight it describes.
 
-**State when written (2026-10-04):** the code for Phases 1–7 is merged on `master`; **nothing is switched on anywhere**. Production runs on Railway today (the AWS target in `infra/` is not applied); the frontend is on Vercel. `PAYMENT_PROVIDER` is unset/`moyasar`, and no Tap secret exists in any hosted environment.
+**State when written (2026-10-04):** the code for Phases 1–7 is merged on `master`; **nothing is switched on anywhere**. Production runs on Railway today (the AWS target in `infra/` is not applied); the frontend is on Vercel. `PAYMENT_PROVIDER` is unset, and no Tap secret exists in any hosted environment.
 
 ---
 
@@ -85,7 +85,7 @@ G9 and G10 do **not** block steps 1–7: subscriptions and add-ons are charged o
 | Settlement run claims only clinic booking/manual payments | Add-on / billing-upgrade payments (platform revenue) stop appearing in clinic settlement batches. §8 queries 4–5 list any an earlier run already claimed — they are never auto-corrected. |
 | A late `paid` event can no longer flip a refunded payment back to PAID | none visible |
 | `payments.outcome` outbox job applies the booking / add-on / upgrade consequence in the worker | add-on and upgrade grants survive a lost in-process event |
-| Renewal bills the **next** period (the first renewal of a paid subscription used to be skipped and drift to `GRACE_EXPIRED` with no invoice) | a renewal invoice now appears and, with no card on file, the existing "pay now" banner; it cannot be paid in-app until step 5 (as before: Moyasar's `/pay` always answered 422 in production) |
+| Renewal bills the **next** period (the first renewal of a paid subscription used to be skipped and drift to `GRACE_EXPIRED` with no invoice) | a renewal invoice now appears and, with no card on file, the existing "pay now" banner; it cannot be paid in-app until step 5 (as before: the old provider's `/pay` always answered 422 in production) |
 | Clinic `/app/payments` omits the clinic's own add-on / upgrade payments by default; rows gain `purpose` / `settlement_mode` | additive |
 | Finance UIs: new platform screens (merchants, reconciliation, subscription ledger) | additive; reconciliation finds nothing until the provider is `tap` |
 
@@ -100,7 +100,7 @@ Each step ends with a **pass criterion**; do not continue until it holds.
 **2. Store the live key** (§2). Do not list it anywhere else, and do not set `PAYMENT_PROVIDER` yet.
 *Pass:* the secret/variable exists; `git grep sk_live_` in both repos finds only fake test fixtures.
 
-**3. Stage the rest of the configuration** with the provider still `moyasar`: `TAP_ENV=live`, `TAP_WEBHOOK_URL`, both flags `false`, `TAP_MERCHANT_ID`. AWS: uncomment `TAP_MERCHANT_ID` and `TAP_LIVE_SECRET_KEY` in `environments/production/terraform.tfvars` (**only after step 2**), apply, roll the tasks.
+**3. Stage the rest of the configuration** before the first deploy: `TAP_ENV=live`, `TAP_WEBHOOK_URL`, both flags `false`, `TAP_MERCHANT_ID`. AWS: uncomment `TAP_MERCHANT_ID` and `TAP_LIVE_SECRET_KEY` in `environments/production/terraform.tfvars` (**only after step 2**), apply, roll the tasks.
 *Pass:* both services start and are healthy.
 
 **4. Pre-flip preflight.** Run the preflight against the exact post-flip configuration by overriding the provider for that one task only:
@@ -141,7 +141,6 @@ Always possible by changing one variable; never delete a row. **Keep the Tap web
 | Situation | Action | Effect |
 |---|---|---|
 | Any doubt about live money | `PAYMENT_PROVIDER=noop` (API + worker) | no new charges anywhere; the app still boots; in-flight charges still settle via webhook/sweep |
-| Back to the legacy provider | `PAYMENT_PROVIDER=moyasar` | checkout capability off → new subscriptions are ACTIVE + OPEN invoice again |
 | Booking only | `TAP_BOOKING_PAYMENTS_ENABLED=false` | bookings confirm as pay-at-clinic, links stop being issued, `/pay/*` reads "unavailable" |
 | Renewals only | `TAP_RECURRING_ENABLED=false` | renewals show the "pay now" banner |
 | Bad release | redeploy the previous image (AWS: the ECS circuit breaker does it; Railway: redeploy) | migrations are additive, the old image ignores the new columns |
@@ -174,7 +173,7 @@ Not covered by an alarm (no log line to key on): the daily reconciliation job no
 `created_at` on `payments` and `refunds` is `timestamp without time zone`: compare it **in SQL** like below, never in application code.
 
 ```sql
--- 0. what Moyasar/Tap history exists (gate G7, Phase 9 decision)
+-- 0. what payment-provider history exists (gate G7, Phase 9 decision)
 SELECT gateway, status, count(*) FROM payments GROUP BY 1,2 ORDER BY 1,2;
 SELECT provider, status, count(*) FROM merchant_accounts GROUP BY 1,2 ORDER BY 1,2;
 

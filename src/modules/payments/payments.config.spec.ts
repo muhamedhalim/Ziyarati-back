@@ -34,19 +34,19 @@ describe('PaymentsConfig — isProduction / paymentsLive / gatewayConfigured (HR
 
   describe('paymentsLive — production AND a non-noop provider selected (independent of whether credentials actually exist)', () => {
     it('is false outside production, even with a real provider selected', () => {
-      expect(config({ NODE_ENV: 'development', PAYMENT_PROVIDER: 'moyasar' }).paymentsLive).toBe(false);
+      expect(config({ NODE_ENV: 'development', PAYMENT_PROVIDER: 'tap' }).paymentsLive).toBe(false);
     });
 
     it('is false in production when explicitly opted out (PAYMENT_PROVIDER=noop)', () => {
       expect(config({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'noop' }).paymentsLive).toBe(false);
     });
 
-    it('is true in production with the default provider (PAYMENT_PROVIDER unset — defaults to moyasar, never silently noop)', () => {
+    it('is true in production with the default provider (PAYMENT_PROVIDER unset — defaults to tap, never silently noop)', () => {
       expect(config({ NODE_ENV: 'production' }).paymentsLive).toBe(true);
     });
 
-    it('is true in production with moyasar explicitly selected', () => {
-      expect(config({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'moyasar' }).paymentsLive).toBe(true);
+    it('is true in production with tap explicitly selected', () => {
+      expect(config({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'tap' }).paymentsLive).toBe(true);
     });
 
     // The defining property that makes the factory's fail-fast possible at
@@ -54,7 +54,7 @@ describe('PaymentsConfig — isProduction / paymentsLive / gatewayConfigured (HR
     // presence — so it stays true (and the factory guard can catch the gap)
     // even when the secret key is missing.
     it('is true in production even when the provider has NO credentials configured — this is precisely the case the factory guard exists to catch', () => {
-      const c = config({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'moyasar' });
+      const c = config({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'tap' });
       expect(c.paymentsLive).toBe(true);
       expect(c.gatewayConfigured).toBe(false);
     });
@@ -69,16 +69,16 @@ describe('PaymentsConfig — isProduction / paymentsLive / gatewayConfigured (HR
       expect(config({ PAYMENT_PROVIDER: 'noop' }).gatewayConfigured).toBe(true);
     });
 
-    it('is false for moyasar with no secret key', () => {
-      expect(config({ PAYMENT_PROVIDER: 'moyasar' }).gatewayConfigured).toBe(false);
+    it('is false for tap with no secret key', () => {
+      expect(config({ PAYMENT_PROVIDER: 'tap' }).gatewayConfigured).toBe(false);
     });
 
-    it('is true for moyasar once the secret key is set', () => {
-      expect(config({ PAYMENT_PROVIDER: 'moyasar', MOYASAR_SECRET_KEY: 'sk_live_x' }).gatewayConfigured).toBe(true);
+    it('is true for tap once the secret key is set', () => {
+      expect(config({ PAYMENT_PROVIDER: 'tap', TAP_TEST_SECRET_KEY: 'sk_test_x' }).gatewayConfigured).toBe(true);
     });
 
     it('is false for any unrecognized provider name', () => {
-      expect(config({ PAYMENT_PROVIDER: 'stripe', MOYASAR_SECRET_KEY: 'sk_live_x' }).gatewayConfigured).toBe(false);
+      expect(config({ PAYMENT_PROVIDER: 'stripe', TAP_TEST_SECRET_KEY: 'sk_test_x' }).gatewayConfigured).toBe(false);
     });
   });
 
@@ -229,12 +229,11 @@ describe('PaymentsConfig — isProduction / paymentsLive / gatewayConfigured (HR
     });
     it('outside production anything serves it (the simulator)', () => {
       expect(config().patientPayPageServed).toBe(true); // default provider, no NODE_ENV
-      expect(config({ PAYMENT_PROVIDER: 'moyasar', NODE_ENV: 'development' }).patientPayPageServed).toBe(true);
+      expect(config({ PAYMENT_PROVIDER: 'noop', NODE_ENV: 'development' }).patientPayPageServed).toBe(true);
       expect(config({ PAYMENT_PROVIDER: 'noop', NODE_ENV: 'test' }).patientPayPageServed).toBe(true);
     });
-    it('in PRODUCTION neither legacy Moyasar nor "payments disabled" serves it', () => {
-      expect(config({ PAYMENT_PROVIDER: 'moyasar', NODE_ENV: 'production' }).patientPayPageServed).toBe(false);
-      expect(config({ NODE_ENV: 'production' }).patientPayPageServed).toBe(false); // default = moyasar
+    it('in PRODUCTION only Tap serves it — "payments disabled" does not', () => {
+      expect(config({ NODE_ENV: 'production' }).patientPayPageServed).toBe(true); // default = tap
       expect(config({ PAYMENT_PROVIDER: 'noop', NODE_ENV: 'production' }).patientPayPageServed).toBe(false);
     });
   });
@@ -268,15 +267,15 @@ describe('PaymentsConfig — isProduction / paymentsLive / gatewayConfigured (HR
   });
 
   describe('secret accessors never fabricate a value', () => {
-    it('moyasarSecretKey/moyasarWebhookSecret are undefined, never empty-string, when unset', () => {
+    it('tapSecretKey/tapWebhookUrl are undefined, never empty-string, when unset', () => {
       const c = config();
-      expect(c.moyasarSecretKey).toBeUndefined();
-      expect(c.moyasarWebhookSecret).toBeUndefined();
+      expect(c.tapSecretKey).toBeUndefined();
+      expect(c.tapWebhookUrl).toBeUndefined();
     });
 
     it('a whitespace-only secret is treated as unset (matches gatewayConfigured\'s falsy check)', () => {
-      const c = config({ PAYMENT_PROVIDER: 'moyasar', MOYASAR_SECRET_KEY: '   ' });
-      expect(c.moyasarSecretKey).toBeUndefined();
+      const c = config({ PAYMENT_PROVIDER: 'tap', TAP_TEST_SECRET_KEY: '   ' });
+      expect(c.tapSecretKey).toBeUndefined();
       expect(c.gatewayConfigured).toBe(false);
     });
   });

@@ -56,7 +56,7 @@ export interface ReapSummary {
  * Two ways to learn the truth:
  *  - a gateway that can look ONE refund up (`verifyRefund`) is asked about that
  *    refund by its own id — the only source that can say "this refund FAILED";
- *  - a gateway that cannot (legacy Moyasar) is asked for the payment's
+ *  - a gateway that cannot is asked for the payment's
  *    cumulative refunded total, from which success is inferred; failure is only
  *    ever a positive "explicitly failed" signal, never a guess from age.
  *

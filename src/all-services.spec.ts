@@ -76,7 +76,6 @@ const PATHS: string[] = [
   'modules/payments/refund-recovery.service', 'modules/payments/settlement-adjustment.service',
   'modules/payments/financial-metrics.service', 'modules/payments/payment.service',
   'modules/payments/payment-webhook.service', 'modules/payments/providers/noop-gateway.provider',
-  'modules/payments/providers/moyasar.provider',
   'modules/crm/customer.service', 'modules/crm/customer-profile.service', 'modules/crm/customer-address.service',
   'modules/crm/customer-note.service', 'modules/crm/customer-tag.service', 'modules/crm/customer-tag-relation.service',
   'modules/crm/customer-file.service',

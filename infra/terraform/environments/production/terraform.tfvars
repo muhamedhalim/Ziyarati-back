@@ -71,16 +71,15 @@ app_environment = {
   EMAIL_FROM                           = "no-reply@ziyaratech.com"
   EMAIL_FROM_NAME                      = "ZiyaraTech"
   EMAIL_ENABLED                        = "true"
-  PAYMENT_PROVIDER                     = "moyasar"
+  PAYMENT_PROVIDER                     = "tap"
   AUTH_REGISTER_OWNER_ENDPOINT_CEILING = "1000" # copy the live Railway value
   DEFAULT_LOCALE                       = "ar"
   ENABLE_API_DOCS                      = "false"
   ENABLE_INTEGRATION_DOCS              = "false"
   PLATFORM_API_LOG_ENABLED             = "false"
 
-  # Tap — safe to ship while PAYMENT_PROVIDER is still "moyasar" (nothing reads these until it is "tap").
-  # PHASE 8 FLIP: PAYMENT_PROVIDER becomes "tap" only after the checklist in
-  # infra/runbooks/tap-payments-rollout.md §5 — never in the same change as the first deploy.
+  # Tap — production boots only with the credentials below (env.validation.ts fails closed).
+  # Follow the checklist in infra/runbooks/tap-payments-rollout.md §5 before the first deploy.
   # The two flags stay "false" until their own rollout step (runbook §5 steps 6 and 8).
   TAP_ENV                      = "live"
   TAP_WEBHOOK_URL              = "https://api.ziyaratech.com/api/v1/payments/webhooks/tap"
@@ -91,7 +90,7 @@ app_environment = {
 }
 
 # Every key MUST exist in the zt/production/app JSON secret. Copy
-# CREDENTIALS_ENCRYPTION_KEY / JWT_* / META_* / MOYASAR_* from Railway —
+# CREDENTIALS_ENCRYPTION_KEY / JWT_* / META_* from Railway —
 # a new CREDENTIALS_ENCRYPTION_KEY makes stored tenant credentials unreadable.
 app_secret_keys = [
   "JWT_ACCESS_SECRET",
@@ -103,9 +102,6 @@ app_secret_keys = [
   "META_APP_SECRET",
   "META_EMBEDDED_SIGNUP_CONFIG_ID",
   "META_WEBHOOK_VERIFY_TOKEN",
-  "MOYASAR_SECRET_KEY",
-  "MOYASAR_WEBHOOK_SECRET",
-  "MOYASAR_PUBLISHABLE_KEY",
   "EMAIL_UNSUBSCRIBE_SECRET",
   # PHASE 8 FLIP — add ONLY after `aws secretsmanager put-secret-value` has stored the key in
   # zt/production/app; a key listed here but absent from the JSON stops every ECS task from

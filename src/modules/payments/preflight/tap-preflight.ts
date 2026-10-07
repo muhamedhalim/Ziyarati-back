@@ -92,7 +92,7 @@ export async function runTapPreflight(
   const flagOn = (name: string): boolean => val(name)?.toLowerCase() === 'true';
 
   const production = val('NODE_ENV') === 'production';
-  const provider = (val('PAYMENT_PROVIDER') ?? 'moyasar').toLowerCase();
+  const provider = (val('PAYMENT_PROVIDER') ?? 'tap').toLowerCase();
   const tapEnv: 'sandbox' | 'live' =
     val('TAP_ENV')?.toLowerCase() === 'live' ? 'live' : 'sandbox';
   const secretName =

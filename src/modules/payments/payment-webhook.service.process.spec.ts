@@ -7,7 +7,6 @@ import { PaymentWebhookService } from './payment-webhook.service';
 import { Payment } from '../../entities/Payments/Payment';
 import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
 import { InvoiceStatus, PaymentStatus } from '../../entities/enums';
-import { MoyasarWebhookVerifier } from './webhooks/moyasar-webhook.verifier';
 import { TransactionService } from './transaction.service';
 import { SettlementAdjustmentService } from './settlement-adjustment.service';
 import { PaymentFinancialsService } from './payment-financials.service';
@@ -31,7 +30,7 @@ const INVOICE_ID = '22222222-2222-4222-8222-222222222222';
 /**
  * `PaymentWebhookService.process()` — the provider-NEUTRAL core every gateway
  * adapter feeds. These tests drive it with Tap-shaped neutral events directly
- * (the Moyasar adapter is covered by payment-webhook.service.spec.ts).
+ * (the adapter is covered by tap-webhook.handler.spec.ts).
  */
 describe('PaymentWebhookService.process (provider-neutral)', () => {
   let service: PaymentWebhookService;
@@ -40,7 +39,7 @@ describe('PaymentWebhookService.process (provider-neutral)', () => {
   let dataSource: MockDataSource;
   let manager: MockEntityManager;
   let transactions: { recordWebhookOnce: jest.Mock; record: jest.Mock };
-  let financials: { applyOnPaid: jest.Mock; extractFromRaw: jest.Mock };
+  let financials: { applyOnPaid: jest.Mock };
   let audit: { record: jest.Mock };
   let emitter: { emit: jest.Mock };
   let settlement: { settleInvoicePaid: jest.Mock };
@@ -96,7 +95,6 @@ describe('PaymentWebhookService.process (provider-neutral)', () => {
     };
     financials = {
       applyOnPaid: jest.fn(),
-      extractFromRaw: jest.fn().mockReturnValue({ gatewayFee: 99 }),
     };
     audit = { record: jest.fn().mockResolvedValue(undefined) };
     settlement = { settleInvoicePaid: jest.fn() };
@@ -111,10 +109,6 @@ describe('PaymentWebhookService.process (provider-neutral)', () => {
           useValue: invoices,
         },
         { provide: DataSource, useValue: dataSource },
-        {
-          provide: MoyasarWebhookVerifier,
-          useValue: { verify: jest.fn().mockReturnValue(true) },
-        },
         { provide: TransactionService, useValue: transactions },
         {
           provide: SettlementAdjustmentService,
@@ -132,7 +126,7 @@ describe('PaymentWebhookService.process (provider-neutral)', () => {
   afterEach(() => jest.clearAllMocks());
 
   describe('matched by gateway id', () => {
-    it('books PAID, uses the ADAPTER-parsed fees (not the Moyasar-shaped parser), and logs the sanitised event', async () => {
+    it('books PAID, uses the ADAPTER-parsed fees, and logs the sanitised event', async () => {
       payments.findOne.mockResolvedValueOnce(
         owner({ gateway_payment_id: 'chg_1' }),
       );
@@ -150,7 +144,6 @@ describe('PaymentWebhookService.process (provider-neutral)', () => {
       expect(financials.applyOnPaid).toHaveBeenCalledWith(payment, {
         paymentMethod: 'mada',
       });
-      expect(financials.extractFromRaw).not.toHaveBeenCalled();
       expect(transactions.recordWebhookOnce).toHaveBeenCalledWith(
         't1',
         PAYMENT_ID,
@@ -165,7 +158,7 @@ describe('PaymentWebhookService.process (provider-neutral)', () => {
       expect(emitter.emit).toHaveBeenCalledTimes(1);
     });
 
-    it('falls back to the legacy parser only when the adapter reported no fees', async () => {
+    it('records no gateway fee when the adapter reported none', async () => {
       payments.findOne.mockResolvedValueOnce(
         owner({ gateway_payment_id: 'chg_1' }),
       );
@@ -173,10 +166,10 @@ describe('PaymentWebhookService.process (provider-neutral)', () => {
         locked({ gateway_payment_id: 'chg_1' }),
       );
       await service.process(event({ fees: undefined }));
-      expect(financials.extractFromRaw).toHaveBeenCalledWith({
-        id: 'chg_1',
-        status: 'CAPTURED',
-      });
+      expect(financials.applyOnPaid).toHaveBeenCalledWith(
+        expect.anything(),
+        undefined,
+      );
     });
 
     it('does not look the payment up by correlation when the gateway id already matched', async () => {

@@ -13,8 +13,6 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 
-import { PaymentWebhookService } from './payment-webhook.service';
-import type { MoyasarWebhookEvent } from './webhooks/moyasar-webhook.types';
 import { TapWebhookHandler } from './webhooks/tap-webhook.handler';
 import type { TapWebhookPayload } from './providers/tap/tap.types';
 
@@ -35,7 +33,7 @@ const S_ERROR = {
  * Gateway inbound webhooks — the PLATFORM endpoints the gateways call.
  *
  * Public (no JWT): each route authenticates the gateway's own signature scheme
- * (Moyasar: shared secret; Tap: HMAC `hashstring`), NOT a user token. The
+ * (Tap: HMAC `hashstring`), NOT a user token. The
  * tenant is resolved internally from our own Payment row (via the gateway
  * payment id) — never from the request body. Processing is idempotent.
  *
@@ -46,40 +44,8 @@ const S_ERROR = {
 @Controller('payments/webhooks')
 export class PaymentWebhookController {
   constructor(
-    private readonly webhooks: PaymentWebhookService,
     private readonly tapWebhooks: TapWebhookHandler,
   ) {}
-
-  @ApiOperation({
-    summary: 'Ingest a Moyasar webhook event (public)',
-    description:
-      '**Public endpoint — called by Moyasar, not by app users.** Verifies the shared secret (header `x-moyasar-token` or body `secret_token`), de-duplicates on the event id, resolves the payment by gateway id, and updates the tenant-scoped record idempotently. Invalid secret → 401.',
-  })
-  @ApiOkResponse({
-    description: 'Event accepted.',
-    schema: {
-      type: 'object',
-      properties: {
-        accepted: { type: 'boolean', example: true },
-        matched: { type: 'boolean', example: true },
-        deduplicated: { type: 'boolean', example: false },
-        status: { type: 'string', example: 'PAID' },
-      },
-    },
-  })
-  @ApiUnauthorizedResponse({
-    description: 'Invalid webhook signature.',
-    schema: S_ERROR,
-  })
-  @Public()
-  @Post('moyasar')
-  @HttpCode(HttpStatus.OK)
-  ingestMoyasar(
-    @Body() body: MoyasarWebhookEvent,
-    @Headers('x-moyasar-token') token?: string,
-  ) {
-    return this.webhooks.handleMoyasar(body, token);
-  }
 
   @ApiOperation({
     summary: 'Ingest a Tap webhook event (public)',

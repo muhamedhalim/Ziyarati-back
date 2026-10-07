@@ -53,7 +53,7 @@ describe('PaymentLinkService — the patient-facing additions (Tap Phase 4)', ()
       expect(view.link_token).toBe(TOKEN);
     });
 
-    it('NO URL is issued where the deployment cannot complete a patient payment on the page (legacy Moyasar in production) — a patient is never handed a dead link', () => {
+    it('NO URL is issued where the deployment cannot complete a patient payment on the page (a non-Tap provider in production) — a patient is never handed a dead link', () => {
       const { service } = build({
         ...servedConfig,
         patientPayPageServed: false,

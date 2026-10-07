@@ -20,7 +20,7 @@ import { Request } from 'express';
  * CLOSED — an unauthenticated-by-omission infra endpoint is not acceptable
  * in production); outside production, every request is allowed (dev
  * convenience, matching this repo's existing pattern for e.g.
- * `MOYASAR_WEBHOOK_SECRET` — an unconfigured secret warns, it does not lock
+ * `TAP_TEST_SECRET_KEY` — an unconfigured secret warns, it does not lock
  * developers out of their own dev environment).
  */
 @Injectable()

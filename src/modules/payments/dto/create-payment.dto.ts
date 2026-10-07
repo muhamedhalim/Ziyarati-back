@@ -29,7 +29,7 @@ export class CreatePaymentDto {
   amount?: number;
 
   @ApiPropertyOptional({
-    description: 'ISO currency code. Defaults to SAR (Moyasar).',
+    description: 'ISO currency code. Defaults to SAR.',
     example: 'SAR',
     default: 'SAR',
   })
@@ -39,8 +39,8 @@ export class CreatePaymentDto {
   currency?: string;
 
   @ApiPropertyOptional({
-    description: 'Gateway to use. Defaults to moyasar.',
-    example: 'moyasar',
+    description: 'Gateway to use. Defaults to tap.',
+    example: 'tap',
   })
   @IsOptional()
   @IsString()

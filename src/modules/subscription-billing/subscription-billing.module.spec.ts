@@ -21,7 +21,7 @@ describe('resolveSubscriptionPaymentProvider (T087)', () => {
   it('NEVER binds the always-succeeds stub in production, however PAYMENT_PROVIDER is set', () => {
     const attempts = [
       { NODE_ENV: 'production', PAYMENT_PROVIDER: 'noop' },
-      { NODE_ENV: 'production', PAYMENT_PROVIDER: 'moyasar' },
+      { NODE_ENV: 'production', PAYMENT_PROVIDER: 'stripe' },
       { NODE_ENV: 'production', PAYMENT_PROVIDER: undefined },
       { NODE_ENV: 'production', PAYMENT_PROVIDER: 'stub' },
       { NODE_ENV: 'production', PAYMENT_PROVIDER: '' },
@@ -36,7 +36,7 @@ describe('resolveSubscriptionPaymentProvider (T087)', () => {
   it('binds the stub outside production (dev/test runnability)', () => {
     for (const nodeEnv of ['development', 'test', undefined, 'staging']) {
       const provider = resolveSubscriptionPaymentProvider(
-        configWith({ NODE_ENV: nodeEnv, PAYMENT_PROVIDER: 'moyasar' }),
+        configWith({ NODE_ENV: nodeEnv, PAYMENT_PROVIDER: 'stripe' }),
       );
       expect(provider).toBeInstanceOf(StubPaymentProvider);
     }
@@ -82,7 +82,7 @@ describe('resolveSubscriptionPaymentProvider (T087)', () => {
     });
 
     it('does not bind Tap unless PAYMENT_PROVIDER says so, however configured it is', () => {
-      for (const provider of ['moyasar', 'noop', undefined, '', 'TAP ']) {
+      for (const provider of ['stripe', 'noop', undefined, '', 'TAP ']) {
         const p = resolveSubscriptionPaymentProvider(
           configWith({ NODE_ENV: 'production', PAYMENT_PROVIDER: provider }),
           tap(true),
@@ -92,7 +92,7 @@ describe('resolveSubscriptionPaymentProvider (T087)', () => {
     });
 
     it('adding Tap cannot make the stub reachable in production', () => {
-      for (const provider of ['tap', 'moyasar', 'noop', 'stub', undefined]) {
+      for (const provider of ['tap', 'stripe', 'noop', 'stub', undefined]) {
         for (const configured of [true, false]) {
           expect(
             resolveSubscriptionPaymentProvider(

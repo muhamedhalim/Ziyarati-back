@@ -10,7 +10,7 @@ resource "aws_security_group" "alb" {
 
 resource "aws_vpc_security_group_ingress_rule" "alb_https" {
   security_group_id = aws_security_group.alb.id
-  description       = "HTTPS from internet (Vercel rewrite, browsers WS, Meta/Moyasar webhooks)"
+  description       = "HTTPS from internet (Vercel rewrite, browsers WS, Meta/Tap webhooks)"
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "tcp"
   from_port         = 443
@@ -60,7 +60,7 @@ resource "aws_security_group" "worker" {
   tags        = merge(local.tags, { Name = "${var.name}-worker" })
 }
 
-# Task egress: HTTPS anywhere (OpenAI, Meta, Moyasar, AWS APIs, tenant
+# Task egress: HTTPS anywhere (OpenAI, Meta, Tap, AWS APIs, tenant
 # integration endpoints — already SSRF-guarded in-app) + the data tier.
 resource "aws_vpc_security_group_egress_rule" "tasks_https" {
   for_each          = { api = aws_security_group.api.id, worker = aws_security_group.worker.id }

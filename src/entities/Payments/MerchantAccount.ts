@@ -38,14 +38,18 @@ export class MerchantAccount {
   @Column({ default: 'NOT_STARTED' })
   status!: string;
 
-  /** Gateway this merchant identity belongs to (e.g. 'moyasar'). */
+  /**
+   * Gateway this merchant identity belongs to (e.g. 'tap'). The column default
+   * mirrors the one migration 1730003700000 created; application code always
+   * sets the provider explicitly (`MerchantAccountService.getOrCreate`).
+   */
   @Column({ default: 'moyasar' })
   provider!: string;
 
   /**
-   * Gateway-issued recipient / sub-merchant id (Moyasar split `recipient_id`).
-   * Set by a platform admin once Moyasar issues it under the marketplace
-   * contract. Required (with an APPROVED status) before splits are attached.
+   * Gateway-issued merchant id (Tap `merchant_…`). Set by a platform admin once
+   * the clinic's Tap merchant is approved; required (with an APPROVED status)
+   * before a clinic charge can be routed to it.
    */
   @Column({ nullable: true })
   provider_recipient_id?: string;

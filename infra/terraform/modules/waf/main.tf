@@ -2,7 +2,7 @@
 #   - REST arrives from VERCEL egress IPs (Next.js rewrite) with the real client
 #     in X-Forwarded-For  → rate limits key on the FORWARDED IP;
 #   - WebSocket (/socket.io) arrives straight from browsers → source IP;
-#   - Meta / payment-provider (Tap; legacy Moyasar) webhooks → managed signature
+#   - Meta / payment-provider (Tap) webhooks → managed signature
 #     rules are scoped OUT (their payloads trip SQLi/XSS/size signatures; they
 #     are HMAC/secret-verified in-app instead). The Tap Connect callback
 #     (/api/v1/payments/webhooks/tap/onboarding/<token>) lives under the same

@@ -16,7 +16,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
  * `svix-id`/`svix-timestamp`/`svix-signature`, base64, over `id.timestamp.body`).
  * This verifier implements the simpler single-header
  * `sha256=<hex-hmac-of-raw-body>` scheme (same shape as
- * `X-Hub-Signature-256`/`x-moyasar-token` elsewhere in this codebase) behind
+ * `X-Hub-Signature-256` elsewhere in this codebase) behind
  * `RESEND_WEBHOOK_SECRET`, configured as a custom header on the Resend
  * endpoint (Resend supports a configurable webhook secret independent of the
  * Svix headers). Swapping to native Svix verification later is a change to

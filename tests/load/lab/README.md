@@ -3,7 +3,7 @@
 Everything in this directory belongs to the post-feature 20,000-VU campaign. The older
 suite (`../README.md`, `../start-api.ps1`, the September reports) is untouched and still
 valid as the regression baseline; where it disagrees with this file about payments
-(Moyasar → Tap) or the pool size, this file is current.
+(payment provider) or the pool size, this file is current.
 
 ## Hard rules baked into the tooling
 

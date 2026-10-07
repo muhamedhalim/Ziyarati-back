@@ -646,9 +646,9 @@ describe('Booking payments over Tap Platform (Phase 4) — real Postgres + Redis
             .getRepository(MerchantAccount)
             .create({
               tenant: { id: c.tenantId } as Tenant,
-              provider: 'moyasar',
+              provider: 'legacy-provider',
               status: 'APPROVED',
-              provider_recipient_id: 'rcp_legacyMoyasar',
+              provider_recipient_id: 'rcp_legacy',
             }),
         );
       // approved + a recipient id, yet NOT chargeable on Tap
@@ -669,7 +669,7 @@ describe('Booking payments over Tap Platform (Phase 4) — real Postgres + Redis
         status: 'PENDING_DOCUMENTS',
       });
       expect(row.provider_recipient_id).toBeNull();
-      expect(JSON.stringify(row.status_history)).toContain('rcp_legacyMoyasar'); // kept in the trail
+      expect(JSON.stringify(row.status_history)).toContain('rcp_legacy'); // kept in the trail
     });
   });
 
@@ -1182,7 +1182,7 @@ describe('Booking payments over Tap Platform (Phase 4) — real Postgres + Redis
           currency: 'USD',
           tenantId: b.tenantId,
           merchantId: 'merchant_evil',
-          gateway: 'moyasar',
+          gateway: 'legacy-provider',
         })
         .expect(200);
       expect(tap.chargeRequests).toHaveLength(charges + 1);

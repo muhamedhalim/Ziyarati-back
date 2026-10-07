@@ -20,8 +20,8 @@
 #                           10-connection pool. Leaving them on understates
 #                           capacity substantially.
 #
-#  OPENAI_API_KEY / RESEND_API_KEY / EMAIL_ENABLED / PAYMENT_PROVIDER /
-#  MOYASAR_SECRET_KEY       The tracked .env carries LIVE credentials. Blanking
+#  OPENAI_API_KEY / RESEND_API_KEY / EMAIL_ENABLED / PAYMENT_PROVIDER
+#                           The tracked .env carries LIVE credentials. Blanking
 #                           them forces every provider factory down its
 #                           Noop/stub branch (verified in the provider
 #                           factories) so no paid API call and no real email can
@@ -76,7 +76,6 @@ $env:OPENAI_API_KEY     = ''
 $env:RESEND_API_KEY     = ''
 $env:EMAIL_ENABLED      = 'false'
 $env:PAYMENT_PROVIDER   = 'noop'
-$env:MOYASAR_SECRET_KEY = ''
 $env:QUEUE_ENV_PREFIX   = 'loadtest'
 
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)

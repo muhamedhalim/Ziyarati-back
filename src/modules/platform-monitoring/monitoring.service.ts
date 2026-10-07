@@ -329,7 +329,7 @@ export class MonitoringService {
         detail: 'Platform Meta App (tenants connect their own WABA via Embedded Signup)',
       },
       { name: 'AI (OpenAI)', status: has('OPENAI_API_KEY') ? 'configured' : 'not_configured', detail: 'Chat + embeddings' },
-      { name: 'Payment Gateway (Moyasar)', status: has('MOYASAR_SECRET_KEY') ? 'configured' : 'not_configured', detail: 'Card charges + webhooks' },
+      { name: 'Payment Gateway (Tap)', status: has('TAP_LIVE_SECRET_KEY') || has('TAP_TEST_SECRET_KEY') ? 'configured' : 'not_configured', detail: 'Card charges + webhooks' },
       { name: 'Object Storage (R2)', status: this.storage.isConfigured() ? 'configured' : 'not_configured', detail: 'Verification documents' },
       { name: 'Email Provider (Resend)', status: has('RESEND_API_KEY') ? 'configured' : 'not_configured', detail: 'Transactional email via EmailService' },
     ];

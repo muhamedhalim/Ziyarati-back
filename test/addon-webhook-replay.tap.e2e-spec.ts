@@ -1,6 +1,6 @@
 /**
  * Tap migration, Phase 2 gate — the add-on webhook-replay suite
- * (`addon-webhook-replay.e2e-spec.ts`, which drives the legacy Moyasar route)
+ * (the retired legacy-route suite)
  * ported to the TAP route. Same plan §24 guarantees:
  *
  *   - a redelivered success grants the capacity exactly once;

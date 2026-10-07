@@ -454,7 +454,7 @@ describe('Tap webhook — POST /payments/webhooks/tap (real Postgres, stubbed Ta
     });
 
     it('does NOT claim a payment that belongs to a different provider', async () => {
-      const p = await seedPayment({ gatewayId: null, gateway: 'moyasar' });
+      const p = await seedPayment({ gatewayId: null, gateway: 'noop' });
       const chargeId = `chg_${randomUUID()}`;
       const charge = chargeFor(
         { ...p, gateway_payment_id: chargeId } as Payment,

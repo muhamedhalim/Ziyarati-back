@@ -1,7 +1,7 @@
 /**
  * Payments domain constants.
  *
- * Currency: Moyasar settles in SAR (Saudi Arabia), so the domain DEFAULTS to
+ * Currency: Tap settles in SAR (Saudi Arabia), so the domain DEFAULTS to
  * SAR when a caller does not specify one. The entities keep their own column
  * default ('USD') untouched — this is purely the application-layer default and
  * never mutates the frozen schema.

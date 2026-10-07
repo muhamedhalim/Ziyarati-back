@@ -86,7 +86,7 @@ describe('support privacy helpers', () => {
 
     it('collapses a whole URL, since query strings carry tokens and identifiers', () => {
       expect(
-        sanitizeFailureReason('see https://api.moyasar.com/v1/payments/x?secret=sk_live_1'),
+        sanitizeFailureReason('see https://api.gateway.example/v1/payments/x?secret=sk_live_1'),
       ).toBe('see [url]');
     });
 

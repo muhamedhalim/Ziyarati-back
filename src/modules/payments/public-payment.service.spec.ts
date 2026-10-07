@@ -233,7 +233,7 @@ describe('PublicPaymentService.resolve', () => {
       expect(JSON.stringify(view)).not.toContain('CLINIC_NOT_ONBOARDED');
     });
 
-    it('UNAVAILABLE on a deployment whose provider cannot complete a patient payment here (legacy Moyasar in production) — and the clinic is not even consulted', async () => {
+    it('UNAVAILABLE on a deployment whose provider cannot complete a patient payment here (a non-Tap provider in production) — and the clinic is not even consulted', async () => {
       const { service, capability } = build({ served: false });
       expect((await service.resolve(TOKEN)).state).toBe('unavailable');
       expect(capability.resolve).not.toHaveBeenCalled();

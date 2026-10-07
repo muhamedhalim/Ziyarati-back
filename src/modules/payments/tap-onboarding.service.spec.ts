@@ -156,7 +156,7 @@ describe('TapOnboardingService.start', () => {
 
     it('lets a clinic that was APPROVED under ANOTHER provider switch to Tap (that approval means nothing on Tap)', async () => {
       const { service, merchants } = build({
-        account: { status: S.APPROVED, provider: 'moyasar' },
+        account: { status: S.APPROVED, provider: 'legacy-provider' },
       });
       await expect(service.start(TENANT, USER)).resolves.toBeDefined();
       expect(merchants.recordTapLeadCreated).toHaveBeenCalled();
@@ -277,7 +277,7 @@ describe('TapOnboardingService.start', () => {
       const { service, client } = build({
         account: {
           status: S.NOT_STARTED,
-          provider: 'moyasar',
+          provider: 'legacy-provider',
           provider_lead_id: 'led_stale',
         },
       });

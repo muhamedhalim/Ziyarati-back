@@ -46,7 +46,6 @@ describe('PaymentService.create — gateway seams (Tap Phase 1)', () => {
   };
   let financials: {
     applyOnPaid: jest.Mock;
-    extractFromRaw: jest.Mock;
     platformFeeFor: jest.Mock;
   };
 
@@ -78,7 +77,6 @@ describe('PaymentService.create — gateway seams (Tap Phase 1)', () => {
     resolve = jest.fn().mockReturnValue(gateway);
     financials = {
       applyOnPaid: jest.fn(),
-      extractFromRaw: jest.fn().mockReturnValue({ gatewayFee: 99 }),
       platformFeeFor: jest.fn().mockReturnValue(0),
     };
 
@@ -94,7 +92,6 @@ describe('PaymentService.create — gateway seams (Tap Phase 1)', () => {
           provide: MerchantAccountService,
           useValue: {
             assertChargeable: jest.fn().mockResolvedValue(undefined),
-            splitContext: jest.fn().mockResolvedValue(null),
             routingContext: jest.fn().mockResolvedValue(null),
           },
         },
@@ -214,7 +211,7 @@ describe('PaymentService.create — gateway seams (Tap Phase 1)', () => {
   });
 
   describe('fees come from the adapter when it reports them', () => {
-    it('prefers result.fees over the legacy Moyasar-shaped parser on an immediate capture', async () => {
+    it('books result.fees on an immediate capture', async () => {
       gateway.createPayment.mockResolvedValueOnce({
         success: true,
         gatewayPaymentId: 'chg_2',
@@ -226,7 +223,6 @@ describe('PaymentService.create — gateway seams (Tap Phase 1)', () => {
       expect(financials.applyOnPaid).toHaveBeenCalledWith(expect.anything(), {
         paymentMethod: 'mada',
       });
-      expect(financials.extractFromRaw).not.toHaveBeenCalled();
     });
   });
 

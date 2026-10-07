@@ -53,7 +53,7 @@ export class Refund {
   /**
    * Gateway-side refund identifier. For refunds we initiate, this is the
    * provider's refund id; for refunds reconciled from a webhook (e.g. a refund
-   * issued in the Moyasar dashboard), it is `recon:<eventId>`. A partial UNIQUE
+   * issued in the gateway dashboard), it is `recon:<eventId>`. A partial UNIQUE
    * index (created by PaymentsSchemaBootstrap / migration) makes reconciliation
    * idempotent at the DB level.
    */

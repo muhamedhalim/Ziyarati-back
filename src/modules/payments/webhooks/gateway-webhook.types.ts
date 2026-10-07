@@ -16,7 +16,7 @@ export type GatewayWebhookTarget = 'paid' | 'failed' | 'refunded' | 'pending';
  * Tenant is NEVER carried here: it is resolved from our own Payment row.
  */
 export interface GatewayWebhookEvent {
-  /** Gateway name as stored on `Payment.gateway` ('moyasar', 'tap', …). */
+  /** Gateway name as stored on `Payment.gateway` ('tap', …). */
   provider: string;
   /** Gateway id of the PAYMENT the event is about (`Payment.gateway_payment_id`). */
   gatewayPaymentId: string;
@@ -33,14 +33,14 @@ export interface GatewayWebhookEvent {
   capturedMinorUnits?: number;
   capturedCurrency?: string;
   /**
-   * CUMULATIVE amount refunded so far, in cents (Moyasar semantics). Absent on a
+   * CUMULATIVE amount refunded so far, in cents. Absent on a
    * refund event ⇒ treated as a full refund. Per-refund gateways (Tap) do not
    * use this path until their refund handling lands.
    */
   refundedMinorUnits?: number;
   /** Safe, short reason stored on a FAILED payment. */
   failureReason?: string;
-  /** Adapter-parsed fee facts; when absent the legacy Moyasar-shaped parser runs. */
+  /** Adapter-parsed fee facts; when absent no gateway fee is recorded. */
   fees?: GatewayFeeInfo;
   /**
    * Our own id echoed by the gateway (a Payment id for one-off payments, a
@@ -61,8 +61,8 @@ export interface GatewayWebhookEvent {
 
 /**
  * Provider-NEUTRAL refund event, for gateways whose refunds are PER-REFUND
- * objects with their own lifecycle (Tap). Moyasar reports a cumulative refunded
- * total on the PAYMENT event instead, and keeps using `GatewayWebhookEvent`.
+ * objects with their own lifecycle (Tap). A cumulative refunded total reported on the PAYMENT event uses
+ * `GatewayWebhookEvent` instead.
  *
  * Built from a refund the handler has RE-FETCHED from the gateway, never from
  * the posted body alone. Tenant is NEVER carried: it comes from our own rows.

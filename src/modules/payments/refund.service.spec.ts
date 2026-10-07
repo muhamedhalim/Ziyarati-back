@@ -436,7 +436,7 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
       expect(emitter.emit).not.toHaveBeenCalled();
     });
 
-    it('a provider that predates status (legacy Moyasar: only success) still maps true to succeeded, false to failed', () => {
+    it('a provider that predates status (only success) still maps true to succeeded, false to failed', () => {
       expect(refundOutcomeOf({ success: true })).toBe('succeeded');
       expect(refundOutcomeOf({ success: false })).toBe('failed');
       expect(refundOutcomeOf({ success: false, status: 'pending' })).toBe('pending');

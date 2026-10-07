@@ -350,7 +350,7 @@ export class PublicPaymentService {
     }
 
     // A deployment whose provider cannot complete a patient payment on this page
-    // (legacy Moyasar in production) never offers one — however the clinic is set up.
+    // (a non-Tap provider in production) never offers one — however the clinic is set up.
     if (!this.config.patientPayPageServed) return 'unavailable';
 
     const cap = await this.capability.resolve(ref.tenantId);

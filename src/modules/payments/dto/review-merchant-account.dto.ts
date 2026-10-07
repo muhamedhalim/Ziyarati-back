@@ -24,7 +24,7 @@ export class ReviewMerchantAccountDto {
 
   @ApiPropertyOptional({
     description:
-      'Gateway-issued split/payout recipient id for this clinic (Moyasar marketplace). Empty string clears it.',
+      'Gateway-issued split/payout recipient id for this clinic (Tap merchant id). Empty string clears it.',
   })
   @IsOptional()
   @IsString()

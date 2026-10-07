@@ -10,12 +10,12 @@ import {
 /**
  * PLATFORM-ONLY. Register a payment gateway configuration (super admin).
  *
- * NEVER put live secrets (e.g. Moyasar secret key) here — those live in env /
+ * NEVER put live secrets (e.g. a gateway secret key) here — those live in env /
  * ConfigService and are consumed only by the gateway adapter. `config` is for
  * non-secret, operational settings (labels, mode flags, public ids).
  */
 export class CreatePaymentGatewayDto {
-  @ApiProperty({ description: 'Gateway identifier.', example: 'moyasar' })
+  @ApiProperty({ description: 'Gateway identifier.', example: 'tap' })
   @IsString()
   @MaxLength(100)
   gatewayName!: string;
@@ -37,7 +37,7 @@ export class CreatePaymentGatewayDto {
 
 /** PLATFORM-ONLY. Update a payment gateway configuration (super admin). */
 export class UpdatePaymentGatewayDto {
-  @ApiPropertyOptional({ description: 'Gateway identifier.', example: 'moyasar' })
+  @ApiPropertyOptional({ description: 'Gateway identifier.', example: 'tap' })
   @IsOptional()
   @IsString()
   @MaxLength(100)
