@@ -45,7 +45,7 @@ import { UsageService } from '../subscription-billing/usage.service';
 import { USAGE_METRIC } from '../subscription-billing/usage-metric';
 import { SubscriptionService } from '../subscription-billing/subscription.service';
 import {
-  APPOINTMENT_BOOKABLE_STAFF_ROLES,
+  APPOINTMENT_EMPLOYEE_ROLES,
   OWN_STAFF_SETTABLE_APPOINTMENT_STATUSES,
   isScopedToOwnStaff,
 } from '../../rbac/rbac.constants';
@@ -700,6 +700,11 @@ export class AppointmentsService {
           appointment.branch!.id,
           dto.staffId,
           appointment.source === AppointmentSource.PUBLIC_AI,
+        );
+        await this.assertStaffBookableForAppointments(
+          manager,
+          tenantId,
+          dto.staffId,
         );
         appointment.staff = { id: dto.staffId } as StaffProfile;
         changes.push('staff reassigned');
@@ -1487,14 +1492,14 @@ export class AppointmentsService {
 
   /**
    * Rejects a staff member whose linked account holds none of
-   * `APPOINTMENT_BOOKABLE_STAFF_ROLES` (doctor, nurse, manager) — e.g. a
-   * receptionist.
+   * `APPOINTMENT_EMPLOYEE_ROLES` (branch manager, doctor, nurse) — e.g. a
+   * receptionist or the clinic owner.
    *
    * This is the server-side half of the "Employee" picker rule: the picker is
    * filtered by the same constant, but a hand-crafted `POST /appointments`
    * carrying a receptionist's staff id must fail here regardless of what the
-   * UI offered. Only ever run on CREATE — editing/rescheduling an existing
-   * appointment is deliberately not re-validated against it.
+   * UI offered. Run on CREATE and when an update RE-ASSIGNS the staff member;
+   * an unchanged staff member on an existing appointment is not re-validated.
    *
    * Tenant isolation: the staff profile is looked up by (id, tenant) and the
    * role link is matched through that profile's own user, so a role slug shared
@@ -1515,13 +1520,13 @@ export class AppointmentsService {
       (await manager.getRepository(UserRole).exists({
         where: {
           user: { id: profile.user.id, tenant: { id: tenantId } },
-          role: { slug: In([...APPOINTMENT_BOOKABLE_STAFF_ROLES]) },
+          role: { slug: In([...APPOINTMENT_EMPLOYEE_ROLES]) },
         },
       }));
     if (!bookable) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message:
-          'This staff member cannot be booked for appointments. Choose a doctor, nurse, or manager.',
+          'This staff member cannot be booked for appointments. Choose a branch manager, doctor, or nurse.',
         publicContext: { staffId },
       });
     }

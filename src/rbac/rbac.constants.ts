@@ -624,6 +624,23 @@ export const APPOINTMENT_BOOKABLE_STAFF_ROLES: readonly RoleSlug[] = [
 ];
 
 /**
+ * Roles whose staff appear in the dashboard appointment "Employee" picker and
+ * may be assigned as the provider when CREATING or RE-ASSIGNING an appointment:
+ * Branch Manager, Doctor and Nurse only. Owner, receptionist, the clinic-wide
+ * `manager` and every other/custom role are excluded.
+ *
+ * Single source of truth for the `bookable` filter on `GET /staff` and the
+ * server-side checks in `AppointmentService.create`/`update`. Separate from
+ * {@link APPOINTMENT_BOOKABLE_STAFF_ROLES}, which still drives the public
+ * "available for booking" default.
+ */
+export const APPOINTMENT_EMPLOYEE_ROLES: readonly RoleSlug[] = [
+  ROLE.BRANCH_MANAGER,
+  ROLE.DOCTOR,
+  ROLE.NURSE,
+];
+
+/**
  * Roles that must NEVER be publicly listed as a bookable provider —
  * distinct from {@link APPOINTMENT_BOOKABLE_STAFF_ROLES} above, which is an
  * ALLOW-list for the dashboard "Employee" picker (doctor, nurse and manager).
