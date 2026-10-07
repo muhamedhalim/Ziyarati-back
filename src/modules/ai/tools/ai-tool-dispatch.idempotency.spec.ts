@@ -101,4 +101,48 @@ describe('AiToolDispatchService side-effect idempotency', () => {
     expect(params[5]).toBe('DENIED');
     expect(params[6]).toMatch(/Forbidden/);
   });
+
+  describe('a replayed call whose first attempt was refused (Step 11)', () => {
+    const build = (row: Record<string, unknown>) => {
+      const dataSource = { query: jest.fn().mockResolvedValueOnce([row]) };
+      const args = Array.from({ length: 18 }, () => ({}) as any);
+      args[9] = dataSource;
+      return new (AiToolDispatchService as any)(...args);
+    };
+    const replay = (service: any) =>
+      service.run(
+        { tenantId: 'tenant-1', aiConversationId: 'conv-1' },
+        'book_appointment',
+        'stable-key',
+        {},
+        jest.fn(),
+      );
+
+    it('hands the model the recorded reason, not "manual verification"', async () => {
+      const result = await replay(
+        build({
+          id: 't1',
+          status: 'FAILED_PERMANENT',
+          result: null,
+          error: 'That slot is no longer available.',
+        }),
+      );
+      expect(result).toEqual({
+        success: false,
+        error: 'That slot is no longer available.',
+      });
+    });
+
+    it('still asks for verification when the outcome is genuinely unknown', async () => {
+      const result = await replay(
+        build({
+          id: 't1',
+          status: 'UNKNOWN_OUTCOME',
+          result: null,
+          error: 'Unknown execution outcome; manual verification is required.',
+        }),
+      );
+      expect(result.error).toContain('manual verification');
+    });
+  });
 });

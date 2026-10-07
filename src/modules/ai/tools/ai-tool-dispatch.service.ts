@@ -2971,7 +2971,14 @@ export class AiToolDispatchService {
           error: 'A matching action is already in progress.',
         };
       }
-      // FAILED → allow a retry by reopening the same ledger row.
+      // A refusal the application itself recorded (slot taken, outside the
+      // booking window ...) is a definite outcome, not an unknown one: hand the
+      // model that reason so it offers an alternative, instead of telling the
+      // patient a human must verify something that plainly did not happen.
+      if (existing.status === 'FAILED_PERMANENT' && existing.error) {
+        return { success: false, error: existing.error };
+      }
+      // Anything else (UNKNOWN_OUTCOME ...) genuinely needs verification.
       return {
         success: false,
         error:
@@ -3060,9 +3067,14 @@ export class AiToolDispatchService {
   private async findByKey(
     tenantId: string,
     key: string,
-  ): Promise<{ id: string; status: string; result: unknown } | null> {
+  ): Promise<{
+    id: string;
+    status: string;
+    result: unknown;
+    error?: string | null;
+  } | null> {
     const rows = await this.dataSource.query(
-      `SELECT id, status, result FROM ai_tool_calls WHERE tenant_id=$1 AND idempotency_key=$2`,
+      `SELECT id, status, result, error FROM ai_tool_calls WHERE tenant_id=$1 AND idempotency_key=$2`,
       [tenantId, key],
     );
     return rows[0] ?? null;

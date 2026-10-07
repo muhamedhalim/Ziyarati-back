@@ -115,11 +115,13 @@ describe('ConversationSessionService', () => {
         session: { context: { recalledMemories: [{ content: 'real' }] } },
       });
 
-      await service.patchFromClient(TENANT, CONV, {
+      const merged = await service.patchFromClient(TENANT, CONV, {
         context: { recalledMemories: [{ content: 'injected' }] },
       });
 
-      expect(persisted().context).toEqual({
+      // Nothing changed, so (Step 11) nothing is written: judge the result.
+      expect(conversations.save).not.toHaveBeenCalled();
+      expect(merged.context).toEqual({
         recalledMemories: [{ content: 'real' }],
       });
     });
@@ -127,10 +129,11 @@ describe('ConversationSessionService', () => {
     it('drops unknown keys silently rather than rejecting (no probe signal)', async () => {
       conversations.findOne.mockResolvedValueOnce({ id: CONV, session: {} });
 
-      await expect(
-        service.patchFromClient(TENANT, CONV, { notARealKey: 'x' } as never),
-      ).resolves.toBeDefined();
-      expect(persisted()).not.toHaveProperty('notARealKey');
+      const merged = await service.patchFromClient(TENANT, CONV, {
+        notARealKey: 'x',
+      } as never);
+      expect(merged).not.toHaveProperty('notARealKey');
+      expect(conversations.save).not.toHaveBeenCalled();
     });
 
     it('applies every client-owned key', async () => {
@@ -179,9 +182,11 @@ describe('ConversationSessionService', () => {
         session: { language: 'ar' },
       });
 
-      await service.patch(TENANT, CONV, { language: undefined });
+      const merged = await service.patch(TENANT, CONV, {
+        language: undefined,
+      });
 
-      expect(persisted()).toMatchObject({ language: 'ar' });
+      expect(merged).toMatchObject({ language: 'ar' });
     });
 
     // AI-006: unlike `undefined` (preserves the value, above), SESSION_UNSET
@@ -225,6 +230,64 @@ describe('ConversationSessionService', () => {
       expect(stored).toBe(null);
       expect(typeof stored).toBe('object'); // typeof null — confirms it is JSON `null`, not undefined/a symbol
       expect(stored).toBeFalsy(); // any `if (session.selectedDoctorId)` reader already treats this as unset
+    });
+  });
+
+  describe('no write when nothing changed (Step 11)', () => {
+    const seed = (session: Record<string, unknown>, extra = {}) =>
+      conversations.findOne.mockResolvedValue({
+        id: CONV,
+        channel: 'WHATSAPP',
+        language: 'ar',
+        session,
+        ...extra,
+      });
+
+    it('patch skips the save when the merge changes nothing', async () => {
+      seed({ context: { customerId: 'c1' } });
+      await service.patch(TENANT, CONV, { context: { customerId: 'c1' } });
+      expect(conversations.save).not.toHaveBeenCalled();
+    });
+
+    it('patch still saves a real change', async () => {
+      seed({ context: { customerId: 'c1' } });
+      await service.patch(TENANT, CONV, { context: { customerId: 'c2' } });
+      expect(conversations.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('touchChannel skips the save on a repeat turn from the same channel', async () => {
+      seed({
+        activeChannel: 'WHATSAPP',
+        channelHistory: [{ channel: 'WHATSAPP', at: '2026-01-01T00:00:00Z' }],
+        language: 'ar',
+      });
+      await service.touchChannel(TENANT, CONV, {
+        channel: 'WHATSAPP',
+        language: 'ar',
+      });
+      expect(conversations.save).not.toHaveBeenCalled();
+    });
+
+    it('touchChannel saves when the channel switches', async () => {
+      seed({
+        activeChannel: 'WHATSAPP',
+        channelHistory: [{ channel: 'WHATSAPP', at: '2026-01-01T00:00:00Z' }],
+      });
+      await service.touchChannel(TENANT, CONV, { channel: 'WEB' as never });
+      expect(conversations.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('touchChannel saves when the language changes', async () => {
+      seed({
+        activeChannel: 'WHATSAPP',
+        channelHistory: [{ channel: 'WHATSAPP', at: '2026-01-01T00:00:00Z' }],
+        language: 'ar',
+      });
+      await service.touchChannel(TENANT, CONV, {
+        channel: 'WHATSAPP',
+        language: 'en',
+      });
+      expect(conversations.save).toHaveBeenCalledTimes(1);
     });
   });
 });
