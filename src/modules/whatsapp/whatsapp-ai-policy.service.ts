@@ -117,6 +117,12 @@ export class WhatsappAiPolicyService {
         return { allowed: false, reason: AI_POLICY_REASON.CLINIC_AI_DISABLED };
       }
 
+      // Fail closed: `null` (not omitted) means "stored, but no thread". Every
+      // per-conversation rule below would silently not apply to it.
+      if (subject.conversationId === null) {
+        return { allowed: false, reason: AI_POLICY_REASON.NO_CONVERSATION };
+      }
+
       const state = await this.loadConversationState(tenantId, subject, opts);
       if (state.patientExcluded) {
         return { allowed: false, reason: AI_POLICY_REASON.PATIENT_AI_DISABLED };

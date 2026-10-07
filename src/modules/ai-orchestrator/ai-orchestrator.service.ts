@@ -50,7 +50,12 @@ export interface OrchestrateInput {
    * is not part of any HTTP-bound DTO, because `waMessageId` is a uniqueness /
    * de-duplication key that a client must not be able to assert.
    */
-  origin?: { waMessageId?: string; messageType?: string };
+  origin?: {
+    waMessageId?: string;
+    messageType?: string;
+    /** Epoch ms after which no further tool round starts (WhatsApp turns). */
+    deadlineAt?: number;
+  };
   /**
    * Session updates from a TRUSTED SERVER-SIDE CALLER, applied UNFILTERED —
    * unlike `sessionPatch`, which always passes through
@@ -212,6 +217,11 @@ export class AiOrchestratorService {
       lastTool: result.lastTool,
       handedOver: false as const,
     };
+  }
+
+  /** Whether a turn keyed `key` (a WhatsApp wamid) already started: a replay. */
+  hasRequestClaim(tenantId: string, key: string): Promise<boolean> {
+    return this.execution.hasRequestClaim(tenantId, key);
   }
 
   /**

@@ -42,7 +42,8 @@ export type ScopeCategory =
   | 'code'
   | 'creative'
   | 'math'
-  | 'trivia';
+  | 'trivia'
+  | 'offtopic';
 
 export interface ScopeVerdict {
   blocked: boolean;
@@ -146,6 +147,33 @@ const TRIVIA: RegExp[] = [
   /أفضل\s+(?:لابتوب|هاتف|سيارة|مطعم|فيلم)/,
 ];
 
+// ── everyday topics with nothing to do with a clinic ─────────────────────────
+// Politics, entertainment, cooking, investing, homework, relationship advice.
+// Each pattern names the TOPIC, never a bare word a patient could use about their
+// care: "prescription" (وصفة طبية), "vote" in a clinic poll, "assignment" of a doctor,
+// "recipe" of a low-sodium diet are all left alone — the false-positive tests pin them.
+const OFFTOPIC: RegExp[] = [
+  /\b(?:political\s+part(?:y|ies)|parliament|presidential\s+candidates?)\b/i,
+  /\bwho\s+(?:will\s+win|should\s+i\s+vote)\b/i,
+  /\b(?:vote|voting)\s+(?:for|in)\b[^.!?\n]{0,20}\belections?\b/i,
+  /\b(?:recommend|suggest|best|favou?rite)\b[^.!?\n]{0,20}\b(?:movies?|tv\s+(?:shows?|series)|series|songs?|anime|video\s+games?)\b/i,
+  /\b(?:netflix|spotify|playstation|xbox)\b/i,
+  /\bhow\s+(?:do\s+i|to|can\s+i)\s+(?:cook|bake)\b/i,
+  /\bshould\s+i\s+(?:invest|buy\s+(?:bitcoin|crypto|stocks?))\b/i,
+  /\b(?:crypto(?:currency)?|forex|stock\s+market|trading\s+(?:advice|strategy|signals?))\b/i,
+  /\b(?:do|solve|finish|help\s+(?:me\s+)?with)\s+(?:my|the|this)\s+(?:kid'?s\s+)?homework\b/i,
+  /\bsummari[sz]e\s+(?:this|the\s+following)\s+(?:text|article|paragraph|document|essay)\b/i,
+  /\b(?:my\s+(?:boyfriend|girlfriend|husband|wife)\s+(?:cheated\s+on\s+me|dumped\s+me)|(?:get|win)\s+(?:my\s+)?(?:ex|crush)\s+back)\b/i,
+  // Arabic (no trailing \b — see OVERRIDE)
+  /(?:(?:صوتي|التصويت)\s+[^.!?؟\n]{0,15}الانتخابات|الحزب\s+السياسي|مرشح\s+الرئاسة)/,
+  /(?:أفضل|افضل|رشح\s+لي|اقترح\s+(?:علي|لي))\s+[^.!?؟\n]{0,15}(?:فيلم|مسلسل|أغنية|اغنية|لعبة)/,
+  /نتيجة\s+مباراة/,
+  /(?:طريقة\s+عمل\s+\S+|وصفة\s+(?:طبخ|كيك|حلويات|أكل))/,
+  /(?:العملات\s+الرقمية|بيتكوين|الفوركس|سوق\s+الأسهم)/,
+  /(?:حل\s+(?:لي\s+)?(?:الواجب|واجبي)|واجب\s+مدرسي|لخص\s+(?:لي\s+)?(?:هذا|النص|المقال))/,
+  /كيف\s+(?:أرجع|ارجع)\s+(?:حبيبي|حبيبتي|طليقي|طليقتي)/,
+];
+
 /**
  * Should this message be answered with the fixed redirect instead of going to the
  * model? First matching category wins; order is by how confident the pattern is.
@@ -175,6 +203,7 @@ export function screenUserMessage(text: string): ScopeVerdict {
   }
   if (any(message, MATH)) return { blocked: true, category: 'math' };
   if (any(message, TRIVIA)) return { blocked: true, category: 'trivia' };
+  if (any(message, OFFTOPIC)) return { blocked: true, category: 'offtopic' };
   return { blocked: false };
 }
 

@@ -45,6 +45,10 @@ import type {
 
 const PG_UNIQUE_VIOLATION = '23505';
 
+/** An ISO-8601 instant with an offset, e.g. `2026-10-12T10:30:00.000Z`. */
+const ISO_INSTANT =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
+
 /**
  * What the STORE step (see `handleInboundValue`) learned about one inbound
  * message, for the AI step that may follow it.
@@ -227,14 +231,24 @@ export class WhatsappInboundAiService {
   /**
    * True for the two failures that mean "not now" rather than "this failed":
    * another turn for the same contact still holds the lock, or an identical AI
-   * request is already in flight / has an unverified outcome (the AI request
-   * claim raises CONFLICT for both).
+   * request is already in flight (the AI request claim raises CONFLICT).
+   * An unverified-outcome claim is NOT retried — see below.
    */
   private shouldRetryJob(err: unknown): boolean {
-    return (
-      err instanceof ContactTurnBusyError ||
-      (err instanceof AppError && err.code === ErrorCode.CONFLICT)
-    );
+    if (err instanceof ContactTurnBusyError) return true;
+    if (!(err instanceof AppError) || err.code !== ErrorCode.CONFLICT) {
+      return false;
+    }
+    // An UNKNOWN claim never resolves by waiting: the earlier attempt reached
+    // the provider and died. Retrying would only exhaust the job into the DLQ
+    // with the patient unanswered, so it fails the turn instead (one fallback).
+    return err.internalContext?.claimState !== 'UNKNOWN';
+  }
+
+  /** `WHATSAPP_AI_TURN_DEADLINE_MS`, read per turn; 60s when unset or invalid. */
+  private turnDeadlineMs(): number {
+    const n = Number(process.env.WHATSAPP_AI_TURN_DEADLINE_MS);
+    return Number.isFinite(n) && n >= 1000 ? n : 60_000;
   }
 
   /**
@@ -574,20 +588,6 @@ export class WhatsappInboundAiService {
   ): Promise<void> {
     const { waId } = item;
 
-    // F-16: after the opt-out check (a "STOP" must always be honoured) and before
-    // anything that costs money. A refused message is already stored on the
-    // timeline, so a human can still read it.
-    if (
-      !(await this.admitContactTurn(
-        tenantId,
-        waId,
-        this.subjectOf(item),
-        item.accountId,
-      ))
-    ) {
-      return;
-    }
-
     // One AI turn per contact at a time, so a second message sees the first
     // turn's reply in its history and replies leave in order.
     await this.turnLock.run(tenantId, waId, async ({ waited }) => {
@@ -609,6 +609,27 @@ export class WhatsappInboundAiService {
           await this.recordSuppressed(tenantId, item, again.reason);
           return;
         }
+      }
+
+      // F-16: after the opt-out check (a "STOP" must always be honoured) and
+      // before anything that costs money. Counted here, inside the lock, and
+      // only for FRESH work: a lock-busy retry never got this far, and a replay
+      // (an already-claimed wamid: a queue retry, a re-delivered webhook) is the
+      // same message, not another one. A refused message is already stored on
+      // the timeline, so a human can still read it.
+      const replay = item.message.id
+        ? await this.orchestrator.hasRequestClaim(tenantId, item.message.id)
+        : false;
+      if (
+        !replay &&
+        !(await this.admitContactTurn(
+          tenantId,
+          waId,
+          this.subjectOf(item),
+          item.accountId,
+        ))
+      ) {
+        return;
       }
       await this.runTurn(tenantId, item);
     });
@@ -657,7 +678,11 @@ export class WhatsappInboundAiService {
         // `wamid` (which finally makes the messages(tenantId, wa_message_id)
         // dedupe index effective, and is how media is matched back to its
         // message) and the real message type instead of a blanket "text".
-        origin: { waMessageId: message.id, messageType: message.type },
+        origin: {
+          waMessageId: message.id,
+          messageType: message.type,
+          deadlineAt: Date.now() + this.turnDeadlineMs(),
+        },
       },
       () => undefined,
     );
@@ -1066,28 +1091,52 @@ export class WhatsappInboundAiService {
       }
       case 'search_public_availability':
       case 'check_availability': {
-        const windows = Array.isArray(lastTool.result.windows)
-          ? lastTool.result.windows
-          : [];
-        const rows = windows
-          .slice(0, 10)
-          .map((w: Record<string, unknown>) => {
-            const start = String(w.startTime ?? '');
-            const label = start
-              ? new Date(start).toLocaleString('en-GB', {
-                  weekday: 'short',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })
-              : 'Slot';
-            return { id: start, title: this.clip(label, 24) };
-          })
-          .filter((r) => r.id);
+        // Shape from `availabilityPayload`: days[].slots[] for the asked day,
+        // nextAvailable[] only when that day was empty. `localTime` is already
+        // in the branch's zone; `startAt` is the ISO instant booking takes.
+        const rows = this.slotRows(lastTool.result).slice(0, 10);
         return this.list('Choose a time', rows, 'Available slots');
       }
       default:
         return undefined;
     }
+  }
+
+  private slotRows(
+    result: Record<string, unknown>,
+  ): { id: string; title: string }[] {
+    const rows: { id: string; title: string }[] = [];
+    for (const key of ['days', 'nextAvailable']) {
+      const days = Array.isArray(result[key]) ? result[key] : [];
+      for (const day of days as Record<string, unknown>[]) {
+        const slots = Array.isArray(day?.slots) ? day.slots : [];
+        for (const slot of slots as Record<string, unknown>[]) {
+          const id = String(slot?.startAt ?? '');
+          if (!ISO_INSTANT.test(id)) continue;
+          rows.push({
+            id,
+            title: this.clip(
+              `${this.dayLabel(String(day.date ?? ''))} ${String(slot.localTime ?? '')}`.trim(),
+              24,
+            ),
+          });
+        }
+      }
+    }
+    return rows;
+  }
+
+  /** `2026-10-12` -> `Mon 12 Oct`; the date is branch-local, so no zone shift. */
+  private dayLabel(date: string): string {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return '';
+    const d = new Date(`${date}T00:00:00Z`);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleDateString('en-GB', {
+      timeZone: 'UTC',
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+    });
   }
 
   private list(
@@ -1230,7 +1279,15 @@ export class WhatsappInboundAiService {
       case 'interactive': {
         const i = message.interactive;
         const picked = i?.button_reply?.title ?? i?.list_reply?.title;
-        return picked?.trim() || undefined;
+        const title = picked?.trim();
+        if (!title) return undefined;
+        // A tapped time slot carries only its label ("Mon 12 Oct 14:30"), which
+        // loses the instant booking needs. Forward the row id solely when it is
+        // an ISO instant — never an arbitrary id string.
+        const rowId = i?.list_reply?.id;
+        return typeof rowId === 'string' && ISO_INSTANT.test(rowId)
+          ? `${title} (${rowId})`
+          : title;
       }
       case 'button':
         return message.button?.text?.trim() || undefined;

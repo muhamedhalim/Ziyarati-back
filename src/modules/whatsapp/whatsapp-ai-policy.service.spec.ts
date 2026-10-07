@@ -761,6 +761,51 @@ describe('WhatsappAiPolicyService', () => {
     });
   });
 
+  describe('a stored message with no resolvable thread (Step 9)', () => {
+    it('fails closed: the pause/takeover/assignment rules cannot be checked', async () => {
+      await expect(
+        policy.evaluate(
+          TENANT,
+          { conversationId: null, aiConversationId: 'ai-1' },
+          'pre_ai',
+        ),
+      ).resolves.toEqual({ allowed: false, reason: 'NO_CONVERSATION' });
+      expect(metrics.recordWhatsappAiDecision).toHaveBeenCalledWith(
+        'SKIP',
+        'NO_CONVERSATION',
+        'pre_ai',
+      );
+    });
+
+    it('also at the last moment before the send', async () => {
+      const d = await policy.evaluate(
+        TENANT,
+        { conversationId: null },
+        'pre_send',
+      );
+      expect(d).toEqual({ allowed: false, reason: 'NO_CONVERSATION' });
+    });
+
+    it('keeps the clinic-wide reason when that is what refuses first', async () => {
+      tenantSettings.findOne.mockResolvedValue({
+        id: 'ts',
+        bot_enabled: false,
+      });
+      const d = await policy.evaluate(
+        TENANT,
+        { conversationId: null },
+        'pre_ai',
+      );
+      expect(d).toEqual({ allowed: false, reason: 'CLINIC_AI_DISABLED' });
+    });
+
+    it('does not touch the message-could-not-be-stored path (no thread known: id omitted)', async () => {
+      await expect(policy.evaluate(TENANT, {}, 'pre_ai')).resolves.toEqual({
+        allowed: true,
+      });
+    });
+  });
+
   describe('phase 2 — schedule and assignment modes', () => {
     const settings = (over: Record<string, unknown>) =>
       tenantSettings.findOne.mockResolvedValue({

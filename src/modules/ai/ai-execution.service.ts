@@ -1379,6 +1379,11 @@ export class AiExecutionService {
       : undefined;
   }
 
+  /** Whether a turn keyed `key` has already started — i.e. this is a replay. */
+  hasRequestClaim(tenantId: string, key: string): Promise<boolean> {
+    return this.requests.exists(tenantId, key);
+  }
+
   /**
    * Streaming variant of a turn (Feature 2). Reuses the SAME RAG retrieval,
    * prompt assembly and — crucially — the SAME persistence + usage/cost metering
@@ -1404,7 +1409,12 @@ export class AiExecutionService {
      * is bound from HTTP request bodies and a client must never be able to
      * assert someone else's `wa_message_id` (it is a uniqueness/dedup key).
      */
-    origin?: { waMessageId?: string; messageType?: string },
+    origin?: {
+      waMessageId?: string;
+      messageType?: string;
+      /** Epoch ms after which no further tool round starts (WhatsApp turns). */
+      deadlineAt?: number;
+    },
     transport: AiExecutionTransport = 'WEBSOCKET',
     memoryLoader?: AiMemoryContextLoader,
     /**
@@ -1510,6 +1520,7 @@ export class AiExecutionService {
       }
       if (claim !== 'CLAIMED') {
         throw new AppError(ErrorCode.CONFLICT, {
+          internalContext: { claimState: claim },
           message:
             claim === 'UNKNOWN'
               ? 'A previous AI attempt has an unknown provider outcome and requires verification.'
@@ -1757,7 +1768,10 @@ export class AiExecutionService {
         const streamStart = Date.now();
         for (let i = 0; i <= MAX_TOOL_ITERATIONS; i += 1) {
           // F-15: the round after the last tool round is the tool-less wrap-up.
-          const wrapUp = i === MAX_TOOL_ITERATIONS;
+          const wrapUp =
+            i === MAX_TOOL_ITERATIONS ||
+            (origin?.deadlineAt !== undefined &&
+              Date.now() >= origin.deadlineAt);
           if (wrapUp) {
             messages = [
               ...messages,
@@ -1923,7 +1937,10 @@ export class AiExecutionService {
         // No streaming support (Noop fallback) — SAME complete()-based tool loop as sendMessage.
         for (let i = 0; i <= MAX_TOOL_ITERATIONS; i += 1) {
           // F-15: the round after the last tool round is the tool-less wrap-up.
-          const wrapUp = i === MAX_TOOL_ITERATIONS;
+          const wrapUp =
+            i === MAX_TOOL_ITERATIONS ||
+            (origin?.deadlineAt !== undefined &&
+              Date.now() >= origin.deadlineAt);
           if (wrapUp) {
             messages = [
               ...messages,

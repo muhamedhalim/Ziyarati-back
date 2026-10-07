@@ -1488,6 +1488,12 @@ export class AiToolDispatchService {
     // is NOT permission-gated, and `resolveInsurance` WRITES through
     // `setInsuranceStatus`. With the model's id winning, a prompt injection
     // could read and then overwrite a stranger's health-insurance flag.
+    const unbound = await this.refuseUnboundWhatsapp(
+      ctx,
+      AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS,
+      args,
+    );
+    if (unbound) return unbound;
     const boundCustomerId = ctx.customerId;
     const customerId = boundCustomerId ?? this.str(args.customerId);
     if (!customerId) {
@@ -1550,6 +1556,12 @@ export class AiToolDispatchService {
         error: 'Booking is not available in this context (no acting user).',
       };
     }
+    const unbound = await this.refuseUnboundWhatsapp(
+      ctx,
+      AI_TOOL.BOOK_APPOINTMENT,
+      args,
+    );
+    if (unbound) return unbound;
     if (!(ctx.permissions ?? []).includes(PERMISSION.APPOINTMENTS_CREATE)) {
       const reason = `Forbidden: booking requires the "${PERMISSION.APPOINTMENTS_CREATE}" permission.`;
       await this.recordAttempt(
@@ -2434,6 +2446,30 @@ export class AiToolDispatchService {
   }
 
   /**
+   * A WhatsApp turn acts for exactly one patient: the customer the bridge bound
+   * to the session. The bot actor holds tenant-wide `appointments.create` and
+   * `customers.read`, so "no bound patient" must never fall back to a
+   * customerId the model supplied (a hallucinated or prompt-injected id would
+   * book or read against a stranger in the same clinic). Today the bridge always
+   * binds one; this keeps that invariant in the dispatcher instead of in the
+   * caller. Other channels are untouched — it can only turn a call into a
+   * refusal on WhatsApp, never into an allowance.
+   */
+  private async refuseUnboundWhatsapp(
+    ctx: ToolContext,
+    tool: string,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult | undefined> {
+    if (ctx.channel !== 'WHATSAPP' || ctx.customerId) return undefined;
+    const reason = 'No patient is identified for this conversation.';
+    await this.recordAttempt(ctx, tool, args, 'DENIED', reason);
+    return {
+      success: false,
+      error: `${reason} Offer to connect the person with the clinic team (request_human_handover).`,
+    };
+  }
+
+  /**
    * F-03. On a patient-bound turn the appointment must be that patient's own
    * (same tenant AND same customer); anything else is refused with the one
    * uniform message. Returns the appointment it loaded so the caller does not
@@ -2935,7 +2971,14 @@ export class AiToolDispatchService {
           error: 'A matching action is already in progress.',
         };
       }
-      // FAILED → allow a retry by reopening the same ledger row.
+      // A refusal the application itself recorded (slot taken, outside the
+      // booking window ...) is a definite outcome, not an unknown one: hand the
+      // model that reason so it offers an alternative, instead of telling the
+      // patient a human must verify something that plainly did not happen.
+      if (existing.status === 'FAILED_PERMANENT' && existing.error) {
+        return { success: false, error: existing.error };
+      }
+      // Anything else (UNKNOWN_OUTCOME ...) genuinely needs verification.
       return {
         success: false,
         error:
@@ -3024,9 +3067,14 @@ export class AiToolDispatchService {
   private async findByKey(
     tenantId: string,
     key: string,
-  ): Promise<{ id: string; status: string; result: unknown } | null> {
+  ): Promise<{
+    id: string;
+    status: string;
+    result: unknown;
+    error?: string | null;
+  } | null> {
     const rows = await this.dataSource.query(
-      `SELECT id, status, result FROM ai_tool_calls WHERE tenant_id=$1 AND idempotency_key=$2`,
+      `SELECT id, status, result, error FROM ai_tool_calls WHERE tenant_id=$1 AND idempotency_key=$2`,
       [tenantId, key],
     );
     return rows[0] ?? null;
