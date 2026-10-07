@@ -2255,6 +2255,37 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     });
   });
 
+  describe('a patient’s first two messages race to create their customer', () => {
+    it('the loser adopts the winner’s customer instead of failing its turn', async () => {
+      contacts.findOne.mockResolvedValue(null);
+      customers.search
+        .mockResolvedValueOnce({ data: [] }) // nobody yet when it looked...
+        .mockResolvedValueOnce({
+          data: [{ id: 'cust-winner', phone: '966500000000' }],
+        }); // ...but the other turn won the insert
+      customers.create.mockRejectedValue(
+        Object.assign(new Error('duplicate key value'), { code: '23505' }),
+      );
+      contacts.save.mockImplementation(async (c: unknown) => c);
+
+      const contact = await service.findOrCreateContact(TENANT, '966500000000');
+
+      expect(contact.customer).toEqual(
+        expect.objectContaining({ id: 'cust-winner' }),
+      );
+    });
+
+    it('still surfaces the error when no winner can be found', async () => {
+      contacts.findOne.mockResolvedValue(null);
+      customers.search.mockResolvedValue({ data: [] });
+      customers.create.mockRejectedValue(new Error('db down'));
+
+      await expect(
+        service.findOrCreateContact(TENANT, '966500000000'),
+      ).rejects.toThrow('db down');
+    });
+  });
+
   describe('observability (Step 12)', () => {
     afterEach(() => jest.restoreAllMocks());
     const inbound = (id: string) =>
