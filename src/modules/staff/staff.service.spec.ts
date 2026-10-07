@@ -292,10 +292,93 @@ describe('StaffService', () => {
       );
     });
 
-    it('remove soft-removes the profile', async () => {
-      staff.findOne.mockResolvedValueOnce({ id: 'staff-1' });
+    it('remove soft-removes the profile AND its user account, then revokes sessions', async () => {
+      staff.findOne.mockResolvedValueOnce({
+        id: 'staff-1',
+        user: { id: 'user-1' },
+      });
       await service.remove(TENANT, 'staff-1');
-      expect(staff.softRemove).toHaveBeenCalled();
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(repo(StaffProfile).softRemove).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'staff-1' }),
+      );
+      expect(repo(User).softDelete).toHaveBeenCalledWith({ id: 'user-1' });
+      expect(authService.revokeAllForUser).toHaveBeenCalledWith('user-1');
+    });
+
+    it('remove of a profile with no linked account only removes the profile', async () => {
+      staff.findOne.mockResolvedValueOnce({ id: 'staff-2' });
+      await service.remove(TENANT, 'staff-2');
+      expect(repo(StaffProfile).softRemove).toHaveBeenCalled();
+      expect(repo(User).softDelete).not.toHaveBeenCalled();
+      expect(authService.revokeAllForUser).not.toHaveBeenCalled();
+    });
+
+    // max_users lifecycle: the seat check counts LIVE users (soft-deleted
+    // rows excluded, exactly like TypeORM's @DeleteDateColumn filtering). The
+    // in-memory table below is shared by creation, removal and the seat check,
+    // so it only passes if remove() actually releases the seat.
+    describe('max_users seat lifecycle', () => {
+      const LIMIT = 2;
+      let table: { id: string; deleted: boolean }[];
+      const live = () => table.filter((u) => !u.deleted).length;
+      const newDto = (n: number) =>
+        ({ email: `s${n}@clinic.com`, fullName: `S ${n}`, title: 'N' }) as any;
+
+      beforeEach(() => {
+        table = [];
+        usage.assertUserSeatWithinLimit.mockImplementation(async () => {
+          const current = live();
+          if (current + 1 > LIMIT) {
+            throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+              message: `Plan limit reached for max_users (${current}/${LIMIT})`,
+            });
+          }
+        });
+        authService.createUserWithRole.mockImplementation(async () => {
+          const row = { id: `u-${table.length + 1}`, deleted: false };
+          table.push(row);
+          return { id: row.id };
+        });
+        repo(StaffProfile).create.mockImplementation((v: unknown) => v);
+        repo(StaffProfile).save.mockResolvedValue({ id: 'p' });
+        manager.save.mockResolvedValue({ id: 'p' });
+        repo(User).softDelete.mockImplementation(
+          async ({ id }: { id: string }) => {
+            const row = table.find((u) => u.id === id)!;
+            row.deleted = true;
+          },
+        );
+        staff.findOne.mockImplementation(async (opts: any) =>
+          opts?.where?.id
+            ? { id: opts.where.id, user: { id: opts.where.id } }
+            : { id: 'p' },
+        );
+      });
+
+      it('creates up to the limit, rejects the next, frees a seat on delete, then admits a new member; deleted users are not counted', async () => {
+        await service.createWithNewUser(TENANT, newDto(1));
+        await service.createWithNewUser(TENANT, newDto(2));
+        expect(live()).toBe(LIMIT);
+
+        await expect(
+          service.createWithNewUser(TENANT, newDto(3)),
+        ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+        expect(table).toHaveLength(LIMIT);
+
+        await service.remove(TENANT, 'u-1');
+        // The deleted row still exists physically but no longer counts.
+        expect(table).toHaveLength(LIMIT);
+        expect(live()).toBe(LIMIT - 1);
+
+        await expect(
+          service.createWithNewUser(TENANT, newDto(3)),
+        ).resolves.toBeDefined();
+        expect(live()).toBe(LIMIT);
+        expect(table.filter((u) => u.deleted).map((u) => u.id)).toEqual([
+          'u-1',
+        ]);
+      });
     });
   });
 
