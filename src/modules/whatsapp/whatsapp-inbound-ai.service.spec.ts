@@ -51,6 +51,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
   let contacts: MockRepository;
   let orchestrator: {
     handleStream: jest.Mock;
+    hasRequestClaim: jest.Mock;
     recordInboundWithoutAnswer: jest.Mock;
   };
   let locks: { acquire: jest.Mock; release: jest.Mock; renew: jest.Mock };
@@ -130,6 +131,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     tenantSettings = createMockRepository();
     tenantSettings.findOne.mockResolvedValue({ id: 'ts-1', bot_enabled: true });
     orchestrator = {
+      hasRequestClaim: jest.fn().mockResolvedValue(false),
       handleStream: jest
         .fn()
         .mockResolvedValue({ reply: { content: 'AI reply' } }),
@@ -489,6 +491,26 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
         `${TENANT}:966500000000`,
         'whatsapp-contact-day',
       );
+    });
+
+    it('does not count a replay of a message whose turn already started (Step 6)', async () => {
+      orchestrator.hasRequestClaim.mockResolvedValue(true);
+
+      await service.handleInboundValue(TENANT, inbound);
+
+      expect(orchestrator.hasRequestClaim).toHaveBeenCalledWith(TENANT, 'w1');
+      expect(rateLimit.checkAndRecord).not.toHaveBeenCalled();
+      expect(orchestrator.handleStream).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not count a turn that could not get the contact lock (Step 6)', async () => {
+      locks.acquire.mockResolvedValue(null);
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+
+      await service.handleInboundValue(TENANT, inbound).catch(() => undefined);
+
+      expect(rateLimit.checkAndRecord).not.toHaveBeenCalled();
     });
 
     it('runs no AI turn past the limit', async () => {
@@ -855,12 +877,10 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     });
 
     it('re-reads the binding tenant-scoped, selecting only the binding column', async () => {
-      contacts.findOne
-        .mockResolvedValueOnce(unbound())
-        .mockResolvedValueOnce({
-          id: 'contact-1',
-          ai_conversation_id: undefined,
-        });
+      contacts.findOne.mockResolvedValueOnce(unbound()).mockResolvedValueOnce({
+        id: 'contact-1',
+        ai_conversation_id: undefined,
+      });
 
       await service.handleInboundValue(TENANT, inbound('wamid-c2'));
 
@@ -873,12 +893,10 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     it('binds a new session compare-and-set — only while the contact has none, scoped to the clinic, never a whole-row save', async () => {
       const qb = createMockQueryBuilder();
       contacts.createQueryBuilder.mockReturnValue(qb);
-      contacts.findOne
-        .mockResolvedValueOnce(unbound())
-        .mockResolvedValueOnce({
-          id: 'contact-1',
-          ai_conversation_id: undefined,
-        });
+      contacts.findOne.mockResolvedValueOnce(unbound()).mockResolvedValueOnce({
+        id: 'contact-1',
+        ai_conversation_id: undefined,
+      });
       orchestrator.handleStream.mockResolvedValue({
         aiConversationId: 'ai-new',
         reply: { content: 'AI reply' },
@@ -947,12 +965,10 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     it('judges the policy against the refreshed binding after waiting for the lock', async () => {
       // Another turn held the lock, then bound the session and handed it over.
       locks.acquire.mockResolvedValueOnce(null).mockResolvedValue('lock-token');
-      contacts.findOne
-        .mockResolvedValueOnce(unbound())
-        .mockResolvedValueOnce({
-          id: 'contact-1',
-          ai_conversation_id: 'ai-first',
-        });
+      contacts.findOne.mockResolvedValueOnce(unbound()).mockResolvedValueOnce({
+        id: 'contact-1',
+        ai_conversation_id: 'ai-first',
+      });
 
       await service.handleInboundValue(TENANT, inbound('wamid-c6'));
 

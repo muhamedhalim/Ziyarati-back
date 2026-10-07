@@ -1379,6 +1379,11 @@ export class AiExecutionService {
       : undefined;
   }
 
+  /** Whether a turn keyed `key` has already started — i.e. this is a replay. */
+  hasRequestClaim(tenantId: string, key: string): Promise<boolean> {
+    return this.requests.exists(tenantId, key);
+  }
+
   /**
    * Streaming variant of a turn (Feature 2). Reuses the SAME RAG retrieval,
    * prompt assembly and — crucially — the SAME persistence + usage/cost metering

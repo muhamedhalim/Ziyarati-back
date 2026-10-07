@@ -39,6 +39,15 @@ export class AiRequestExecutionService {
     });
   }
 
+  /** Has this key ever been claimed? Read-only; takes no lock and changes nothing. */
+  async exists(tenantId: string, key: string): Promise<boolean> {
+    const rows = await this.dataSource.query(
+      `SELECT 1 FROM ai_request_executions WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1`,
+      [tenantId, key],
+    );
+    return rows.length > 0;
+  }
+
   async markProviderStarted(tenantId: string, key: string): Promise<void> {
     await this.setState(tenantId, key, AI_REQUEST_STATE.PROVIDER_IN_PROGRESS);
   }

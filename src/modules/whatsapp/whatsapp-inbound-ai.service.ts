@@ -578,20 +578,6 @@ export class WhatsappInboundAiService {
   ): Promise<void> {
     const { waId } = item;
 
-    // F-16: after the opt-out check (a "STOP" must always be honoured) and before
-    // anything that costs money. A refused message is already stored on the
-    // timeline, so a human can still read it.
-    if (
-      !(await this.admitContactTurn(
-        tenantId,
-        waId,
-        this.subjectOf(item),
-        item.accountId,
-      ))
-    ) {
-      return;
-    }
-
     // One AI turn per contact at a time, so a second message sees the first
     // turn's reply in its history and replies leave in order.
     await this.turnLock.run(tenantId, waId, async ({ waited }) => {
@@ -613,6 +599,27 @@ export class WhatsappInboundAiService {
           await this.recordSuppressed(tenantId, item, again.reason);
           return;
         }
+      }
+
+      // F-16: after the opt-out check (a "STOP" must always be honoured) and
+      // before anything that costs money. Counted here, inside the lock, and
+      // only for FRESH work: a lock-busy retry never got this far, and a replay
+      // (an already-claimed wamid: a queue retry, a re-delivered webhook) is the
+      // same message, not another one. A refused message is already stored on
+      // the timeline, so a human can still read it.
+      const replay = item.message.id
+        ? await this.orchestrator.hasRequestClaim(tenantId, item.message.id)
+        : false;
+      if (
+        !replay &&
+        !(await this.admitContactTurn(
+          tenantId,
+          waId,
+          this.subjectOf(item),
+          item.accountId,
+        ))
+      ) {
+        return;
       }
       await this.runTurn(tenantId, item);
     });
