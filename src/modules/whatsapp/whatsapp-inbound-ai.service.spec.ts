@@ -81,6 +81,9 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
   let metrics: {
     recordWhatsappAiTurnFailure: jest.Mock;
     recordWhatsappAiDecision: jest.Mock;
+    recordWhatsappAiReply: jest.Mock;
+    observeWhatsappAiTurnSeconds: jest.Mock;
+    recordWhatsappContactLockBusy: jest.Mock;
   };
   let rateLimit: { checkAndRecord: jest.Mock };
   let router: { resolveForSend: jest.Mock };
@@ -104,6 +107,9 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     metrics = {
       recordWhatsappAiTurnFailure: jest.fn(),
       recordWhatsappAiDecision: jest.fn(),
+      recordWhatsappAiReply: jest.fn(),
+      observeWhatsappAiTurnSeconds: jest.fn(),
+      recordWhatsappContactLockBusy: jest.fn(),
     };
     // No other turn holds the contact's lock unless a test says so.
     locks = {
@@ -2246,6 +2252,80 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
         expect(logged).not.toContain('966500000000');
         expect(logged).not.toContain('my secret symptom');
       });
+    });
+  });
+
+  describe('observability (Step 12)', () => {
+    afterEach(() => jest.restoreAllMocks());
+    const inbound = (id: string) =>
+      ({
+        messages: [
+          { id, from: '966500000000', type: 'text', text: { body: 'hi' } },
+        ],
+      }) as never;
+
+    it('counts a delivered reply as sent and times the turn', async () => {
+      await service.handleInboundValue(TENANT, inbound('w-o1'));
+      expect(metrics.recordWhatsappAiReply).toHaveBeenCalledWith('sent');
+      expect(metrics.observeWhatsappAiTurnSeconds).toHaveBeenCalledTimes(1);
+      expect(
+        metrics.observeWhatsappAiTurnSeconds.mock.calls[0][0],
+      ).toBeGreaterThanOrEqual(0);
+    });
+
+    it('counts a failed provider send as failed and does not time the turn', async () => {
+      messaging.sendSession.mockResolvedValue({ success: false, error: 'x' });
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      await service.handleInboundValue(TENANT, inbound('w-o2'));
+      expect(metrics.recordWhatsappAiReply).toHaveBeenCalledWith('failed');
+      expect(metrics.observeWhatsappAiTurnSeconds).not.toHaveBeenCalled();
+    });
+
+    it('counts a reply the policy stops at the last moment as suppressed', async () => {
+      messageStatus.markFailed.mockResolvedValue(undefined);
+      orchestrator.handleStream.mockImplementation(async () => {
+        conversationsRepo.findOne.mockResolvedValue({
+          id: 'thread-1',
+          owner_type: 'HUMAN',
+        });
+        return { reply: { content: 'AI reply' }, mirroredMessageId: 'm-1' };
+      });
+      await service.handleInboundValue(TENANT, inbound('w-o3'));
+      expect(metrics.recordWhatsappAiReply).toHaveBeenCalledWith('suppressed');
+      expect(messaging.sendSession).not.toHaveBeenCalled();
+    });
+
+    it('counts a reply an earlier attempt already delivered as deduped', async () => {
+      orchestrator.handleStream.mockResolvedValue({
+        reply: { content: 'AI reply' },
+        mirroredMessageId: 'm-2',
+      });
+      messageRepo.findOne.mockResolvedValue({ wa_message_id: 'wamid.sent' });
+      await service.handleInboundValue(TENANT, inbound('w-o4'));
+      expect(metrics.recordWhatsappAiReply).toHaveBeenCalledWith('deduped');
+      expect(messaging.sendSession).not.toHaveBeenCalled();
+    });
+
+    it('counts a turn deferred for the contact lock', async () => {
+      locks.acquire.mockResolvedValue(null);
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      await expect(
+        service.handleInboundValue(TENANT, inbound('w-o5')),
+      ).rejects.toBeDefined();
+      expect(metrics.recordWhatsappContactLockBusy).toHaveBeenCalledTimes(1);
+    });
+
+    it('prefixes this bridge’s log lines with the correlation id', async () => {
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      accounts.findOne.mockResolvedValue(null); // → "not stored on the timeline"
+      await service.handleInboundValue(TENANT, inbound('w-o6'));
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines.length).toBeGreaterThan(0);
+      expect(lines.every((l) => l.startsWith('[cid='))).toBe(true);
+      expect(lines.join('\n')).not.toContain('966500000000');
     });
   });
 
