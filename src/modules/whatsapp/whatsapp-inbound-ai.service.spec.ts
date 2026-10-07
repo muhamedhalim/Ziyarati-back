@@ -230,6 +230,15 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
       ],
     }).compile();
     service = moduleRef.get(WhatsappInboundAiService);
+    // Meta always names the receiving number; without it no thread can be
+    // resolved and (Step 9) the AI stays silent. A test that cares passes its own.
+    const handle = service.handleInboundValue.bind(service);
+    service.handleInboundValue = (tenantId, value, ...rest) =>
+      handle(
+        tenantId,
+        { metadata: { phone_number_id: 'p1' }, ...value } as never,
+        ...rest,
+      );
     lockService = moduleRef.get(ContactTurnLockService);
     // Real timers, so keep the lock's waits short.
     lockService.timings = { ttlMs: 1000, renewMs: 500, waitMs: 30, pollMs: 5 };
@@ -735,15 +744,14 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
       warn.mockRestore();
     });
 
-    it('uses the default when the receiving number matches no live account (nothing to prefer)', async () => {
+    it('stays silent when the receiving number matches no live account: there is no thread to judge (Step 9)', async () => {
       accounts.findOne.mockResolvedValue(null);
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
 
       await service.handleInboundValue(TENANT, inbound('wamid-r5'));
 
-      expect(router.resolveForSend).toHaveBeenCalledWith(TENANT, {});
-      expect(messaging.sendSession).toHaveBeenCalledWith(
-        expect.objectContaining({ accountId: 'acc-default' }),
-      );
+      expect(orchestrator.handleStream).not.toHaveBeenCalled();
+      expect(messaging.sendSession).not.toHaveBeenCalled();
     });
 
     it('inbound media is fetched with the receiving account’s token, ahead of the conversation’s recorded account', async () => {
@@ -1341,7 +1349,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
       );
     });
 
-    it('still answers when no connected account matches the receiving number (nothing to store it on)', async () => {
+    it('does not answer when no connected account matches the receiving number — no thread, so no pause/takeover rule can be checked (Step 9)', async () => {
       accounts.findOne.mockResolvedValue(null);
       jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
 
@@ -1350,11 +1358,25 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
       expect(
         conversationExecution.recordChannelMessageOnce,
       ).not.toHaveBeenCalled();
-      expect(orchestrator.handleStream).toHaveBeenCalledWith(
-        TENANT,
-        expect.objectContaining({ conversationId: undefined }),
-        expect.any(Function),
+      expect(orchestrator.handleStream).not.toHaveBeenCalled();
+      expect(metrics.recordWhatsappAiDecision).toHaveBeenCalledWith(
+        'SKIP',
+        'NO_CONVERSATION',
+        'pre_ai',
       );
+    });
+
+    it('does not answer a contact that has no linked customer (no thread either)', async () => {
+      contacts.findOne.mockResolvedValue({
+        id: 'contact-x',
+        wa_id: '966500000000',
+        customer: null,
+      });
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      await service.handleInboundValue(TENANT, inbound());
+
+      expect(orchestrator.handleStream).not.toHaveBeenCalled();
     });
 
     it('a message already on the timeline (a job retry) still gets its AI turn', async () => {

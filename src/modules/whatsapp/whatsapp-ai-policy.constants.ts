@@ -31,6 +31,13 @@ export const AI_POLICY_REASON = {
    * (`ai_assignment_mode = ASSIGNED_ONLY`) and this one is not.
    */
   NOT_ASSIGNED_TO_AI: 'NOT_ASSIGNED_TO_AI',
+  /**
+   * The message is stored but its timeline thread could not be resolved
+   * (`conversationId` explicitly `null`). Pause, takeover and assignment rules
+   * all live on that thread, so none of them can be checked: the AI stays
+   * silent rather than answer past a pause it cannot see.
+   */
+  NO_CONVERSATION: 'NO_CONVERSATION',
   /** A setting the decision depends on could not be read — fails closed. */
   POLICY_READ_FAILED: 'POLICY_READ_FAILED',
 } as const;
@@ -49,7 +56,9 @@ export type AiPolicyStage = 'pre_ai' | 'pre_send';
 
 /**
  * What the decision is about. Everything is optional: a message that could not
- * even be stored has no thread, and then only the clinic-wide rules apply.
+ * even be stored has no thread (`conversationId` omitted), and then only the
+ * clinic-wide rules apply. A stored message whose thread could not be resolved
+ * passes `conversationId: null` and is refused (`NO_CONVERSATION`).
  * These ids come from the server's own lookups, never from a client.
  */
 export interface AiPolicySubject {
