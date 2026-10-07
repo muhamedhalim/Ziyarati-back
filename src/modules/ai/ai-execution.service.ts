@@ -94,6 +94,7 @@ import {
   screenUserMessage,
   type ScopeCategory,
 } from './guardrails/scope-guard';
+import { describeToday } from './prompt/turn-clock';
 import { AiCostLedgerService } from './cost/ai-cost-ledger.service';
 import { PRICING_STATUS } from './cost/ai-price-catalog.service';
 import { AiRequestExecutionService } from './idempotency/ai-request-execution.service';
@@ -2350,7 +2351,9 @@ export class AiExecutionService {
     // why the toolset is tenant-scoped discovery + booking, not a filtered
     // AI_TOOLS.
     if (channel === 'WHATSAPP') {
-      return AI_TOOLS.filter((t) => WHATSAPP_CHANNEL_TOOL_NAMES.includes(t.name));
+      return AI_TOOLS.filter((t) =>
+        WHATSAPP_CHANNEL_TOOL_NAMES.includes(t.name),
+      );
     }
 
     // Authenticated principals: the staff booking tools, each advertised only
@@ -2599,7 +2602,9 @@ export class AiExecutionService {
   ): Promise<string | undefined> {
     const user = this.ctx.getUser();
     // F-28: a WhatsApp patient is not a guest, but their turns have the same
-    // amnesia — the own-clinic working set is that channel's pinned block.
+    // amnesia — the own-clinic working set is that channel's pinned block. It
+    // always carries today's date, so a WhatsApp turn never resolves "tomorrow"
+    // from the model's memory.
     const ownClinic = !user?.guest && !!user && channel === 'WHATSAPP';
     if (!user?.guest && !ownClinic) return undefined;
     try {
@@ -2624,7 +2629,11 @@ export class AiExecutionService {
           err instanceof Error ? err.message : String(err)
         }`,
       );
-      return undefined;
+      // The working set could not be read, the date still can: a turn must not
+      // lose its clock because a branch lookup failed.
+      return ownClinic
+        ? `ESTABLISHED BOOKING CONTEXT\n- ${describeToday()}`
+        : undefined;
     }
   }
 
@@ -2941,8 +2950,9 @@ export class AiExecutionService {
     session: Record<string, unknown> | null | undefined,
     dto: SendMessageDto,
   ): Promise<AttachmentPromptInput | undefined> {
-    const bound = ((session as { attachments?: ConversationAttachment[] } | null)
-      ?.attachments ?? []) as ConversationAttachment[];
+    const bound = ((
+      session as { attachments?: ConversationAttachment[] } | null
+    )?.attachments ?? []) as ConversationAttachment[];
     const requested = dto.attachmentIds ?? [];
 
     let all = bound;
@@ -2961,7 +2971,10 @@ export class AiExecutionService {
         );
         missingCount = missing.length;
         if (attachments.length > 0) {
-          if (bound.length + attachments.length > MAX_ATTACHMENTS_PER_CONVERSATION) {
+          if (
+            bound.length + attachments.length >
+            MAX_ATTACHMENTS_PER_CONVERSATION
+          ) {
             // Refuse the turn rather than silently dropping the overflow: the
             // visitor asked about a file, and answering while quietly ignoring
             // it is the failure mode this whole feature is built to avoid. The

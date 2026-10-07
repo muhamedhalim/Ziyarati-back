@@ -13,6 +13,7 @@ import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import { AI_CONVERSATION_STATUS } from '../ai/ai.constants';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
+import { describeToday } from '../ai/prompt/turn-clock';
 
 /** How far the caller needs the selection to have progressed. */
 export type BookingStep =
@@ -328,7 +329,9 @@ export class PublicBookingContextService {
     // the two a day apart whenever the visitor and the clinic are on opposite
     // sides of midnight — the model then asks for a day the patient did not
     // mean and is told there is nothing free.
-    const lines: string[] = [this.today(branch?.timezone ?? session.timezone)];
+    const lines: string[] = [
+      describeToday(branch?.timezone ?? session.timezone),
+    ];
 
     if (session.selectedCityId) {
       const city = await this.cityName(session.selectedCityId);
@@ -408,49 +411,6 @@ export class PublicBookingContextService {
         : []),
       next,
     ].join('\n');
-  }
-
-  /**
-   * Today's date, in the visitor's timezone when the session recorded one.
-   *
-   * The model had no clock. Asked for "tomorrow", it produced a date from its
-   * training data — observed live as a `search_public_availability` call for
-   * `2023-10-29`, which of course returned no windows, and the assistant then
-   * told the visitor there was nothing available. The clinic, branch and doctor
-   * were all correct; only the day was invented.
-   *
-   * The server knows the date, so the server states it. Emitted on every public
-   * turn, including the first, because a relative date can be the very first
-   * thing a visitor says ("can I come tomorrow?").
-   */
-  private today(timezone?: string): string {
-    const now = new Date();
-    const zone = timezone?.trim() || 'UTC';
-    let date: string;
-    try {
-      date = new Intl.DateTimeFormat('en-CA', {
-        timeZone: zone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      }).format(now);
-    } catch {
-      // An unrecognised IANA zone must not cost the whole block.
-      date = now.toISOString().slice(0, 10);
-    }
-    const weekday = (() => {
-      try {
-        return new Intl.DateTimeFormat('en-US', {
-          timeZone: zone,
-          weekday: 'long',
-        }).format(now);
-      } catch {
-        return new Intl.DateTimeFormat('en-US', { weekday: 'long' }).format(
-          now,
-        );
-      }
-    })();
-    return `today: ${date} (${weekday}, ${zone}). Resolve "today", "tomorrow" and every other relative date from THIS, never from memory, and pass the result as YYYY-MM-DD.`;
   }
 
   /** Branch + its clinic + city, through the public eligibility predicate. */
