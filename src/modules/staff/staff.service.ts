@@ -1065,7 +1065,22 @@ export class StaffService {
 
   async remove(tenantId: string, id: string): Promise<void> {
     const profile = await this.loadProfile(tenantId, id);
-    await this.staff.softRemove(profile);
+    const userId = profile.user?.id;
+    // The `max_users` seat cap counts live `users` rows (see
+    // UsageService.assertUserSeatWithinLimit), not staff profiles. Removing
+    // only the profile used to leave the account live, so the seat was never
+    // released. The account is soft-deleted in the SAME transaction, which
+    // also frees its email for reuse (partial unique index on live users).
+    await this.dataSource.transaction(async (manager) => {
+      await manager.getRepository(StaffProfile).softRemove(profile);
+      if (userId) {
+        await manager.getRepository(User).softDelete({ id: userId });
+      }
+    });
+    // A removed account must not keep working sessions.
+    if (userId) {
+      await this.authService.revokeAllForUser(userId);
+    }
   }
 
   // ─────────────────────────── Service mapping ───────────────────────────── //
