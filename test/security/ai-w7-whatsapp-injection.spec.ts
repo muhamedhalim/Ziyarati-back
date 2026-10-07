@@ -42,11 +42,19 @@ describe('W7 — WhatsApp inbound injection (T113)', () => {
   let seed: AiAuditSeed;
   let inboundAi: WhatsappInboundAiService;
   let botActorSpy: jest.SpyInstance;
+  const pnid = `w7-pnid-${Math.random().toString(36).slice(2, 10)}`;
 
   beforeAll(async () => {
     harness = await buildAiAuditHarness();
     seed = await seedAiAudit(harness.app, harness.dataSource);
     inboundAi = harness.app.get(WhatsappInboundAiService);
+    // A turn needs a thread, and the thread comes from the account the message
+    // arrived on: no live account, no AI answer.
+    await harness.dataSource.query(
+      `INSERT INTO whatsapp_accounts (phone_number_id, connection_status, is_default, is_active, "tenantId")
+       VALUES ($1,'CONNECTED',true,true,$2)`,
+      [pnid, seed.tenantA.id],
+    );
 
     const botActor = harness.app.get(WhatsappBotActorService);
     botActorSpy = jest.spyOn(botActor, 'ensureBotActor').mockImplementation(async (tenantId: string) => ({
@@ -62,7 +70,10 @@ describe('W7 — WhatsApp inbound injection (T113)', () => {
 
   afterAll(async () => {
     botActorSpy.mockRestore();
+    await harness.dataSource.query(`DELETE FROM whatsapp_contacts WHERE "tenantId" = $1`, [seed.tenantA.id]).catch(() => undefined);
     await teardownAiAuditSeed(harness.dataSource, seed);
+    // After the seed teardown: conversations FK the account.
+    await harness.dataSource.query(`DELETE FROM whatsapp_accounts WHERE "tenantId" = $1`, [seed.tenantA.id]).catch(() => undefined);
     await harness.close();
   }, 60_000);
 
@@ -87,6 +98,7 @@ describe('W7 — WhatsApp inbound injection (T113)', () => {
 
     const waId = `9665${Math.floor(10_000_000 + Math.random() * 89_999_999)}`;
     const value: MetaWebhookChangeValue = {
+      metadata: { phone_number_id: pnid },
       messages: [
         {
           id: `wamid.w7-t113-${Date.now()}`,

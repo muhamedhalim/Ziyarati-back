@@ -241,8 +241,10 @@ export async function ownerPrincipal(rt: AuditRuntime, clinic: AuditClinic): Pro
 
 // ─────────────────────────────────── WhatsApp ──────────────────────────────── //
 
-export function waPayload(text: string, waId: string, name = 'Audit Patient'): MetaWebhookChangeValue {
+export function waPayload(text: string, waId: string, name = 'Audit Patient', phoneNumberId?: string): MetaWebhookChangeValue {
   return {
+    // The receiving number: without it no account (so no timeline thread) can be resolved and the bot stays silent.
+    ...(phoneNumberId ? { metadata: { phone_number_id: phoneNumberId } } : {}),
     messages: [{ id: `wamid.audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, from: waId, type: 'text', text: { body: text } }],
     contacts: [{ wa_id: waId, profile: { name } }],
   } as unknown as MetaWebhookChangeValue;
@@ -251,7 +253,10 @@ export function waPayload(text: string, waId: string, name = 'Audit Patient'): M
 export async function whatsappTurn(rt: AuditRuntime, tenantId: string, waId: string, text: string): Promise<{ replies: string[]; tools: string[] }> {
   const before = rt.whatsappOutbox.length;
   const toolsBefore = await rt.harness.dataSource.query(`SELECT count(*)::int c FROM ai_tool_calls WHERE tenant_id = $1`, [tenantId]);
-  await rt.harness.app.get(WhatsappInboundAiService).handleInboundValue(tenantId, waPayload(text, waId));
+  await rt.harness.app.get(WhatsappInboundAiService).handleInboundValue(
+    tenantId,
+    waPayload(text, waId, 'Audit Patient', [rt.seed.full, rt.seed.empty, rt.seed.b].find((c) => c.tenantId === tenantId)?.phoneNumberId),
+  );
   const tools = await rt.harness.dataSource.query(
     `SELECT tool_name FROM ai_tool_calls WHERE tenant_id = $1 ORDER BY created_at ASC OFFSET $2`,
     [tenantId, toolsBefore[0].c],

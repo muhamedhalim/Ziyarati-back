@@ -596,6 +596,7 @@ describe('Tenant settings — real Postgres', () => {
     const deliver = () =>
       inbound.handleInboundValue(ownerA.tenantId, {
         messaging_product: 'whatsapp',
+        metadata: { phone_number_id: `pnid-${SUITE}` },
         messages: [
           {
             id: `wamid.${SUITE}.${randomUUID().slice(0, 6)}`,
@@ -610,6 +611,11 @@ describe('Tenant settings — real Postgres', () => {
       inbound = e2e.app.get(WhatsappInboundAiService);
       // The AI itself is not under test (and there is no model key here) — what
       // is under test is whether the clinic's own switch lets a turn START.
+      // A turn needs a thread, which comes from the account the message arrived on.
+      await e2e.dataSource.query(
+        `INSERT INTO whatsapp_accounts (phone_number_id, connection_status, is_default, is_active, "tenantId") VALUES ($1,'CONNECTED',true,true,$2)`,
+        [`pnid-${SUITE}`, ownerA.tenantId],
+      );
       handleStream = jest
         .spyOn(e2e.app.get(AiOrchestratorService), 'handleStream')
         .mockResolvedValue({ reply: undefined } as never);
