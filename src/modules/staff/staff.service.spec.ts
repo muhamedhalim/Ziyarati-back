@@ -190,11 +190,11 @@ describe('StaffService', () => {
     describe('bookable filter (appointment Employee picker)', () => {
       const query = { page: 1, limit: 10, bookable: 'true' } as any;
 
-      it('resolves doctor, nurse and manager accounts, scoped to the caller tenant', async () => {
+      it('resolves branch manager, doctor and nurse accounts, scoped to the caller tenant', async () => {
         userRoles.find.mockResolvedValueOnce([
+          { user: { id: 'u-branch-manager' } },
           { user: { id: 'u-doctor' } },
           { user: { id: 'u-nurse' } },
-          { user: { id: 'u-manager' } },
         ]);
         staff.findAndCount.mockResolvedValueOnce([[{ id: 'staff-1' }], 1]);
 
@@ -202,13 +202,13 @@ describe('StaffService', () => {
 
         const roleQuery = userRoles.find.mock.calls[0][0];
         expect(roleQuery.where.role.slug).toEqual(
-          In([ROLE.DOCTOR, ROLE.NURSE, ROLE.MANAGER]),
+          In([ROLE.BRANCH_MANAGER, ROLE.DOCTOR, ROLE.NURSE]),
         );
         expect(roleQuery.where.user).toEqual({ tenant: { id: TENANT } });
         // The staff query itself is narrowed to exactly those accounts AND the tenant.
         const staffQuery = staff.findAndCount.mock.calls[0][0];
         expect(staffQuery.where.user).toEqual({
-          id: In(['u-doctor', 'u-nurse', 'u-manager']),
+          id: In(['u-branch-manager', 'u-doctor', 'u-nurse']),
         });
         expect(staffQuery.where.tenant).toEqual({ id: TENANT });
       });
@@ -220,6 +220,10 @@ describe('StaffService', () => {
           .value;
         expect(slugs).not.toContain(ROLE.RECEPTIONIST);
         expect(slugs).not.toContain(ROLE.OWNER);
+        expect(slugs).not.toContain(ROLE.MANAGER);
+        expect([...slugs].sort()).toEqual(
+          [ROLE.BRANCH_MANAGER, ROLE.DOCTOR, ROLE.NURSE].sort(),
+        );
       });
 
       it('returns an empty page without querying staff when no eligible role exists', async () => {

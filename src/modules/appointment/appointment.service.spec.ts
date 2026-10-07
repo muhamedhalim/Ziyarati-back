@@ -279,7 +279,7 @@ describe('AppointmentsService', () => {
         expect(repo(UserRole).exists).toHaveBeenCalledWith({
           where: {
             user: { id: 'u-staff', tenant: { id: TENANT } },
-            role: { slug: In([ROLE.DOCTOR, ROLE.NURSE, ROLE.MANAGER]) },
+            role: { slug: In([ROLE.BRANCH_MANAGER, ROLE.DOCTOR, ROLE.NURSE]) },
           },
         });
         expect(repo(Appointment).save).toHaveBeenCalled();
@@ -1306,7 +1306,9 @@ describe('AppointmentsService', () => {
       repo(StaffProfile).findOne.mockResolvedValue({
         id: 's2',
         is_available_for_booking: true,
+        user: { id: 'u-s2' },
       });
+      repo(UserRole).exists.mockResolvedValue(true);
       // Unconfigured legacy clinic — no schedules anywhere, so the branch rule
       // has no opinion and the reassignment proceeds as it always did.
       repo(StaffSchedule).exists.mockResolvedValue(false);
@@ -1321,6 +1323,22 @@ describe('AppointmentsService', () => {
         expect.any(Date),
         expect.objectContaining({ excludeAppointmentId: 'appt-1', manager }),
       );
+    });
+
+    it('rejects reassigning to staff outside branch manager/doctor/nurse before availability', async () => {
+      loadConfirmed();
+      repo(StaffProfile).findOne.mockResolvedValue({
+        id: 's2',
+        is_available_for_booking: true,
+        user: { id: 'u-s2' },
+      });
+      repo(StaffSchedule).exists.mockResolvedValue(false);
+      repo(UserRole).exists.mockResolvedValue(false);
+
+      await expect(
+        service.update(TENANT, USER, 'appt-1', { staffId: 's2' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+      expect(availability.assertBookable).not.toHaveBeenCalled();
     });
 
     it('updates notes only without touching availability', async () => {
