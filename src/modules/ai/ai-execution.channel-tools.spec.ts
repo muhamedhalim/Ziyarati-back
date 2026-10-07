@@ -268,10 +268,12 @@ describe('AiExecutionService — buildBookingContext() per transport (F-28)', ()
     await expect(build('WHATSAPP')).resolves.toBeUndefined();
   });
 
-  it('an unreadable working set degrades to no block — it must never fail the patient’s turn', async () => {
+  it('an unreadable working set degrades to the date alone — it must never fail the patient’s turn, nor cost it its clock', async () => {
     const { build, describeOwnClinicContext } = make(bot);
     describeOwnClinicContext.mockRejectedValue(new Error('db down'));
 
-    await expect(build('WHATSAPP')).resolves.toBeUndefined();
+    const block = await build('WHATSAPP');
+    expect(block).toMatch(/^ESTABLISHED BOOKING CONTEXT\n- today: \d{4}-\d{2}-\d{2} \(/);
+    expect(block).not.toContain('(id ');
   });
 });

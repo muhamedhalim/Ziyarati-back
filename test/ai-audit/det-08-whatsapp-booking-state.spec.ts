@@ -132,10 +132,14 @@ describe('Phase 1 — WhatsApp booking state, tool loop and price honesty', () =
         'list_clinic_services',
         'check_availability',
       ]);
-      // Nothing has been worked on yet, so a first turn carries no block (and spends no budget on one).
-      expect(reactive.capturedRequests.every((req) => !contextBlock(req))).toBe(
-        true,
-      );
+      // Nothing has been worked on yet, so a first turn's block is the DATE alone:
+      // no ids, no services — but "tomorrow" is never left to the model's memory.
+      for (const req of reactive.capturedRequests) {
+        const block = contextBlock(req);
+        expect(block).toMatch(/- today: \d{4}-\d{2}-\d{2} \(\w+, /);
+        expect(block).not.toContain('(id ');
+        expect(block).not.toContain('- branch:');
+      }
 
       convId = await lastConversation(full.tenantId);
       const session = await sessionOf(convId);
@@ -247,7 +251,7 @@ describe('Phase 1 — WhatsApp booking state, tool loop and price honesty', () =
       expect(r.replies.join(' ')).toMatch(/^Booked for /);
     });
 
-    it('a clinic with SEVERAL branches: list_clinic_branches alone pins nothing (the patient has not chosen), so the next turn has no block', async () => {
+    it('a clinic with SEVERAL branches: list_clinic_branches alone pins nothing (the patient has not chosen), so the next turn block is the date alone', async () => {
       const { full } = rt.seed;
       reactive.setHandler((req) =>
         resultOf(req, 'list_clinic_branches')
@@ -270,7 +274,10 @@ describe('Phase 1 — WhatsApp booking state, tool loop and price honesty', () =
         full.patientPhones!.y,
         'Main Branch',
       );
-      expect(contextBlock(reactive.capturedRequests[0])).toBeUndefined();
+      // Still no branch pinned — only the date.
+      const block = contextBlock(reactive.capturedRequests[0]);
+      expect(block).toMatch(/- today: \d{4}-\d{2}-\d{2}/);
+      expect(block).not.toContain('- branch:');
     });
 
     it('a clinic with ONE branch pins it from list_clinic_branches alone, and the next turn shows it', async () => {
