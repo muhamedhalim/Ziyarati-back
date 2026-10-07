@@ -42,18 +42,44 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 
-// These two endpoints are @Public() — reachable by anyone, not just Meta —
-// so they get their own, tighter budget than the app-wide default. 60/min
-// per IP comfortably covers a real clinic's inbound WhatsApp volume while
-// bounding the cost of a flood (signature verification + a DB write) before
-// it reaches either. Relaxed under Jest for the same reason as the app-wide
-// default in app.module.ts — a single e2e spec file's requests all land in
-// one in-memory bucket.
+// These endpoints are @Public() — reachable by anyone, not just Meta — so they
+// get their own budget rather than the app-wide default. Relaxed under Jest for
+// the same reason as the app-wide default in app.module.ts — a single e2e spec
+// file's requests all land in one in-memory bucket.
+const IS_TEST = process.env.NODE_ENV === 'test';
+
+// The GET handshake is only ever hit when someone registers the callback URL.
 const PUBLIC_WEBHOOK_THROTTLE = {
-  default: {
-    limit: process.env.NODE_ENV === 'test' ? 1_000_000 : 60,
-    ttl: 60_000,
-  },
+  default: { limit: IS_TEST ? 1_000_000 : 60, ttl: 60_000 },
+};
+
+/** Default POST budget, per IP per minute — see `eventsThrottleLimit`. */
+export const WHATSAPP_EVENTS_THROTTLE_DEFAULT = 3000;
+
+/**
+ * Budget for `POST /events`, per IP per minute. Meta delivers EVERY clinic's
+ * events from a small shared set of addresses, and each outbound message adds up
+ * to three status webhooks (sent / delivered / read), so a per-IP budget sized
+ * for one clinic starts answering 429 as soon as the platform has a few busy
+ * ones — and Meta then backs off redelivery, delaying patients' replies.
+ *
+ * It is NOT the flood defence: that is the HMAC over the raw body (checked
+ * before any database write), the freshness window and the body-size limit. This
+ * only bounds the cost of an unauthenticated flood reaching them.
+ *
+ * Read per request, not at import: the decorator is evaluated before `.env` is
+ * loaded. `WHATSAPP_WEBHOOK_THROTTLE_PER_MIN` overrides the default.
+ */
+export function eventsThrottleLimit(): number {
+  if (IS_TEST) return 1_000_000;
+  const n = Number(process.env.WHATSAPP_WEBHOOK_THROTTLE_PER_MIN);
+  return Number.isFinite(n) && n >= 1
+    ? Math.floor(n)
+    : WHATSAPP_EVENTS_THROTTLE_DEFAULT;
+}
+
+const EVENTS_THROTTLE = {
+  default: { limit: () => eventsThrottleLimit(), ttl: 60_000 },
 };
 
 const S_ERROR = {
@@ -193,7 +219,7 @@ JWT; the tenant is NEVER taken from the request body.
     schema: S_ERROR,
   })
   @Public()
-  @Throttle(PUBLIC_WEBHOOK_THROTTLE)
+  @Throttle(EVENTS_THROTTLE)
   @Post('events')
   @HttpCode(HttpStatus.OK)
   ingest(

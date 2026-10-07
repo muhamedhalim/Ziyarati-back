@@ -156,6 +156,53 @@ export class WhatsappWebhookService {
     // the integration platform's own TIMESTAMPED scheme constructs its MAC.
     this.enforceEventFreshness(body);
 
+    // One stored event per (entry, change). Meta may batch several into one
+    // POST — different WABAs (so different clinics) or several change fields —
+    // and an event row carries ONE tenant and is processed as ONE change, so a
+    // batch must be split here, where each unit's tenant is resolved from its
+    // OWN `phone_number_id`. A single-unit body (today's normal traffic, and the
+    // legacy `{ payload }` wrapper) is stored exactly as before.
+    const units = this.splitIntoUnits(body);
+    const results: { id: string; deduplicated: boolean }[] = [];
+    for (const unit of units) {
+      results.push(await this.persistUnit(unit));
+    }
+    return {
+      accepted: true,
+      id: results[0].id,
+      ...(results.every((r) => r.deduplicated) ? { deduplicated: true } : {}),
+    };
+  }
+
+  /**
+   * The bodies to store for one POST. The legacy wrapper and anything with fewer
+   * than two changes stay a single unit holding the ORIGINAL body (same payload,
+   * same idempotency key as before). A batch becomes one single-change body per
+   * (entry, change), keeping the entry's own `id` so nothing else about the
+   * payload is rewritten. No cap is applied: the body-size limit already bounds a
+   * batch, and dropping a unit would drop a patient's message.
+   */
+  private splitIntoUnits(body: WhatsappWebhookBody): WhatsappWebhookBody[] {
+    if (body?.payload || body?.eventType || body?.idempotencyKey) return [body];
+    const units: WhatsappWebhookBody[] = [];
+    for (const entry of body?.entry ?? []) {
+      for (const change of entry?.changes ?? []) {
+        units.push({
+          ...(body.object !== undefined ? { object: body.object } : {}),
+          entry: [{ ...entry, changes: [change] }],
+        });
+      }
+    }
+    return units.length > 1 ? units : [body];
+  }
+
+  /**
+   * Dedupe → resolve tenant → persist → enqueue, for ONE unit. Exactly the
+   * steps `ingest` has always run for a body, now applied per unit.
+   */
+  private async persistUnit(
+    body: WhatsappWebhookBody,
+  ): Promise<{ id: string; deduplicated: boolean }> {
     // Accept both the Meta-native body and the legacy `{ payload }` wrapper.
     const payload: Record<string, unknown> =
       body?.payload ?? (body as unknown as Record<string, unknown>);
@@ -167,8 +214,7 @@ export class WhatsappWebhookService {
       const existing = await this.webhooks.findOne({
         where: { idempotency_key: idempotencyKey },
       });
-      if (existing)
-        return { accepted: true, id: existing.id, deduplicated: true };
+      if (existing) return { id: existing.id, deduplicated: true };
     }
 
     const tenant = await this.resolveTenantFromPayload(payload);
@@ -195,14 +241,13 @@ export class WhatsappWebhookService {
         const existing = await this.webhooks.findOne({
           where: { idempotency_key: idempotencyKey },
         });
-        if (existing)
-          return { accepted: true, id: existing.id, deduplicated: true };
+        if (existing) return { id: existing.id, deduplicated: true };
       }
       throw err;
     }
 
     await this.enqueueProcessing(saved.id, tenant);
-    return { accepted: true, id: saved.id };
+    return { id: saved.id, deduplicated: false };
   }
 
   /**

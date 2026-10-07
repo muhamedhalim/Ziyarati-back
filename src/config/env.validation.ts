@@ -251,7 +251,9 @@ export const validate = (config: Record<string, unknown>) => {
     // anything — see FreeAccessNoticeService's docblock for why this exists
     // (deploy-order safety: the worker must know the job name before any API
     // instance starts enqueueing it).
-    FREE_ACCESS_NOTICES_ENABLED: Joi.string().valid('true', 'false').default('true'),
+    FREE_ACCESS_NOTICES_ENABLED: Joi.string()
+      .valid('true', 'false')
+      .default('true'),
 
     JWT_ACCESS_SECRET: Joi.string().required(),
     JWT_REFRESH_SECRET: Joi.string().required(),
@@ -515,7 +517,10 @@ export const validate = (config: Record<string, unknown>) => {
     TAP_CHARGE_EXPIRY_MINUTES: Joi.number().integer().min(5).max(60),
     // Clinic-not-present renewals + card saving. Off until Tap has activated
     // Save Card and non-3DS merchant-initiated charges on the account.
-    TAP_RECURRING_ENABLED: Joi.boolean().truthy('true').falsy('false').empty(''),
+    TAP_RECURRING_ENABLED: Joi.boolean()
+      .truthy('true')
+      .falsy('false')
+      .empty(''),
     // Patient booking payments, settled by Tap straight to each clinic's merchant
     // (Tap Platform). Off until the platform is activated (TAP_PLATFORM_ID) and a
     // clinic has been onboarded and approved.
@@ -554,7 +559,9 @@ export const validate = (config: Record<string, unknown>) => {
     // `enabled` defaults to ON in production, OFF in dev (no-op provider) unless
     // EMAIL_ENABLED is set explicitly. EMAIL_SYNC=true delivers inline instead of
     // via the worker (for API-only deployments).
-    EMAIL_PROVIDER: Joi.string().valid('resend', 'ses', 'noop').default('resend'),
+    EMAIL_PROVIDER: Joi.string()
+      .valid('resend', 'ses', 'noop')
+      .default('resend'),
     EMAIL_ENABLED: Joi.string().valid('true', 'false'),
     EMAIL_SYNC: Joi.string().valid('true', 'false').default('false'),
     RESEND_API_KEY: Joi.string().allow('', null),
@@ -620,6 +627,13 @@ export const validate = (config: Record<string, unknown>) => {
       .pattern(/^v\d+\.\d+$/)
       .default('v21.0'),
     META_WEBHOOK_VERIFY_TOKEN: Joi.string().allow('', null),
+    // Per-IP budget for POST /whatsapp/webhooks/events (Meta delivers every
+    // clinic's events from a few shared addresses). The HMAC check, not this, is
+    // the flood defence. See `eventsThrottleLimit`.
+    WHATSAPP_WEBHOOK_THROTTLE_PER_MIN: Joi.number()
+      .integer()
+      .min(1)
+      .default(3000),
     META_HTTP_TIMEOUT_MS: Joi.number().min(1000).default(10000),
 
     // Legacy aliases for the two webhook secrets, still honoured by MetaConfig
@@ -655,7 +669,11 @@ export const validate = (config: Record<string, unknown>) => {
     // F-22: consecutive-failure threshold / cooldown for the per-model circuit
     // breaker in `OpenAiChatProvider`. Unproven live — a first sizing guess,
     // not a measured value; tune once real failure-rate data exists.
-    AI_CIRCUIT_BREAKER_THRESHOLD: Joi.number().integer().min(1).max(20).default(3),
+    AI_CIRCUIT_BREAKER_THRESHOLD: Joi.number()
+      .integer()
+      .min(1)
+      .max(20)
+      .default(3),
     AI_CIRCUIT_BREAKER_COOLDOWN_MS: Joi.number()
       .integer()
       .min(1000)
@@ -837,7 +855,9 @@ export const validate = (config: Record<string, unknown>) => {
       .default('true'),
     // Appointment emails are minimal (date, time, clinic) by default; `true`
     // restores service / doctor / cancellation-reason text (residency plan P8).
-    EMAIL_INCLUDE_HEALTH_DETAIL: Joi.string().valid('true', 'false').default('false'),
+    EMAIL_INCLUDE_HEALTH_DETAIL: Joi.string()
+      .valid('true', 'false')
+      .default('false'),
     // Guest image reading (vision pass) sends the whole uploaded image to the
     // model provider. OFF by default (residency plan P3); while off an image is
     // reported unreadable and the widget offers to pass it to the clinic.
@@ -991,7 +1011,9 @@ export const validate = (config: Record<string, unknown>) => {
     // an operator runs `npm run retention:run` (a dry run unless --apply).
     RETENTION_EMAIL_LOGS_DAYS: Joi.number().integer().min(1),
     RETENTION_WHATSAPP_WEBHOOKS_DAYS: Joi.number().integer().min(1),
-    RETENTION_SCHEDULED_NOTIFICATION_VARIABLES_DAYS: Joi.number().integer().min(1),
+    RETENTION_SCHEDULED_NOTIFICATION_VARIABLES_DAYS: Joi.number()
+      .integer()
+      .min(1),
     RETENTION_AI_TRANSCRIPTS_DAYS: Joi.number().integer().min(1),
 
     // Residency plan P13 — response deadline for a data-subject request, in days.
@@ -1287,9 +1309,12 @@ export const validate = (config: Record<string, unknown>) => {
     if (value.NODE_ENV === 'production' && value.PAYMENT_PROVIDER === 'tap') {
       const missing: string[] = [];
       if (!value.TAP_ENV) missing.push('TAP_ENV');
-      if (!String(value.TAP_MERCHANT_ID ?? '').trim()) missing.push('TAP_MERCHANT_ID');
+      if (!String(value.TAP_MERCHANT_ID ?? '').trim())
+        missing.push('TAP_MERCHANT_ID');
       const activeKeyVar =
-        value.TAP_ENV === 'live' ? 'TAP_LIVE_SECRET_KEY' : 'TAP_TEST_SECRET_KEY';
+        value.TAP_ENV === 'live'
+          ? 'TAP_LIVE_SECRET_KEY'
+          : 'TAP_TEST_SECRET_KEY';
       if (!String(value[activeKeyVar] ?? '').trim()) missing.push(activeKeyVar);
 
       const webhookUrl = String(value.TAP_WEBHOOK_URL ?? '').trim();
