@@ -38,6 +38,7 @@ import {
   canViewAppointmentFinancials,
   OWN_STAFF_SETTABLE_APPOINTMENT_STATUSES,
   APPOINTMENT_BOOKABLE_STAFF_ROLES,
+  APPOINTMENT_EMPLOYEE_ROLES,
   PUBLIC_BOOKING_EXCLUDED_ROLES,
 } from './rbac.constants';
 import { getRisk, getScope } from './permission-metadata';
@@ -52,6 +53,19 @@ describe('APPOINTMENT_BOOKABLE_STAFF_ROLES', () => {
       ROLE.MANAGER,
     ]);
     expect(APPOINTMENT_BOOKABLE_STAFF_ROLES).not.toContain(ROLE.RECEPTIONIST);
+  });
+});
+
+describe('APPOINTMENT_EMPLOYEE_ROLES', () => {
+  it('is exactly branch manager, doctor and nurse', () => {
+    expect(APPOINTMENT_EMPLOYEE_ROLES).toEqual([
+      ROLE.BRANCH_MANAGER,
+      ROLE.DOCTOR,
+      ROLE.NURSE,
+    ]);
+    for (const excluded of [ROLE.OWNER, ROLE.RECEPTIONIST, ROLE.MANAGER]) {
+      expect(APPOINTMENT_EMPLOYEE_ROLES).not.toContain(excluded);
+    }
   });
 });
 

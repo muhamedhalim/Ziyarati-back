@@ -53,7 +53,7 @@ export class QueryStaffDto {
 
   @ApiPropertyOptional({
     description:
-      'Pass `true` to list only staff who may be booked as the provider of a NEW appointment — accounts holding the `doctor` or `manager` role. Receptionists and all other roles are excluded. Combines with `role` and `branchId` as an AND. The role set is defined server-side; it is not client-configurable.',
+      'Pass `true` to list only staff who may be booked as the provider of a NEW appointment — accounts holding the `branch_manager`, `doctor` or `nurse` role. The clinic owner, receptionists and all other roles are excluded. Combines with `role` and `branchId` as an AND. The role set is defined server-side; it is not client-configurable.',
     example: 'true',
   })
   @IsOptional()

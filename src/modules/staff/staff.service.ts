@@ -31,6 +31,7 @@ import { EmailService } from '../email/email.service';
 import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
 import {
   APPOINTMENT_BOOKABLE_STAFF_ROLES,
+  APPOINTMENT_EMPLOYEE_ROLES,
   CUSTOM_ROLE_SENTINEL,
   OWNERSHIP_SCOPED_PERMISSIONS,
   PERMISSION,
@@ -658,18 +659,16 @@ export class StaffService {
     // tenants.
     //
     // `bookable=true` narrows the role filter to the roles that may be booked
-    // as an appointment's provider (APPOINTMENT_BOOKABLE_STAFF_ROLES). It is
+    // as an appointment's provider (APPOINTMENT_EMPLOYEE_ROLES). It is
     // an AND with an explicit `role`: asking for `role=receptionist&bookable=
     // true` yields nothing rather than letting either filter widen the other.
     let roleSlugs: string[] | null = query.role ? [query.role] : null;
     if (query.bookable === 'true') {
       roleSlugs = roleSlugs
         ? roleSlugs.filter((slug) =>
-            (APPOINTMENT_BOOKABLE_STAFF_ROLES as readonly string[]).includes(
-              slug,
-            ),
+            (APPOINTMENT_EMPLOYEE_ROLES as readonly string[]).includes(slug),
           )
-        : [...APPOINTMENT_BOOKABLE_STAFF_ROLES];
+        : [...APPOINTMENT_EMPLOYEE_ROLES];
     }
     if (roleSlugs !== null) {
       if (roleSlugs.length === 0) {
