@@ -562,6 +562,12 @@ export class WhatsappInboundAiService {
     // One AI turn per contact at a time, so a second message sees the first
     // turn's reply in its history and replies leave in order.
     await this.turnLock.run(tenantId, waId, async ({ waited }) => {
+      // The contact was loaded BEFORE the lock, so its AI-session binding may
+      // predate a turn that finished while this one was queued or being picked
+      // up. Every read below (policy, history, the session the model resumes)
+      // must see the binding as it is now, not as it was at ingest.
+      await this.refreshAiBinding(tenantId, item.contact);
+
       // A turn that queued behind another may now be looking at a different
       // world: staff can have paused the AI or taken the chat while it waited.
       if (waited) {
@@ -628,8 +634,7 @@ export class WhatsappInboundAiService {
     );
 
     if (!contact.ai_conversation_id && result.aiConversationId) {
-      contact.ai_conversation_id = result.aiConversationId;
-      await this.contacts.save(contact);
+      await this.bindAiConversation(tenantId, contact, result.aiConversationId);
     }
 
     // Live Agent Handover: the conversation is owned by a human agent — the
@@ -649,6 +654,58 @@ export class WhatsappInboundAiService {
       this.subjectOf(item),
       interactive,
       result.mirroredMessageId,
+    );
+  }
+
+  /**
+   * Re-reads the contact's AI-session binding (tenant-scoped, one narrow
+   * column) and applies it to the in-memory contact. Called inside the
+   * per-contact lock, where it is authoritative: no other turn for this contact
+   * can change it until the lock is released.
+   */
+  private async refreshAiBinding(
+    tenantId: string,
+    contact: WhatsappContact,
+  ): Promise<void> {
+    const fresh = await this.contacts.findOne({
+      where: { id: contact.id, tenant: { id: tenantId } },
+      select: { id: true, ai_conversation_id: true },
+    });
+    if (fresh)
+      contact.ai_conversation_id = fresh.ai_conversation_id ?? undefined;
+  }
+
+  /**
+   * Records the AI session this turn created as the contact's one session —
+   * compare-and-set on "no session yet", never a whole-row save, so a stale
+   * in-memory contact can neither overwrite a session another turn bound nor
+   * write back a stale copy of its other columns.
+   *
+   * The lock already serializes turns, so losing the race means the lock was
+   * lost mid-turn (TTL) — logged, and the winner's binding is adopted so the
+   * NEXT turn resumes the winner. The session this turn created stays (it holds
+   * the reply already sent) but is no longer the contact's.
+   */
+  private async bindAiConversation(
+    tenantId: string,
+    contact: WhatsappContact,
+    aiConversationId: string,
+  ): Promise<void> {
+    const res = await this.contacts
+      .createQueryBuilder()
+      .update(WhatsappContact)
+      .set({ ai_conversation_id: aiConversationId })
+      .where('id = :id', { id: contact.id })
+      .andWhere('"tenantId" = :tenantId', { tenantId })
+      .andWhere('ai_conversation_id IS NULL')
+      .execute();
+    if (res.affected) {
+      contact.ai_conversation_id = aiConversationId;
+      return;
+    }
+    await this.refreshAiBinding(tenantId, contact);
+    this.logger.warn(
+      `contact already bound to another AI session — keeping it (tenant=${tenantId}, contact=${contact.id})`,
     );
   }
 

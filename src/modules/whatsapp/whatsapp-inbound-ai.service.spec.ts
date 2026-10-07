@@ -30,6 +30,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { SystemSettingService } from '../platform/system-setting.service';
 import { SettingKey } from '../platform/settings.registry';
 import {
+  createMockQueryBuilder,
   createMockRepository,
   MockRepository,
 } from '../../../test/utils/mock-factories';
@@ -571,6 +572,133 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     );
     const [, input] = orchestrator.handleStream.mock.calls[0];
     expect(input.sessionPatch).toBeUndefined();
+  });
+
+  /**
+   * The contact is loaded BEFORE the per-contact lock. Two first messages from
+   * one patient, picked up by two workers, both loaded a contact with no AI
+   * session; the second turn then ignored the first turn's binding, the
+   * orchestrator created a second session and the contact was overwritten with
+   * it — split history, lost booking state.
+   */
+  describe('AI-session binding under concurrency (Step 1)', () => {
+    const inbound = (id: string) =>
+      ({
+        messages: [
+          { id, from: '966500000000', type: 'text', text: { body: 'hi' } },
+        ],
+      }) as never;
+    const unbound = () => ({
+      id: 'contact-1',
+      wa_id: '966500000000',
+      customer: CUSTOMER,
+    });
+
+    it('resumes the session a turn that ran in between already bound, not the one read at ingest', async () => {
+      contacts.findOne
+        .mockResolvedValueOnce(unbound()) // ingest: no session yet
+        .mockResolvedValueOnce({ id: 'contact-1', ai_conversation_id: 'ai-first' }); // under the lock
+
+      await service.handleInboundValue(TENANT, inbound('wamid-c1'));
+
+      const [, input] = orchestrator.handleStream.mock.calls[0];
+      expect(input.aiConversationId).toBe('ai-first');
+      expect(input.autoRoute).toBe(true);
+    });
+
+    it('re-reads the binding tenant-scoped, selecting only the binding column', async () => {
+      contacts.findOne
+        .mockResolvedValueOnce(unbound())
+        .mockResolvedValueOnce({ id: 'contact-1', ai_conversation_id: undefined });
+
+      await service.handleInboundValue(TENANT, inbound('wamid-c2'));
+
+      expect(contacts.findOne).toHaveBeenLastCalledWith({
+        where: { id: 'contact-1', tenant: { id: TENANT } },
+        select: { id: true, ai_conversation_id: true },
+      });
+    });
+
+    it('binds a new session compare-and-set — only while the contact has none, scoped to the clinic, never a whole-row save', async () => {
+      const qb = createMockQueryBuilder();
+      contacts.createQueryBuilder.mockReturnValue(qb);
+      contacts.findOne
+        .mockResolvedValueOnce(unbound())
+        .mockResolvedValueOnce({ id: 'contact-1', ai_conversation_id: undefined });
+      orchestrator.handleStream.mockResolvedValue({
+        aiConversationId: 'ai-new',
+        reply: { content: 'AI reply' },
+      });
+
+      await service.handleInboundValue(TENANT, inbound('wamid-c3'));
+
+      expect(qb.set).toHaveBeenCalledWith({ ai_conversation_id: 'ai-new' });
+      expect(qb.where).toHaveBeenCalledWith('id = :id', { id: 'contact-1' });
+      expect(qb.andWhere).toHaveBeenCalledWith('"tenantId" = :tenantId', {
+        tenantId: TENANT,
+      });
+      expect(qb.andWhere).toHaveBeenCalledWith('ai_conversation_id IS NULL');
+      expect(contacts.save).not.toHaveBeenCalled();
+    });
+
+    it('never overwrites a session another turn bound: it adopts the winner, warns once and still replies', async () => {
+      const qb = createMockQueryBuilder();
+      qb.execute.mockResolvedValue({ affected: 0, raw: [] });
+      contacts.createQueryBuilder.mockReturnValue(qb);
+      contacts.findOne
+        .mockResolvedValueOnce(unbound())
+        .mockResolvedValueOnce({ id: 'contact-1', ai_conversation_id: undefined })
+        .mockResolvedValueOnce({ id: 'contact-1', ai_conversation_id: 'ai-winner' });
+      orchestrator.handleStream.mockResolvedValue({
+        aiConversationId: 'ai-loser',
+        reply: { content: 'AI reply' },
+      });
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+
+      await service.handleInboundValue(TENANT, inbound('wamid-c4'));
+
+      expect(messaging.sendSession).toHaveBeenCalledTimes(1);
+      expect(contacts.save).not.toHaveBeenCalled();
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines.filter((l) => l.includes('already bound'))).toHaveLength(1);
+      // ids only — never the patient's number.
+      expect(lines.join('\n')).not.toContain('966500000000');
+      warn.mockRestore();
+    });
+
+    it('leaves an already-bound contact alone: no write at all', async () => {
+      const qb = createMockQueryBuilder();
+      contacts.createQueryBuilder.mockReturnValue(qb);
+      const bound = { ...unbound(), ai_conversation_id: 'ai-1' };
+      contacts.findOne
+        .mockResolvedValueOnce(bound)
+        .mockResolvedValueOnce({ id: 'contact-1', ai_conversation_id: 'ai-1' });
+      orchestrator.handleStream.mockResolvedValue({
+        aiConversationId: 'ai-1',
+        reply: { content: 'AI reply' },
+      });
+
+      await service.handleInboundValue(TENANT, inbound('wamid-c5'));
+
+      expect(qb.execute).not.toHaveBeenCalled();
+      expect(contacts.save).not.toHaveBeenCalled();
+    });
+
+    it('judges the policy against the refreshed binding after waiting for the lock', async () => {
+      // Another turn held the lock, then bound the session and handed it over.
+      locks.acquire.mockResolvedValueOnce(null).mockResolvedValue('lock-token');
+      contacts.findOne
+        .mockResolvedValueOnce(unbound())
+        .mockResolvedValueOnce({ id: 'contact-1', ai_conversation_id: 'ai-first' });
+
+      await service.handleInboundValue(TENANT, inbound('wamid-c6'));
+
+      expect(aiConversations.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'ai-first', tenant: { id: TENANT } },
+        }),
+      );
+    });
   });
 
   it('[FND-023] records the provider message id onto the mirrored bot reply after a successful send', async () => {
