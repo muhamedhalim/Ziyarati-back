@@ -630,6 +630,14 @@ export const validate = (config: Record<string, unknown>) => {
     // Per-IP budget for POST /whatsapp/webhooks/events (Meta delivers every
     // clinic's events from a few shared addresses). The HMAC check, not this, is
     // the flood defence. See `eventsThrottleLimit`.
+    // A claimed AI turn untouched this long is presumed dead and recoverable.
+    // Keep it above WHATSAPP_AI_TURN_DEADLINE_MS plus one provider timeout.
+    AI_REQUEST_STALE_MS: Joi.number().integer().min(1000).default(180000),
+    // After this, a WhatsApp AI turn starts no further tool round and wraps up.
+    WHATSAPP_AI_TURN_DEADLINE_MS: Joi.number()
+      .integer()
+      .min(1000)
+      .default(60000),
     WHATSAPP_WEBHOOK_THROTTLE_PER_MIN: Joi.number()
       .integer()
       .min(1)

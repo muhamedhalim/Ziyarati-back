@@ -10,6 +10,19 @@ export const AI_REQUEST_STATE = {
   UNKNOWN_OUTCOME: 'UNKNOWN_OUTCOME',
 } as const;
 
+/**
+ * How long a claim may sit in STARTED / PROVIDER_IN_PROGRESS before the turn
+ * that took it is presumed dead (worker crash, deploy, lost connection). Must
+ * exceed the longest realistic turn — including the WhatsApp turn deadline —
+ * or a second worker could take over a turn that is still running.
+ */
+export const AI_REQUEST_STALE_MS_DEFAULT = 3 * 60_000;
+
+export function aiRequestStaleMs(): number {
+  const n = Number(process.env.AI_REQUEST_STALE_MS);
+  return Number.isFinite(n) && n >= 1000 ? n : AI_REQUEST_STALE_MS_DEFAULT;
+}
+
 @Injectable()
 export class AiRequestExecutionService {
   constructor(private readonly dataSource: DataSource) {}
@@ -23,8 +36,8 @@ export class AiRequestExecutionService {
       );
       if (inserted[0]?.id) return 'CLAIMED';
       const [row] = await m.query(
-        `SELECT state FROM ai_request_executions WHERE tenant_id=$1 AND idempotency_key=$2 FOR UPDATE`,
-        [tenantId, key],
+        `SELECT state, (updated_at < now() - ($3::int * interval '1 millisecond')) AS stale FROM ai_request_executions WHERE tenant_id=$1 AND idempotency_key=$2 FOR UPDATE`,
+        [tenantId, key, aiRequestStaleMs()],
       );
       if (row?.state === AI_REQUEST_STATE.COMPLETED) return 'COMPLETED';
       if (row?.state === AI_REQUEST_STATE.UNKNOWN_OUTCOME) return 'UNKNOWN';
@@ -34,6 +47,24 @@ export class AiRequestExecutionService {
           [tenantId, key],
         );
         return 'CLAIMED';
+      }
+      // A claim nobody has touched for AI_REQUEST_STALE_MS belongs to a turn
+      // that died. Before the provider was called nothing happened, so the work
+      // is simply ours to redo; after, the outcome is unknowable, so it is
+      // closed as UNKNOWN_OUTCOME rather than risk a duplicate provider call.
+      if (row?.stale && row.state === AI_REQUEST_STATE.STARTED) {
+        await m.query(
+          `UPDATE ai_request_executions SET updated_at=now() WHERE tenant_id=$1 AND idempotency_key=$2`,
+          [tenantId, key],
+        );
+        return 'CLAIMED';
+      }
+      if (row?.stale && row.state === AI_REQUEST_STATE.PROVIDER_IN_PROGRESS) {
+        await m.query(
+          `UPDATE ai_request_executions SET state='UNKNOWN_OUTCOME', error_code='STALE_CLAIM', updated_at=now() WHERE tenant_id=$1 AND idempotency_key=$2`,
+          [tenantId, key],
+        );
+        return 'UNKNOWN';
       }
       return 'IN_FLIGHT';
     });

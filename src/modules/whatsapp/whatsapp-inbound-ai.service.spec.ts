@@ -1293,7 +1293,11 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
         expect.objectContaining({
           trustedChannel: true,
           conversationId: 'thread-1',
-          origin: { waMessageId: 'wamid-s1', messageType: 'text' },
+          origin: {
+            waMessageId: 'wamid-s1',
+            messageType: 'text',
+            deadlineAt: expect.any(Number),
+          },
         }),
         expect.any(Function),
       );
@@ -2129,6 +2133,55 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
         expect(messaging.sendSession).not.toHaveBeenCalled();
         expect(metrics.recordWhatsappAiTurnFailure).not.toHaveBeenCalled();
         expect(locks.release).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not retry an UNKNOWN claim — the patient gets the fallback once (Step 7)', async () => {
+        orchestrator.handleStream.mockRejectedValue(
+          new AppError(ErrorCode.CONFLICT, {
+            internalContext: { claimState: 'UNKNOWN' },
+            message: 'unknown provider outcome',
+          }),
+        );
+        jest
+          .spyOn(Logger.prototype, 'error')
+          .mockImplementation(() => undefined);
+
+        await expect(
+          service.handleInboundValue(TENANT, inbound()),
+        ).resolves.toBeUndefined();
+
+        expect(messaging.sendSession).toHaveBeenCalledTimes(1);
+        expect(metrics.recordWhatsappAiTurnFailure).toHaveBeenCalledWith(
+          'sent',
+        );
+      });
+
+      it('gives the turn a deadline (Step 7)', async () => {
+        const before = Date.now();
+        await service.handleInboundValue(TENANT, inbound());
+        const origin = orchestrator.handleStream.mock.calls[0][1].origin;
+        expect(origin.deadlineAt).toBeGreaterThanOrEqual(before + 59_000);
+        expect(origin.deadlineAt).toBeLessThanOrEqual(Date.now() + 60_000);
+      });
+
+      it('honours WHATSAPP_AI_TURN_DEADLINE_MS and ignores nonsense values', async () => {
+        const prev = process.env.WHATSAPP_AI_TURN_DEADLINE_MS;
+        try {
+          process.env.WHATSAPP_AI_TURN_DEADLINE_MS = '5000';
+          await service.handleInboundValue(TENANT, inbound('wamid-d1'));
+          const o1 = orchestrator.handleStream.mock.calls[0][1].origin;
+          expect(o1.deadlineAt - Date.now()).toBeLessThanOrEqual(5000);
+
+          orchestrator.handleStream.mockClear();
+          process.env.WHATSAPP_AI_TURN_DEADLINE_MS = 'abc';
+          await service.handleInboundValue(TENANT, inbound('wamid-d2'));
+          const o2 = orchestrator.handleStream.mock.calls[0][1].origin;
+          expect(o2.deadlineAt - Date.now()).toBeGreaterThan(55_000);
+        } finally {
+          if (prev === undefined)
+            delete process.env.WHATSAPP_AI_TURN_DEADLINE_MS;
+          else process.env.WHATSAPP_AI_TURN_DEADLINE_MS = prev;
+        }
       });
 
       it('still apologises for a genuine failure (not a conflict)', async () => {
