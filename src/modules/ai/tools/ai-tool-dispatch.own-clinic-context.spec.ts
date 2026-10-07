@@ -293,13 +293,70 @@ describe('remembering the working branch and doctor (write side)', () => {
 });
 
 describe('describeOwnClinicContext (read side)', () => {
-  it('is null until a branch has been worked on — a first turn costs no prompt budget', async () => {
-    const { service, branches } = build({ session: {} });
+  it('before a branch has been worked on the block is the date alone — no ids, no services, no discovery queries beyond the branch list', async () => {
+    const { service, discovery } = build({ session: {} });
 
-    await expect(
-      service.describeOwnClinicContext(TENANT, CONV),
-    ).resolves.toBeNull();
-    expect(branches.findAll).not.toHaveBeenCalled();
+    const block = await service.describeOwnClinicContext(TENANT, CONV);
+
+    expect(block).toMatch(/^ESTABLISHED BOOKING CONTEXT/);
+    expect(block).toMatch(/- today: \d{4}-\d{2}-\d{2} \(\w+, UTC\)\./);
+    expect(block).not.toContain('(id ');
+    expect(block).not.toContain('- branch:');
+    expect(discovery.listBranchDoctors).not.toHaveBeenCalled();
+    expect(discovery.listBranchServices).not.toHaveBeenCalled();
+  });
+
+  describe('the date is stated in the clinic’s own timezone', () => {
+    const riyadh = { id: BRANCH_MAIN, name: 'Main Branch', address: null, is_active: true, timezone: 'Asia/Riyadh' };
+    const la = { id: BRANCH_NORTH, name: 'North Branch', address: null, is_active: true, timezone: 'America/Los_Angeles' };
+    // 21:30 UTC on 6 Oct is already 7 Oct in Riyadh (UTC+3) and still 6 Oct in Los Angeles.
+    beforeEach(() => {
+      jest.useFakeTimers({ now: new Date('2026-10-06T21:30:00Z'), doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+    });
+    afterEach(() => jest.useRealTimers());
+
+    it('uses the SELECTED branch’s zone', async () => {
+      const { service } = build({
+        session: { selectedBranchId: BRANCH_NORTH },
+        branches: { findAll: jest.fn().mockResolvedValue([riyadh, la]) },
+      });
+      const block = await service.describeOwnClinicContext(TENANT, CONV);
+      expect(block).toContain('today: 2026-10-06 (Tuesday, America/Los_Angeles)');
+    });
+
+    it('with no branch selected, uses the clinic’s first active branch', async () => {
+      const { service } = build({
+        session: {},
+        branches: { findAll: jest.fn().mockResolvedValue([riyadh, la]) },
+      });
+      const block = await service.describeOwnClinicContext(TENANT, CONV);
+      expect(block).toContain('today: 2026-10-07 (Wednesday, Asia/Riyadh)');
+    });
+
+    it('ignores an inactive branch’s zone', async () => {
+      const { service } = build({
+        session: {},
+        branches: { findAll: jest.fn().mockResolvedValue([{ ...riyadh, is_active: false }, la]) },
+      });
+      const block = await service.describeOwnClinicContext(TENANT, CONV);
+      expect(block).toContain('America/Los_Angeles');
+    });
+
+    it('falls back to UTC for a clinic with no branches, and for an invalid zone', async () => {
+      const none = build({ session: {}, branches: { findAll: jest.fn().mockResolvedValue([]) } });
+      expect(await none.service.describeOwnClinicContext(TENANT, CONV)).toContain('2026-10-06 (Tuesday, UTC)');
+      const bad = build({
+        session: {},
+        branches: { findAll: jest.fn().mockResolvedValue([{ ...riyadh, timezone: 'Not/AZone' }]) },
+      });
+      expect(await bad.service.describeOwnClinicContext(TENANT, CONV)).toContain('2026-10-06 (Tuesday, UTC)');
+    });
+
+    it('puts the date FIRST, so the budget (which cuts from the end) keeps it', async () => {
+      const { service } = build({ session: { selectedBranchId: BRANCH_MAIN } });
+      const lines = (await service.describeOwnClinicContext(TENANT, CONV)).split('\n');
+      expect(lines[1]).toMatch(/^- today: /);
+    });
   });
 
   it('pins the branch, doctor, every service with its price state, the roster and the other branches', async () => {
@@ -350,7 +407,7 @@ describe('describeOwnClinicContext (read side)', () => {
 
     await expect(
       service.describeOwnClinicContext(TENANT, CONV),
-    ).resolves.toBeNull();
+    ).resolves.not.toContain('(id ');
     expect(discovery.listBranchDoctors).not.toHaveBeenCalled();
     expect(discovery.listBranchServices).not.toHaveBeenCalled();
   });
@@ -374,7 +431,7 @@ describe('describeOwnClinicContext (read side)', () => {
 
     await expect(
       service.describeOwnClinicContext(TENANT, CONV),
-    ).resolves.toBeNull();
+    ).resolves.not.toContain('- branch:');
   });
 
   it('a recorded doctor who no longer works this branch is reported CLEARED, not pinned', async () => {

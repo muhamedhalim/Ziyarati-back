@@ -19,6 +19,7 @@ import {
   PUBLIC_AVAILABILITY_HORIZON_DAYS,
 } from '../../scheduling/availability.service';
 import { safeZone, zonedYmd } from '../../scheduling/timezone.util';
+import { describeToday } from '../prompt/turn-clock';
 import { DashboardMetricService } from '../../analytics/dashboard-metric.service';
 import { SubscriptionService } from '../../subscription-billing/subscription.service';
 import { UsageService } from '../../subscription-billing/usage.service';
@@ -1099,31 +1100,42 @@ export class AiToolDispatchService {
   }
 
   /**
-   * The ESTABLISHED BOOKING CONTEXT block for a WHATSAPP turn, or `null` when the
-   * conversation has not worked on a branch yet (a first turn costs no prompt
-   * budget) or the branch it worked on is gone.
+   * The ESTABLISHED BOOKING CONTEXT block for a WHATSAPP turn. Always present:
+   * its first line is today's date (see `describeToday`), which the model cannot
+   * know and which "tomorrow" depends on, whether or not a branch has been
+   * worked on yet. The branch / doctor / price lines follow only once the
+   * conversation has worked on a branch that still exists and is active.
    *
-   * Every line is read from the database now, through the same discovery
+   * The date is stated in the SELECTED branch's timezone — the zone the
+   * availability engine reads a `date` in — else the clinic's first active
+   * branch's, else UTC (the public widget's own fallback).
+   *
+   * Every other line is read from the database now, through the same discovery
    * queries the tools use, so the block can never disagree with a tool result.
    * Ordered most-valuable-first because the budget truncates from the END.
    */
   async describeOwnClinicContext(
     tenantId: string,
     aiConversationId: string,
-  ): Promise<string | null> {
+  ): Promise<string> {
     const session = await this.sessions.get(tenantId, aiConversationId);
     const branchId = this.uuid(session.selectedBranchId);
-    if (!branchId) return null;
 
     const branches = (await this.branches.findAll(tenantId)).filter(
       (b) => b.is_active,
     );
-    const branch = branches.find((b) => b.id === branchId);
-    if (!branch) return null;
+    const branch = branchId
+      ? branches.find((b) => b.id === branchId)
+      : undefined;
+
+    const header =
+      'ESTABLISHED BOOKING CONTEXT (re-read from the database this turn).';
+    const clock = `- ${describeToday(safeZone((branch ?? branches[0])?.timezone))}`;
+    if (!branch) return [header, clock].join('\n');
 
     const [doctors, services] = await Promise.all([
-      this.discovery.listBranchDoctors(tenantId, branchId),
-      this.discovery.listBranchServices(tenantId, branchId),
+      this.discovery.listBranchDoctors(tenantId, branch.id),
+      this.discovery.listBranchServices(tenantId, branch.id),
     ]);
 
     const lines: string[] = [
@@ -1187,7 +1199,8 @@ export class AiToolDispatchService {
     }
 
     return [
-      'ESTABLISHED BOOKING CONTEXT (re-read from the database this turn).',
+      header,
+      clock,
       'These ids and prices came from earlier tool calls in this conversation. Use them directly instead of looking them up again, and never show an id to the patient. For a different branch, call list_clinic_doctors / list_clinic_services with that branch.',
       ...lines.map((l) => (l.startsWith('  ') ? l : `- ${l}`)),
     ].join('\n');
@@ -1264,7 +1277,10 @@ export class AiToolDispatchService {
         error: 'This tool is not available in this context (no acting user).',
       };
     }
-    const branchArgPresent = args.branchId !== undefined && args.branchId !== null && args.branchId !== '';
+    const branchArgPresent =
+      args.branchId !== undefined &&
+      args.branchId !== null &&
+      args.branchId !== '';
     const branchId = branchArgPresent ? this.uuid(args.branchId) : undefined;
     if (branchArgPresent && !branchId) {
       return this.badId('branchId', 'list_clinic_branches');
@@ -1276,7 +1292,9 @@ export class AiToolDispatchService {
       `clinic_doctors:${randomUUID()}`,
       args,
       async () => {
-        let doctors: Awaited<ReturnType<typeof this.discovery.listTenantDoctors>>;
+        let doctors: Awaited<
+          ReturnType<typeof this.discovery.listTenantDoctors>
+        >;
         if (branchId) {
           // Ownership check INSIDE the executor, before the lookup: a branch
           // id from another tenant must refuse plainly (recorded as a normal
@@ -1316,7 +1334,10 @@ export class AiToolDispatchService {
         error: 'This tool is not available in this context (no acting user).',
       };
     }
-    const branchArgPresent = args.branchId !== undefined && args.branchId !== null && args.branchId !== '';
+    const branchArgPresent =
+      args.branchId !== undefined &&
+      args.branchId !== null &&
+      args.branchId !== '';
     const branchId = branchArgPresent ? this.uuid(args.branchId) : undefined;
     if (branchArgPresent && !branchId) {
       return this.badId('branchId', 'list_clinic_branches');
@@ -1328,7 +1349,9 @@ export class AiToolDispatchService {
       `clinic_services:${randomUUID()}`,
       args,
       async () => {
-        let services: Awaited<ReturnType<typeof this.discovery.listTenantServices>>;
+        let services: Awaited<
+          ReturnType<typeof this.discovery.listTenantServices>
+        >;
         if (branchId) {
           // See listClinicDoctors' identical comment above.
           await this.branches.findOne(ctx.tenantId, branchId);
