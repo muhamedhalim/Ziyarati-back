@@ -1,4 +1,10 @@
-import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  forwardRef,
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   Between,
@@ -28,6 +34,7 @@ import { WebhookSignatureVerifier } from './webhooks/webhook-signature.verifier'
 import { MetaConfig } from './meta/meta.config';
 import { QueueService } from '../../queue/queue.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { MetricsService } from '../../metrics/metrics.service';
 import type {
   WhatsappWebhookBody,
   MetaWebhookEntry,
@@ -94,6 +101,8 @@ export class WhatsappWebhookService {
     private readonly coexistenceEcho: WhatsappCoexistenceEchoService,
     private readonly queue: QueueService,
     private readonly ctx: TenantContextService,
+    // Optional: a missing counter must never cost an inbound event.
+    @Optional() private readonly metrics?: MetricsService,
   ) {}
 
   /** GET verification handshake — returns the challenge to echo, or null. */
@@ -214,7 +223,10 @@ export class WhatsappWebhookService {
       const existing = await this.webhooks.findOne({
         where: { idempotency_key: idempotencyKey },
       });
-      if (existing) return { id: existing.id, deduplicated: true };
+      if (existing) {
+        this.metrics?.recordWhatsappInboundEvent('deduplicated');
+        return { id: existing.id, deduplicated: true };
+      }
     }
 
     const tenant = await this.resolveTenantFromPayload(payload);
@@ -241,11 +253,15 @@ export class WhatsappWebhookService {
         const existing = await this.webhooks.findOne({
           where: { idempotency_key: idempotencyKey },
         });
-        if (existing) return { id: existing.id, deduplicated: true };
+        if (existing) {
+          this.metrics?.recordWhatsappInboundEvent('deduplicated');
+          return { id: existing.id, deduplicated: true };
+        }
       }
       throw err;
     }
 
+    this.metrics?.recordWhatsappInboundEvent(tenant ? 'accepted' : 'no_tenant');
     await this.enqueueProcessing(saved.id, tenant);
     return { id: saved.id, deduplicated: false };
   }

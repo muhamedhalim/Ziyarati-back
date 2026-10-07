@@ -205,7 +205,12 @@ export class WhatsappInboundAiService {
         // in-flight attempt, has run and sent nothing: failing the job lets
         // BullMQ retry it with backoff. Answering the patient with an apology
         // for something that is still going to work would be wrong.
-        if (this.shouldRetryJob(err)) throw err;
+        if (this.shouldRetryJob(err)) {
+          if (err instanceof ContactTurnBusyError) {
+            this.metrics.recordWhatsappContactLockBusy();
+          }
+          throw err;
+        }
         return this.onTurnFailed(
           tenantId,
           item.message,
@@ -215,6 +220,11 @@ export class WhatsappInboundAiService {
         );
       });
     }
+  }
+
+  /** Correlation prefix every log line of this bridge carries (see the policy/webhook services). */
+  private cid(): string {
+    return `[cid=${this.ctx.getCorrelationId() ?? '-'}]`;
   }
 
   /** What the policy needs to know about a stored message's conversation. */
@@ -269,7 +279,7 @@ export class WhatsappInboundAiService {
       return;
     }
     this.logger.error(
-      `inbound message could not be stored on the timeline (tenant=${tenantId}): ${(error as Error)?.message}`,
+      `${this.cid()} inbound message could not be stored on the timeline (tenant=${tenantId}): ${(error as Error)?.message}`,
     );
   }
 
@@ -370,7 +380,7 @@ export class WhatsappInboundAiService {
     const customerId = contact.customer?.id;
     if (!customerId || !account) {
       this.logger.warn(
-        `inbound message not stored on the timeline (tenant=${tenantId}): ${
+        `${this.cid()} inbound message not stored on the timeline (tenant=${tenantId}): ${
           customerId
             ? 'no connected WhatsApp account matches the receiving number'
             : 'contact has no linked customer'
@@ -466,7 +476,7 @@ export class WhatsappInboundAiService {
       'inbound_keyword',
     );
     this.logger.log(
-      `Customer ${contact.customer.id} opted out via inbound WhatsApp keyword`,
+      `${this.cid()} Customer ${contact.customer.id} opted out via inbound WhatsApp keyword`,
     );
     return true;
   }
@@ -491,7 +501,7 @@ export class WhatsappInboundAiService {
     accountId?: string | null,
   ): Promise<void> {
     this.logger.error(
-      `inbound AI turn failed (tenant=${tenantId}): ${(err as Error)?.message}`,
+      `${this.cid()} inbound AI turn failed (tenant=${tenantId}): ${(err as Error)?.message}`,
     );
     const waId = message.from?.replace(/[^\d]/g, '');
     let sent = false;
@@ -510,7 +520,7 @@ export class WhatsappInboundAiService {
         );
       } catch (sendErr) {
         this.logger.warn(
-          `could not send the turn-failed fallback (tenant=${tenantId}): ${(sendErr as Error)?.message}`,
+          `${this.cid()} could not send the turn-failed fallback (tenant=${tenantId}): ${(sendErr as Error)?.message}`,
         );
       }
     }
@@ -577,7 +587,7 @@ export class WhatsappInboundAiService {
       );
     } catch (err) {
       this.logger.warn(
-        `could not record an unanswered inbound message (tenant=${tenantId}): ${(err as Error)?.message}`,
+        `${this.cid()} could not record an unanswered inbound message (tenant=${tenantId}): ${(err as Error)?.message}`,
       );
     }
   }
@@ -640,6 +650,7 @@ export class WhatsappInboundAiService {
     item: Extract<IngestedMessage, { kind: 'ready' }>,
   ): Promise<void> {
     const { message, waId, content, contact, conversationId } = item;
+    const turnStarted = Date.now();
 
     // Continue the contact's single conversation (shared history/session/memory/
     // agent). First inbound turn has none → the orchestrator creates + routes one,
@@ -701,7 +712,7 @@ export class WhatsappInboundAiService {
     const reply = result.reply?.content?.trim();
     if (!reply) return;
     const interactive = this.buildInteractive(result.lastTool);
-    await this.sendReply(
+    const sent = await this.sendReply(
       tenantId,
       waId,
       reply,
@@ -710,6 +721,11 @@ export class WhatsappInboundAiService {
       result.mirroredMessageId,
       item.accountId,
     );
+    if (sent) {
+      this.metrics.observeWhatsappAiTurnSeconds(
+        (Date.now() - turnStarted) / 1000,
+      );
+    }
   }
 
   /**
@@ -760,7 +776,7 @@ export class WhatsappInboundAiService {
     }
     await this.refreshAiBinding(tenantId, contact);
     this.logger.warn(
-      `contact already bound to another AI session — keeping it (tenant=${tenantId}, contact=${contact.id})`,
+      `${this.cid()} contact already bound to another AI session — keeping it (tenant=${tenantId}, contact=${contact.id})`,
     );
   }
 
@@ -788,7 +804,7 @@ export class WhatsappInboundAiService {
       if (decision.allowed) continue;
       // No phone number in the log line — tenant and tier are enough to alert on.
       this.logger.warn(
-        `WhatsApp AI turn refused (tenant=${tenantId}, limit=${tier}, ` +
+        `${this.cid()} WhatsApp AI turn refused (tenant=${tenantId}, limit=${tier}, ` +
           `count=${decision.count}/${decision.limit})`,
       );
       if (decision.count === (decision.limit ?? 0) + 1) {
@@ -806,7 +822,7 @@ export class WhatsappInboundAiService {
           );
         } catch (err) {
           this.logger.warn(
-            `could not send the rate-limit notice (tenant=${tenantId}): ${(err as Error)?.message}`,
+            `${this.cid()} could not send the rate-limit notice (tenant=${tenantId}): ${(err as Error)?.message}`,
           );
         }
       }
@@ -853,7 +869,7 @@ export class WhatsappInboundAiService {
       );
     } catch (err) {
       this.logger.warn(
-        `Could not queue inbound media for message ${message.id}: ${(err as Error)?.message}`,
+        `${this.cid()} Could not queue inbound media for message ${message.id}: ${(err as Error)?.message}`,
       );
     }
   }
@@ -885,6 +901,7 @@ export class WhatsappInboundAiService {
   ): Promise<boolean> {
     const decision = await this.policy.evaluate(tenantId, subject, 'pre_send');
     if (!decision.allowed) {
+      this.metrics.recordWhatsappAiReply('suppressed');
       await this.markReplySuppressed(tenantId, mirroredMessageId);
       return false;
     }
@@ -893,8 +910,9 @@ export class WhatsappInboundAiService {
       (await this.alreadySent(tenantId, mirroredMessageId))
     ) {
       this.logger.log(
-        `bot reply already delivered by an earlier attempt — not sending again (tenant=${tenantId})`,
+        `${this.cid()} bot reply already delivered by an earlier attempt — not sending again (tenant=${tenantId})`,
       );
+      this.metrics.recordWhatsappAiReply('deduped');
       return true;
     }
 
@@ -906,8 +924,9 @@ export class WhatsappInboundAiService {
       account = await this.resolveSendAccount(tenantId, accountId);
     } catch (err) {
       this.logger.warn(
-        `Cannot send AI reply for tenant ${tenantId}: ${(err as Error)?.message}`,
+        `${this.cid()} Cannot send AI reply for tenant ${tenantId}: ${(err as Error)?.message}`,
       );
+      this.metrics.recordWhatsappAiReply('failed');
       return false;
     }
 
@@ -921,7 +940,10 @@ export class WhatsappInboundAiService {
       interactive,
     });
     if (!res.success) {
-      this.logger.warn(`WhatsApp reply send failed: ${res.error}`);
+      this.logger.warn(
+        `${this.cid()} WhatsApp reply send failed: ${res.error}`,
+      );
+      this.metrics.recordWhatsappAiReply('failed');
       return false;
     }
     if (mirroredMessageId && res.providerMessageId) {
@@ -935,10 +957,11 @@ export class WhatsappInboundAiService {
         )
         .catch((err) =>
           this.logger.warn(
-            `could not record provider message id: ${(err as Error)?.message}`,
+            `${this.cid()} could not record provider message id: ${(err as Error)?.message}`,
           ),
         );
     }
+    this.metrics.recordWhatsappAiReply('sent');
     return true;
   }
 
@@ -963,7 +986,7 @@ export class WhatsappInboundAiService {
         return await this.router.resolveForSend(tenantId, { accountId });
       } catch (err) {
         this.logger.warn(
-          `receiving account is not usable for the reply — using the clinic default (tenant=${tenantId}, account=${accountId}): ${(err as Error)?.message}`,
+          `${this.cid()} receiving account is not usable for the reply — using the clinic default (tenant=${tenantId}, account=${accountId}): ${(err as Error)?.message}`,
         );
       }
     }
@@ -983,7 +1006,7 @@ export class WhatsappInboundAiService {
       return Boolean(row?.wa_message_id);
     } catch (err) {
       this.logger.warn(
-        `could not check whether a bot reply was already sent (tenant=${tenantId}) — sending: ${(err as Error)?.message}`,
+        `${this.cid()} could not check whether a bot reply was already sent (tenant=${tenantId}) — sending: ${(err as Error)?.message}`,
       );
       return false;
     }
@@ -999,7 +1022,7 @@ export class WhatsappInboundAiService {
       await this.messageStatus.markFailed(tenantId, mirroredMessageId);
     } catch (err) {
       this.logger.warn(
-        `could not mark a suppressed bot reply as failed (tenant=${tenantId}): ${(err as Error)?.message}`,
+        `${this.cid()} could not mark a suppressed bot reply as failed (tenant=${tenantId}): ${(err as Error)?.message}`,
       );
     }
   }

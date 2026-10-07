@@ -195,4 +195,46 @@ describe('MetricsService (M14)', () => {
     // tenant id, statement hash, or anything else to have been added to.
     expect(line.match(/="/g)).toHaveLength(1);
   });
+
+  describe('WhatsApp AI observability series (Step 12)', () => {
+    it('renders each series with closed labels only — no tenant, contact or phone', async () => {
+      service.recordWhatsappInboundEvent('accepted');
+      service.recordWhatsappInboundEvent('deduplicated');
+      service.recordWhatsappInboundEvent('no_tenant');
+      service.recordWhatsappAiReply('sent');
+      service.recordWhatsappAiReply('suppressed');
+      service.recordWhatsappAiReply('deduped');
+      service.recordWhatsappAiReply('failed');
+      service.observeWhatsappAiTurnSeconds(3.2);
+      service.recordAiScopeBlock('whatsapp', 'offtopic');
+      service.recordAiScopeBlock('public', 'reply-code');
+      service.recordWhatsappContactLockBusy();
+
+      const body = await service.render();
+
+      for (const result of ['accepted', 'deduplicated', 'no_tenant']) {
+        expect(body).toContain(
+          `whatsapp_inbound_events_total{result="${result}"} 1`,
+        );
+      }
+      for (const result of ['sent', 'suppressed', 'deduped', 'failed']) {
+        expect(body).toContain(`whatsapp_ai_reply_total{result="${result}"} 1`);
+      }
+      expect(body).toContain('whatsapp_ai_turn_seconds_count 1');
+      expect(body).toContain(
+        'ai_scope_blocks_total{channel="whatsapp",category="offtopic"} 1',
+      );
+      expect(body).toContain(
+        'ai_scope_blocks_total{channel="public",category="reply-code"} 1',
+      );
+      expect(body).toContain('whatsapp_contact_lock_busy_total 1');
+    });
+
+    it('buckets a turn duration (3.2s lands in le=5, not le=2)', async () => {
+      service.observeWhatsappAiTurnSeconds(3.2);
+      const body = await service.render();
+      expect(body).toContain('whatsapp_ai_turn_seconds_bucket{le="2"} 0');
+      expect(body).toContain('whatsapp_ai_turn_seconds_bucket{le="5"} 1');
+    });
+  });
 });
