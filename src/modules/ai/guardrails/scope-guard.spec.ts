@@ -155,6 +155,38 @@ describe('scope guard — the user message (F-10)', () => {
    * NEVER BLOCKED. Each of these shares a word with a pattern above — that is the
    * point of the list. A regression here is a patient turned away.
    */
+  describe('everyday off-topic asks, English and Arabic (Step 10)', () => {
+    it.each([
+      'Who should I vote for in the election?',
+      'Recommend a good movie for tonight',
+      'What is the best series on Netflix?',
+      'How do I cook kabsa?',
+      'Should I invest in Bitcoin?',
+      'Give me trading strategy tips for forex',
+      'Can you do my homework for me?',
+      'Summarize this article for me',
+      'How do I get my ex back?',
+      'من يستحق صوتي في الانتخابات؟',
+      'رشح لي فيلم جديد',
+      'ما نتيجة مباراة الأهلي أمس؟',
+      'طريقة عمل الكبسة',
+      'هل أشتري العملات الرقمية؟',
+      'حل لي الواجب',
+      'كيف أرجع حبيبي',
+    ])('redirects %s', (text) => {
+      expect(screenUserMessage(text)).toEqual({
+        blocked: true,
+        category: expect.any(String),
+      });
+    });
+
+    it('labels the new bucket offtopic', () => {
+      expect(screenUserMessage('How do I cook kabsa?').category).toBe(
+        'offtopic',
+      );
+    });
+  });
+
   describe('real clinic messages are never blocked', () => {
     it.each([
       // "code" that is not programming
@@ -195,6 +227,20 @@ describe('scope guard — the user message (F-10)', () => {
       // capitals / trivia lookalikes
       'Is the Capital Hospital branch open on Friday?',
       'Is the doctor the best one for back pain?',
+      // Step 10 lookalikes: the topic words next to real clinic needs
+      'Is the clinic open during the match tonight?',
+      'Can you translate my prescription for my mother?',
+      'Do you have a recipe for the low-sodium diet the doctor gave me?',
+      'I need a doctor note instead of homework for my son, he was sick',
+      'Is the clinic open on election day?',
+      'My husband cheated on his diet, can he still do the blood test?',
+      'Can I stream a movie in the waiting room while I wait?',
+      'I want to invest in my health, which checkup package is best?',
+      'ما هي الوصفة الطبية التي كتبها الدكتور؟',
+      'هل العيادة مفتوحة يوم الانتخابات؟',
+      'ممكن ملخص لتقرير التحليل؟',
+      'هل يوجد حجز بعد المباراة؟',
+      'كيف أحجز موعد مع الدكتور؟',
       // ordinary
       'hello',
       'I want to book an appointment for tomorrow morning',
