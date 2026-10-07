@@ -159,3 +159,59 @@ describe('book_appointment — server-bound customer wins over a model-supplied 
     );
   });
 });
+
+describe('WhatsApp turn with NO bound customer (Step 8)', () => {
+  const ctx = (channel?: string) =>
+    ({
+      tenantId: 'tenant-a',
+      aiConversationId: 'conv-1',
+      actorUserId: 'bot-user-1',
+      permissions: ['appointments.create', 'customers.read'],
+      channel,
+    }) as never;
+  const bookArgs = {
+    branchId: BRANCH_ID,
+    staffId: STAFF_ID,
+    startAt: START_AT,
+    customerId: MODEL_SUPPLIED_CUSTOMER_ID,
+  };
+
+  it('refuses book_appointment instead of trusting the model-supplied customerId', async () => {
+    const { service, appointments } = build();
+
+    const result: Record<string, unknown> = await service.execute(
+      ctx('WHATSAPP'),
+      call(AI_TOOL.BOOK_APPOINTMENT, bookArgs),
+    );
+
+    expect(result.success).toBe(false);
+    expect(String(result.error)).toContain('No patient is identified');
+    expect(appointments.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses get_customer_insurance_status even though the bot holds customers.read', async () => {
+    const { service } = build();
+
+    const result: Record<string, unknown> = await service.execute(
+      ctx('WHATSAPP'),
+      call(AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS, {
+        customerId: MODEL_SUPPLIED_CUSTOMER_ID,
+      }),
+    );
+
+    expect(result.success).toBe(false);
+    expect(String(result.error)).toContain('No patient is identified');
+  });
+
+  it('leaves other channels unchanged (staff may name a customer)', async () => {
+    const { service, appointments } = build();
+
+    const result: Record<string, unknown> = await service.execute(
+      ctx('DASHBOARD'),
+      call(AI_TOOL.BOOK_APPOINTMENT, bookArgs),
+    );
+
+    expect(result.success).toBe(true);
+    expect(appointments.create).toHaveBeenCalled();
+  });
+});
