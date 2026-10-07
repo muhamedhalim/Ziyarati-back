@@ -14,6 +14,7 @@ import { NotificationDeliveryService } from '../notifications/notification-deliv
 import { RecipientDeliveryService } from '../campaigns/recipient-delivery.service';
 import { MessageStatusService } from '../conversations/message-status.service';
 import { QueueService } from '../../queue/queue.service';
+import { MetricsService } from '../../metrics/metrics.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ErrorCode } from '../../common/errors';
 import { DELIVERY_STATUS } from '../notifications/notification.constants';
@@ -121,6 +122,7 @@ describe('WhatsappWebhookService', () => {
   let service: WhatsappWebhookService;
   let webhooks: MockRepository;
   let accounts: MockRepository;
+  let metrics: { recordWhatsappInboundEvent: jest.Mock };
   let verifier: { verify: jest.Mock; resolveChallenge: jest.Mock };
   let inboundAi: { handleInboundValue: jest.Mock };
   let coexistenceEcho: { handleEchoes: jest.Mock };
@@ -148,6 +150,7 @@ describe('WhatsappWebhookService', () => {
       verify: jest.fn().mockReturnValue(true),
       resolveChallenge: jest.fn(),
     };
+    metrics = { recordWhatsappInboundEvent: jest.fn() };
     inboundAi = { handleInboundValue: jest.fn().mockResolvedValue(undefined) };
     coexistenceEcho = { handleEchoes: jest.fn().mockResolvedValue(undefined) };
     notifDelivery = { recordDelivery: jest.fn().mockResolvedValue(undefined) };
@@ -179,6 +182,7 @@ describe('WhatsappWebhookService', () => {
         { provide: WhatsappCoexistenceEchoService, useValue: coexistenceEcho },
         { provide: QueueService, useValue: queue },
         { provide: TenantContextService, useValue: new TenantContextService() },
+        { provide: MetricsService, useValue: metrics },
         {
           provide: MetaConfig,
           useValue: new MetaConfig(
@@ -354,6 +358,68 @@ describe('WhatsappWebhookService', () => {
     });
   });
 
+  describe('inbound event counter (Step 12)', () => {
+    const msgBody = (pid: string, wamid: string) => ({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'waba',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                metadata: { phone_number_id: pid },
+                messages: [
+                  {
+                    id: wamid,
+                    from: '966500000000',
+                    type: 'text',
+                    text: { body: 'hi' },
+                    timestamp: freshTimestamp(),
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    it('counts a new event for a known number as accepted', async () => {
+      webhooks.save.mockImplementation(async (v: object) => ({
+        id: 'e1',
+        ...v,
+      }));
+      await service.ingest(msgBody('pid-1', 'w.m1') as never, RAW, 'sha256=ok');
+      expect(metrics.recordWhatsappInboundEvent).toHaveBeenCalledWith(
+        'accepted',
+      );
+    });
+
+    it('counts a number that matches no live account as no_tenant', async () => {
+      accounts.findOne.mockResolvedValue(null);
+      webhooks.save.mockImplementation(async (v: object) => ({
+        id: 'e1',
+        ...v,
+      }));
+      await service.ingest(msgBody('pid-x', 'w.m2') as never, RAW, 'sha256=ok');
+      expect(metrics.recordWhatsappInboundEvent).toHaveBeenCalledWith(
+        'no_tenant',
+      );
+    });
+
+    it('counts a redelivery as deduplicated', async () => {
+      webhooks.findOne.mockResolvedValue({ id: 'old' });
+      await service.ingest(msgBody('pid-1', 'w.m3') as never, RAW, 'sha256=ok');
+      expect(metrics.recordWhatsappInboundEvent).toHaveBeenCalledWith(
+        'deduplicated',
+      );
+      expect(metrics.recordWhatsappInboundEvent).not.toHaveBeenCalledWith(
+        'accepted',
+      );
+    });
+  });
+
   describe('a batched POST is split into one event per (entry, change)', () => {
     const msgChange = (pid: string, wamid: string) => ({
       field: 'messages',
@@ -395,10 +461,9 @@ describe('WhatsappWebhookService', () => {
 
       expect(webhooks.save).toHaveBeenCalledTimes(2);
       expect(queue.enqueueWhatsappWebhook).toHaveBeenCalledTimes(2);
-      expect(webhooks.create.mock.calls.map((c) => c[0].idempotency_key)).toEqual([
-        'message:w.1',
-        'message:w.2',
-      ]);
+      expect(
+        webhooks.create.mock.calls.map((c) => c[0].idempotency_key),
+      ).toEqual(['message:w.1', 'message:w.2']);
       expect(res).toEqual({ accepted: true, id: 'evt-1' });
     });
 
@@ -441,10 +506,9 @@ describe('WhatsappWebhookService', () => {
 
       const tenants = webhooks.create.mock.calls.map((c) => c[0].tenant?.id);
       expect(tenants).toEqual(['tenant-A', 'tenant-B']);
-      expect(queue.enqueueWhatsappWebhook.mock.calls.map((c) => c[0].tenantId)).toEqual([
-        'tenant-A',
-        'tenant-B',
-      ]);
+      expect(
+        queue.enqueueWhatsappWebhook.mock.calls.map((c) => c[0].tenantId),
+      ).toEqual(['tenant-A', 'tenant-B']);
     });
 
     it('a unit for an unknown number is stored tenant-less, never attributed to a neighbour in the same POST', async () => {
@@ -486,7 +550,11 @@ describe('WhatsappWebhookService', () => {
         'sha256=ok',
       );
 
-      expect(res).toEqual({ accepted: true, id: 'old-message:w.1', deduplicated: true });
+      expect(res).toEqual({
+        accepted: true,
+        id: 'old-message:w.1',
+        deduplicated: true,
+      });
       expect(webhooks.save).not.toHaveBeenCalled();
       expect(queue.enqueueWhatsappWebhook).not.toHaveBeenCalled();
     });

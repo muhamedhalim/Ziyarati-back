@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -53,6 +53,7 @@ import {
   AiAdminToolName,
 } from './tools/ai-admin-tools.constants';
 import { AiMetricsService } from './ai-metrics.service';
+import { MetricsService } from '../../metrics/metrics.service';
 import {
   AiToolCall,
   AiToolDefinition,
@@ -250,6 +251,8 @@ export class AiExecutionService {
     private readonly attachmentStaging: AiAttachmentStagingService,
     /** Persists the redeemed descriptors onto the conversation's session jsonb. */
     private readonly sessions: ConversationSessionService,
+    /** Fleet-level counters. Optional: a missing counter must never cost a turn. */
+    @Optional() private readonly platformMetrics?: MetricsService,
   ) {
     // AI-023 (FR-048, R7): read once at construction — same posture as
     // MAX_TOOL_ITERATIONS being a fixed module constant; this bound is
@@ -2463,6 +2466,10 @@ export class AiExecutionService {
   ): void {
     this.logger.warn(
       `scope guard: ${kind} (tenant=${tenantId}, conversation=${aiConversationId})`,
+    );
+    this.platformMetrics?.recordAiScopeBlock(
+      this.ctx.getUser()?.guest ? 'public' : 'whatsapp',
+      kind,
     );
   }
 

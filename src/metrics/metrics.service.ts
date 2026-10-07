@@ -219,6 +219,60 @@ export class MetricsService {
   });
 
   /**
+   * Every Meta webhook unit the edge persisted (`WhatsappWebhookService`), by
+   * what became of it: `accepted` (new row), `deduplicated` (a redelivery of a
+   * row we already hold) or `no_tenant` (stored for diagnostics, phone_number_id
+   * matched no live account). Closed label set, no tenant.
+   */
+  private readonly whatsappInboundEvents = new Counter({
+    name: 'whatsapp_inbound_events_total',
+    help: 'WhatsApp webhook units persisted, by result (accepted, deduplicated, no_tenant).',
+    labelNames: ['result'] as const,
+    registers: [this.registry],
+  });
+
+  /**
+   * Every bot message the WhatsApp bridge tried to send: `sent`, `suppressed`
+   * (policy refused at the last moment), `deduped` (an earlier attempt already
+   * delivered it) or `failed` (no usable account / provider error).
+   */
+  private readonly whatsappAiReplies = new Counter({
+    name: 'whatsapp_ai_reply_total',
+    help: 'WhatsApp bot reply sends, by result (sent, suppressed, deduped, failed).',
+    labelNames: ['result'] as const,
+    registers: [this.registry],
+  });
+
+  /**
+   * Seconds from the start of an AI turn to its reply having been handed to the
+   * provider (lock wait excluded; webhook receipt is not visible to the bridge).
+   */
+  private readonly whatsappAiTurnSeconds = new Histogram({
+    name: 'whatsapp_ai_turn_seconds',
+    help: 'Duration of a WhatsApp AI turn from start to reply sent, in seconds.',
+    buckets: [1, 2, 5, 10, 20, 40, 60, 120],
+    registers: [this.registry],
+  });
+
+  /**
+   * Turns the server-side scope guard answered itself (no model call). `channel`
+   * is the transport, `category` a `ScopeCategory` or `reply-code` — closed sets.
+   */
+  private readonly aiScopeBlocks = new Counter({
+    name: 'ai_scope_blocks_total',
+    help: 'Messages or replies stopped by the AI scope guard, by channel and category.',
+    labelNames: ['channel', 'category'] as const,
+    registers: [this.registry],
+  });
+
+  /** A WhatsApp turn that could not get its contact's lock in time and was left for a retry. */
+  private readonly whatsappContactLockBusy = new Counter({
+    name: 'whatsapp_contact_lock_busy_total',
+    help: 'WhatsApp AI turns deferred because another turn for the same contact held the lock.',
+    registers: [this.registry],
+  });
+
+  /**
    * Free-access lifecycle notices (`FreeAccessNoticeService.deliver`).
    * `kind`: started | expiring. `channel`: in_app | email. `outcome`:
    * sent | duplicate (idempotent no-op) | stale (override changed/revoked/
@@ -320,6 +374,30 @@ export class MetricsService {
     stage: 'pre_ai' | 'pre_send',
   ): void {
     this.whatsappAiDecisions.inc({ decision, reason, stage });
+  }
+
+  recordWhatsappInboundEvent(
+    result: 'accepted' | 'deduplicated' | 'no_tenant',
+  ): void {
+    this.whatsappInboundEvents.inc({ result });
+  }
+
+  recordWhatsappAiReply(
+    result: 'sent' | 'suppressed' | 'deduped' | 'failed',
+  ): void {
+    this.whatsappAiReplies.inc({ result });
+  }
+
+  observeWhatsappAiTurnSeconds(seconds: number): void {
+    this.whatsappAiTurnSeconds.observe(seconds);
+  }
+
+  recordAiScopeBlock(channel: string, category: string): void {
+    this.aiScopeBlocks.inc({ channel, category });
+  }
+
+  recordWhatsappContactLockBusy(): void {
+    this.whatsappContactLockBusy.inc();
   }
 
   recordFreeAccessNotice(
