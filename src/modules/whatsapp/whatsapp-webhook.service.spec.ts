@@ -354,6 +354,203 @@ describe('WhatsappWebhookService', () => {
     });
   });
 
+  describe('a batched POST is split into one event per (entry, change)', () => {
+    const msgChange = (pid: string, wamid: string) => ({
+      field: 'messages',
+      value: {
+        metadata: { phone_number_id: pid },
+        messages: [
+          {
+            id: wamid,
+            from: '966500000000',
+            type: 'text',
+            text: { body: 'hi' },
+            timestamp: freshTimestamp(),
+          },
+        ],
+      },
+    });
+    const batch = (...entries: { id: string; changes: unknown[] }[]) => ({
+      object: 'whatsapp_business_account',
+      entry: entries,
+    });
+    let n = 0;
+    beforeEach(() => {
+      n = 0;
+      webhooks.save.mockImplementation(async (v: object) => ({
+        id: `evt-${++n}`,
+        ...v,
+      }));
+    });
+
+    it('stores and enqueues one event per change — the second change is no longer dropped', async () => {
+      const res = await service.ingest(
+        batch({
+          id: 'waba-1',
+          changes: [msgChange('pid-1', 'w.1'), msgChange('pid-1', 'w.2')],
+        }) as never,
+        RAW,
+        'sha256=ok',
+      );
+
+      expect(webhooks.save).toHaveBeenCalledTimes(2);
+      expect(queue.enqueueWhatsappWebhook).toHaveBeenCalledTimes(2);
+      expect(webhooks.create.mock.calls.map((c) => c[0].idempotency_key)).toEqual([
+        'message:w.1',
+        'message:w.2',
+      ]);
+      expect(res).toEqual({ accepted: true, id: 'evt-1' });
+    });
+
+    it('each stored payload is a single-change body, so the worker only ever sees one', async () => {
+      await service.ingest(
+        batch({
+          id: 'waba-1',
+          changes: [msgChange('pid-1', 'w.1'), msgChange('pid-1', 'w.2')],
+        }) as never,
+        RAW,
+        'sha256=ok',
+      );
+
+      for (const [row] of webhooks.create.mock.calls) {
+        expect(row.payload.object).toBe('whatsapp_business_account');
+        expect(row.payload.entry).toHaveLength(1);
+        expect(row.payload.entry[0].id).toBe('waba-1');
+        expect(row.payload.entry[0].changes).toHaveLength(1);
+      }
+    });
+
+    it('resolves each unit’s tenant from ITS OWN phone_number_id — two clinics in one POST never cross', async () => {
+      accounts.findOne.mockImplementation(
+        async ({ where }: { where: { phone_number_id: string } }) =>
+          where.phone_number_id === 'pid-A'
+            ? { id: 'a', tenant: { id: 'tenant-A' } }
+            : where.phone_number_id === 'pid-B'
+              ? { id: 'b', tenant: { id: 'tenant-B' } }
+              : null,
+      );
+
+      await service.ingest(
+        batch(
+          { id: 'waba-A', changes: [msgChange('pid-A', 'w.A')] },
+          { id: 'waba-B', changes: [msgChange('pid-B', 'w.B')] },
+        ) as never,
+        RAW,
+        'sha256=ok',
+      );
+
+      const tenants = webhooks.create.mock.calls.map((c) => c[0].tenant?.id);
+      expect(tenants).toEqual(['tenant-A', 'tenant-B']);
+      expect(queue.enqueueWhatsappWebhook.mock.calls.map((c) => c[0].tenantId)).toEqual([
+        'tenant-A',
+        'tenant-B',
+      ]);
+    });
+
+    it('a unit for an unknown number is stored tenant-less, never attributed to a neighbour in the same POST', async () => {
+      accounts.findOne.mockImplementation(
+        async ({ where }: { where: { phone_number_id: string } }) =>
+          where.phone_number_id === 'pid-A'
+            ? { id: 'a', tenant: { id: 'tenant-A' } }
+            : null,
+      );
+
+      await service.ingest(
+        batch(
+          { id: 'waba-A', changes: [msgChange('pid-A', 'w.A')] },
+          { id: 'waba-X', changes: [msgChange('pid-unknown', 'w.X')] },
+        ) as never,
+        RAW,
+        'sha256=ok',
+      );
+
+      expect(webhooks.create.mock.calls.map((c) => c[0].tenant?.id)).toEqual([
+        'tenant-A',
+        undefined,
+      ]);
+    });
+
+    it('a replayed batch is deduplicated unit by unit and enqueues nothing', async () => {
+      webhooks.findOne.mockImplementation(
+        async ({ where }: { where: { idempotency_key: string } }) => ({
+          id: `old-${where.idempotency_key}`,
+        }),
+      );
+
+      const res = await service.ingest(
+        batch({
+          id: 'waba-1',
+          changes: [msgChange('pid-1', 'w.1'), msgChange('pid-1', 'w.2')],
+        }) as never,
+        RAW,
+        'sha256=ok',
+      );
+
+      expect(res).toEqual({ accepted: true, id: 'old-message:w.1', deduplicated: true });
+      expect(webhooks.save).not.toHaveBeenCalled();
+      expect(queue.enqueueWhatsappWebhook).not.toHaveBeenCalled();
+    });
+
+    it('a half-replayed batch stores only the unit it has not seen, and is not reported as a duplicate', async () => {
+      webhooks.findOne.mockImplementation(
+        async ({ where }: { where: { idempotency_key: string } }) =>
+          where.idempotency_key === 'message:w.1' ? { id: 'old-1' } : null,
+      );
+
+      const res = await service.ingest(
+        batch({
+          id: 'waba-1',
+          changes: [msgChange('pid-1', 'w.1'), msgChange('pid-1', 'w.2')],
+        }) as never,
+        RAW,
+        'sha256=ok',
+      );
+
+      expect(webhooks.save).toHaveBeenCalledTimes(1);
+      expect(res.deduplicated).toBeUndefined();
+    });
+
+    it('a body with one change keeps its ORIGINAL payload object (no behaviour change for ordinary traffic)', async () => {
+      const body = inboundBody();
+      await service.ingest(body as never, RAW, 'sha256=ok');
+
+      expect(webhooks.create.mock.calls[0][0].payload).toBe(body);
+    });
+
+    it('the legacy { payload } wrapper stays a single event', async () => {
+      await service.ingest(
+        {
+          eventType: 'messages',
+          idempotencyKey: 'legacy-1',
+          payload: batch({
+            id: 'w',
+            changes: [msgChange('pid-1', 'w.1'), msgChange('pid-1', 'w.2')],
+          }),
+        } as never,
+        RAW,
+        'sha256=ok',
+      );
+
+      expect(webhooks.save).toHaveBeenCalledTimes(1);
+      expect(webhooks.create.mock.calls[0][0].idempotency_key).toBe('legacy-1');
+    });
+
+    it('still verifies the signature and freshness ONCE for the whole POST, before any unit is stored', async () => {
+      verifier.verify.mockReturnValueOnce(false);
+      await expect(
+        service.ingest(
+          batch({
+            id: 'w',
+            changes: [msgChange('pid-1', 'w.1'), msgChange('pid-1', 'w.2')],
+          }) as never,
+          RAW,
+          'sha256=bad',
+        ),
+      ).rejects.toMatchObject({ code: ErrorCode.UNAUTHORIZED });
+      expect(webhooks.save).not.toHaveBeenCalled();
+    });
+  });
+
   describe('tenant resolution (the trusted mapping)', () => {
     it('resolves the tenant from phone_number_id, excluding disconnected accounts', async () => {
       await service.ingest(inboundBody(), RAW, 'sha256=ok');

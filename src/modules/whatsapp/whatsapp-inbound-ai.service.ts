@@ -64,6 +64,12 @@ type IngestedMessage =
       content: string;
       contact: WhatsappContact;
       conversationId: string | null;
+      /**
+       * The clinic's connected account (number) the patient wrote TO — the one
+       * every bot message of this turn must leave from. `null` when the
+       * receiving number matches no live account of this tenant.
+       */
+      accountId: string | null;
     };
 
 /**
@@ -201,6 +207,7 @@ export class WhatsappInboundAiService {
           item.message,
           err,
           this.subjectOf(item),
+          item.accountId,
         );
       });
     }
@@ -283,18 +290,25 @@ export class WhatsappInboundAiService {
         displayName,
       );
 
+      // Resolved ONCE per message: the thread, the media download token and every
+      // reply of this turn all belong to the number the patient wrote to.
+      const account = await this.resolveInboundAccount(
+        tenantId,
+        value?.metadata?.phone_number_id,
+      );
+
       const conversationId = await this.storeOnTimeline(
         tenantId,
-        value,
         message,
         contact,
         content,
+        account,
       );
 
       // Fetch any attached media on its own queue — see WhatsappMediaService for
       // why this cannot happen inline. Needs the timeline message stored above.
       // Never blocks or fails the message.
-      await this.attachMedia(tenantId, message);
+      await this.attachMedia(tenantId, message, account?.id);
 
       // FND-024: an inbound opt-out is recorded here, ahead of every AI gate —
       // a "STOP" must be honoured even when the clinic has the assistant off,
@@ -308,7 +322,15 @@ export class WhatsappInboundAiService {
         return { kind: 'skip', message };
       }
 
-      return { kind: 'ready', message, waId, content, contact, conversationId };
+      return {
+        kind: 'ready',
+        message,
+        waId,
+        content,
+        contact,
+        conversationId,
+        accountId: account?.id ?? null,
+      };
     } catch (error) {
       return { kind: 'failed', message, error };
     }
@@ -326,16 +348,12 @@ export class WhatsappInboundAiService {
    */
   private async storeOnTimeline(
     tenantId: string,
-    value: MetaWebhookChangeValue,
     message: MetaWebhookMessage,
     contact: WhatsappContact,
     content: string,
+    account: WhatsappAccount | null,
   ): Promise<string | null> {
     const customerId = contact.customer?.id;
-    const account = await this.resolveInboundAccount(
-      tenantId,
-      value?.metadata?.phone_number_id,
-    );
     if (!customerId || !account) {
       this.logger.warn(
         `inbound message not stored on the timeline (tenant=${tenantId}): ${
@@ -456,6 +474,7 @@ export class WhatsappInboundAiService {
     message: MetaWebhookMessage,
     err: unknown,
     subject: AiPolicySubject,
+    accountId?: string | null,
   ): Promise<void> {
     this.logger.error(
       `inbound AI turn failed (tenant=${tenantId}): ${(err as Error)?.message}`,
@@ -471,6 +490,9 @@ export class WhatsappInboundAiService {
           waId,
           TURN_FAILED_FALLBACK_TEXT,
           subject,
+          undefined,
+          undefined,
+          accountId,
         );
       } catch (sendErr) {
         this.logger.warn(
@@ -555,7 +577,14 @@ export class WhatsappInboundAiService {
     // F-16: after the opt-out check (a "STOP" must always be honoured) and before
     // anything that costs money. A refused message is already stored on the
     // timeline, so a human can still read it.
-    if (!(await this.admitContactTurn(tenantId, waId, this.subjectOf(item)))) {
+    if (
+      !(await this.admitContactTurn(
+        tenantId,
+        waId,
+        this.subjectOf(item),
+        item.accountId,
+      ))
+    ) {
       return;
     }
 
@@ -654,6 +683,7 @@ export class WhatsappInboundAiService {
       this.subjectOf(item),
       interactive,
       result.mirroredMessageId,
+      item.accountId,
     );
   }
 
@@ -723,6 +753,7 @@ export class WhatsappInboundAiService {
     tenantId: string,
     waId: string,
     subject: AiPolicySubject,
+    accountId: string | null,
   ): Promise<boolean> {
     for (const tier of ['whatsapp-contact', 'whatsapp-contact-day'] as const) {
       const decision = await this.rateLimit.checkAndRecord(
@@ -744,6 +775,9 @@ export class WhatsappInboundAiService {
               ? CONTACT_RATE_LIMITED_TEXT
               : CONTACT_DAILY_LIMIT_TEXT,
             subject,
+            undefined,
+            undefined,
+            accountId,
           );
         } catch (err) {
           this.logger.warn(
@@ -766,6 +800,7 @@ export class WhatsappInboundAiService {
   private async attachMedia(
     tenantId: string,
     message: MetaWebhookMessage,
+    inboundAccountId?: string,
   ): Promise<void> {
     if (!WhatsappMediaService.isMediaMessage(message) || !message.id) return;
 
@@ -776,10 +811,12 @@ export class WhatsappInboundAiService {
       });
       if (!stored) return;
 
-      // Prefer the account the conversation actually arrived on; fall back to
-      // the tenant's default. A media id is only readable with the token of the
-      // WABA that received it, so the right account matters.
+      // Prefer the account this message actually arrived on, then the one its
+      // conversation is bound to; fall back to the tenant's default. A media id
+      // is only readable with the token of the WABA that received it, so the
+      // right account matters.
       const accountId =
+        inboundAccountId ??
         stored.conversation?.whatsapp_account?.id ??
         (await this.router.resolveForSend(tenantId, {})).id;
 
@@ -819,6 +856,7 @@ export class WhatsappInboundAiService {
     subject: AiPolicySubject,
     interactive?: WhatsappSessionPayload['interactive'],
     mirroredMessageId?: string | null,
+    accountId?: string | null,
   ): Promise<boolean> {
     const decision = await this.policy.evaluate(tenantId, subject, 'pre_send');
     if (!decision.allowed) {
@@ -840,7 +878,7 @@ export class WhatsappInboundAiService {
     // account, abort loudly rather than attempting a send that cannot succeed.
     let account;
     try {
-      account = await this.router.resolveForSend(tenantId, {});
+      account = await this.resolveSendAccount(tenantId, accountId);
     } catch (err) {
       this.logger.warn(
         `Cannot send AI reply for tenant ${tenantId}: ${(err as Error)?.message}`,
@@ -877,6 +915,34 @@ export class WhatsappInboundAiService {
         );
     }
     return true;
+  }
+
+  /**
+   * The number a bot message leaves from: the one the patient wrote to. A clinic
+   * can connect several, and an answer from a different number than the one
+   * that was messaged is a different conversation to the patient — outside that
+   * number's own 24 h window Meta also refuses a free-form message.
+   *
+   * Only when that account is gone or unusable (disconnected, expired, removed
+   * since the message arrived) does it fall back to the clinic's default —
+   * logged, since which number a patient is answered from is worth seeing. The
+   * lookup is tenant-scoped (`byId`), so an id can never name another clinic's
+   * number.
+   */
+  private async resolveSendAccount(
+    tenantId: string,
+    accountId?: string | null,
+  ) {
+    if (accountId) {
+      try {
+        return await this.router.resolveForSend(tenantId, { accountId });
+      } catch (err) {
+        this.logger.warn(
+          `receiving account is not usable for the reply — using the clinic default (tenant=${tenantId}, account=${accountId}): ${(err as Error)?.message}`,
+        );
+      }
+    }
+    return this.router.resolveForSend(tenantId, {});
   }
 
   /** Whether this mirrored bot message already went out (it carries the provider id). */
