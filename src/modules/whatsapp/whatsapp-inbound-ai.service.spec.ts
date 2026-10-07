@@ -82,6 +82,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     recordWhatsappAiDecision: jest.Mock;
   };
   let rateLimit: { checkAndRecord: jest.Mock };
+  let router: { resolveForSend: jest.Mock };
 
   const allowed = (featureKey: FeatureKey) => ({
     allowed: true,
@@ -110,6 +111,13 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
       renew: jest.fn().mockResolvedValue(true),
     };
     messageStatus = { markFailed: jest.fn().mockResolvedValue(undefined) };
+    router = {
+      resolveForSend: jest.fn().mockResolvedValue({
+        id: 'acc-1',
+        phoneNumberId: 'p1',
+        mode: 'REAL',
+      }),
+    };
     conversationsRepo = createMockRepository();
     customersRepo = createMockRepository();
     // F-16: admission is open unless a test closes it.
@@ -189,13 +197,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
         { provide: WhatsappMessagingService, useValue: messaging },
         {
           provide: WhatsappMessageRouter,
-          useValue: {
-            resolveForSend: jest.fn().mockResolvedValue({
-              id: 'acc-1',
-              phoneNumberId: 'p1',
-              mode: 'REAL',
-            }),
-          },
+          useValue: router,
         },
         { provide: WhatsappBotActorService, useValue: botActor },
         { provide: CustomerService, useValue: customers },
@@ -581,6 +583,135 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
    * orchestrator created a second session and the contact was overwritten with
    * it — split history, lost booking state.
    */
+  /**
+   * A clinic can connect several numbers. The reply used to be sent from the
+   * clinic's DEFAULT number whichever one the patient wrote to.
+   */
+  describe('replies leave from the number the patient wrote to (Step 3)', () => {
+    const inbound = (id: string, extra: Record<string, unknown> = {}) =>
+      ({
+        metadata: { phone_number_id: 'pnid-2' },
+        messages: [
+          {
+            id,
+            from: '966500000000',
+            type: 'text',
+            text: { body: 'hi' },
+            ...extra,
+          },
+        ],
+      }) as never;
+    const byAccount = (id: string) => ({ id, phoneNumberId: `pn-${id}`, mode: 'REAL' });
+
+    beforeEach(() => {
+      accounts.findOne.mockResolvedValue({ id: 'acc-2' });
+      router.resolveForSend.mockImplementation(
+        async (_t: string, req: { accountId?: string }) =>
+          byAccount(req.accountId ?? 'acc-default'),
+      );
+    });
+
+    it('resolves the account from the receiving phone_number_id, tenant-scoped and live-only', async () => {
+      await service.handleInboundValue(TENANT, inbound('wamid-r0'));
+
+      expect(accounts.findOne).toHaveBeenCalledWith({
+        where: expect.objectContaining({
+          phone_number_id: 'pnid-2',
+          tenant: { id: TENANT },
+        }),
+      });
+    });
+
+    it('sends the AI answer from that account, not the default', async () => {
+      await service.handleInboundValue(TENANT, inbound('wamid-r1'));
+
+      expect(router.resolveForSend).toHaveBeenCalledWith(TENANT, {
+        accountId: 'acc-2',
+      });
+      expect(router.resolveForSend).not.toHaveBeenCalledWith(TENANT, {});
+      expect(messaging.sendSession).toHaveBeenCalledWith(
+        expect.objectContaining({ accountId: 'acc-2', phoneNumberId: 'pn-acc-2' }),
+      );
+    });
+
+    it('the "could not answer" fallback leaves from the same number', async () => {
+      orchestrator.handleStream.mockRejectedValue(new Error('boom'));
+
+      await service.handleInboundValue(TENANT, inbound('wamid-r2'));
+
+      expect(messaging.sendSession).toHaveBeenCalledWith(
+        expect.objectContaining({ accountId: 'acc-2' }),
+      );
+    });
+
+    it('so does the rate-limit notice', async () => {
+      rateLimit.checkAndRecord.mockResolvedValue({
+        allowed: false,
+        count: 21,
+        limit: 20,
+      });
+
+      await service.handleInboundValue(TENANT, inbound('wamid-r3'));
+
+      expect(messaging.sendSession).toHaveBeenCalledWith(
+        expect.objectContaining({ accountId: 'acc-2' }),
+      );
+    });
+
+    it('falls back to the clinic default — and says so — only when that account is no longer usable', async () => {
+      router.resolveForSend.mockImplementation(
+        async (_t: string, req: { accountId?: string }) => {
+          if (req.accountId) throw new Error('WhatsApp account is not active');
+          return byAccount('acc-default');
+        },
+      );
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+
+      await service.handleInboundValue(TENANT, inbound('wamid-r4'));
+
+      expect(messaging.sendSession).toHaveBeenCalledWith(
+        expect.objectContaining({ accountId: 'acc-default' }),
+      );
+      expect(
+        warn.mock.calls.some((c) => String(c[0]).includes('using the clinic default')),
+      ).toBe(true);
+      warn.mockRestore();
+    });
+
+    it('uses the default when the receiving number matches no live account (nothing to prefer)', async () => {
+      accounts.findOne.mockResolvedValue(null);
+
+      await service.handleInboundValue(TENANT, inbound('wamid-r5'));
+
+      expect(router.resolveForSend).toHaveBeenCalledWith(TENANT, {});
+      expect(messaging.sendSession).toHaveBeenCalledWith(
+        expect.objectContaining({ accountId: 'acc-default' }),
+      );
+    });
+
+    it('inbound media is fetched with the receiving account’s token, ahead of the conversation’s recorded account', async () => {
+      messageRepo.findOne.mockResolvedValue({
+        id: 'stored-1',
+        conversation: { whatsapp_account: { id: 'acc-other' } },
+      });
+
+      await service.handleInboundValue(
+        TENANT,
+        inbound('wamid-r6', {
+          type: 'image',
+          image: { id: 'media-1', mime_type: 'image/jpeg' },
+        }),
+      );
+
+      expect(media.enqueueForMessage).toHaveBeenCalledWith(
+        TENANT,
+        'acc-2',
+        'stored-1',
+        expect.anything(),
+      );
+    });
+  });
+
   describe('AI-session binding under concurrency (Step 1)', () => {
     const inbound = (id: string) =>
       ({
