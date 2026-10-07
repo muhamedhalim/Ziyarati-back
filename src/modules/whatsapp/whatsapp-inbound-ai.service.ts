@@ -231,14 +231,24 @@ export class WhatsappInboundAiService {
   /**
    * True for the two failures that mean "not now" rather than "this failed":
    * another turn for the same contact still holds the lock, or an identical AI
-   * request is already in flight / has an unverified outcome (the AI request
-   * claim raises CONFLICT for both).
+   * request is already in flight (the AI request claim raises CONFLICT).
+   * An unverified-outcome claim is NOT retried — see below.
    */
   private shouldRetryJob(err: unknown): boolean {
-    return (
-      err instanceof ContactTurnBusyError ||
-      (err instanceof AppError && err.code === ErrorCode.CONFLICT)
-    );
+    if (err instanceof ContactTurnBusyError) return true;
+    if (!(err instanceof AppError) || err.code !== ErrorCode.CONFLICT) {
+      return false;
+    }
+    // An UNKNOWN claim never resolves by waiting: the earlier attempt reached
+    // the provider and died. Retrying would only exhaust the job into the DLQ
+    // with the patient unanswered, so it fails the turn instead (one fallback).
+    return err.internalContext?.claimState !== 'UNKNOWN';
+  }
+
+  /** `WHATSAPP_AI_TURN_DEADLINE_MS`, read per turn; 60s when unset or invalid. */
+  private turnDeadlineMs(): number {
+    const n = Number(process.env.WHATSAPP_AI_TURN_DEADLINE_MS);
+    return Number.isFinite(n) && n >= 1000 ? n : 60_000;
   }
 
   /**
@@ -668,7 +678,11 @@ export class WhatsappInboundAiService {
         // `wamid` (which finally makes the messages(tenantId, wa_message_id)
         // dedupe index effective, and is how media is matched back to its
         // message) and the real message type instead of a blanket "text".
-        origin: { waMessageId: message.id, messageType: message.type },
+        origin: {
+          waMessageId: message.id,
+          messageType: message.type,
+          deadlineAt: Date.now() + this.turnDeadlineMs(),
+        },
       },
       () => undefined,
     );
