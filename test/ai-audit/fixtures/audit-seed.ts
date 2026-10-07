@@ -60,6 +60,12 @@ export interface AuditClinic {
   patientPhones?: Record<string, string>;
   appointmentIds: Record<string, string>;
   kbId?: string;
+  /** Meta `phone_number_id` of the clinic's default connected WhatsApp number. */
+  phoneNumberId?: string;
+  /** A second connected number (FULL only) for multi-number routing. */
+  phoneNumberId2?: string;
+  /** whatsapp_accounts ids, keyed like the numbers above. */
+  accountIds?: { default: string; second?: string };
 }
 
 export interface AuditSeed {
@@ -207,6 +213,27 @@ async function insertAppointment(
   return rows[0].id as string;
 }
 
+/**
+ * A live, connected WhatsApp account. Inbound turns resolve the receiving number
+ * to an account to find the timeline thread, and a message with no such account
+ * has no thread and is (deliberately) not answered — so every clinic that takes
+ * WhatsApp turns needs one.
+ */
+async function insertWhatsappAccount(
+  ds: DataSource,
+  tenantId: string,
+  phoneNumberId: string,
+  opts: { isDefault: boolean; branchId?: string },
+) {
+  const rows = await q(
+    ds,
+    `INSERT INTO whatsapp_accounts (phone_number_id, display_phone_number, connection_status, is_default, is_active, "tenantId", branch_id)
+     VALUES ($1,$2,'CONNECTED',$3,true,$4,$5) RETURNING id`,
+    [phoneNumberId, `+${phoneNumberId.replace(/\D/g, '').slice(0, 12) || '966500000000'}`, opts.isDefault, tenantId, opts.branchId ?? null],
+  );
+  return rows[0].id as string;
+}
+
 async function insertKb(ds: DataSource, tenantId: string, content: string) {
   const rows = await q(
     ds,
@@ -264,11 +291,18 @@ export async function seedAuditClinics(ds: DataSource): Promise<AuditSeed> {
     `Cancellation policy: appointments may be cancelled free of charge up to 24 hours before the visit. Late cancellations are charged 50%. Payment: we accept cash and cards at reception. (policy-marker-${RUN})`,
   );
 
+  const fullPnid = `pnid-full-${RUN}`;
+  const fullPnid2 = `pnid-full2-${RUN}`;
+  const fullAcc = await insertWhatsappAccount(ds, fullTenant, fullPnid, { isDefault: true, branchId: fullBranch });
+  const fullAcc2 = await insertWhatsappAccount(ds, fullTenant, fullPnid2, { isDefault: false, branchId: fullBranch2 });
+
   // ── EMPTY ───────────────────────────────────────────────────────────────
   const emptySlug = `audit-empty-${RUN}`;
   const emptyTenant = await insertTenant(ds, `Bare Audit Clinic ${RUN}`, emptySlug, null);
   await insertSettings(ds, emptyTenant);
   const emptyBranch = await insertBranch(ds, emptyTenant, cityId, 'Only Branch');
+  const emptyPnid = `pnid-empty-${RUN}`;
+  const emptyAcc = await insertWhatsappAccount(ds, emptyTenant, emptyPnid, { isDefault: true, branchId: emptyBranch });
 
   // ── B (canary) ──────────────────────────────────────────────────────────
   const bSlug = `audit-b-${RUN}`;
@@ -280,6 +314,8 @@ export async function seedAuditClinics(ds: DataSource): Promise<AuditSeed> {
   const bDoc = await insertDoctor(ds, bTenant, bBranch, CANARY.doctorName, 'Canary Specialist', null);
   const bPt = await insertPatient(ds, bTenant, CANARY.patientName, `+9665559${RUN.replace(/\D/g, '').padEnd(4, '3').slice(0, 4)}3`);
   const bAppt = await insertAppointment(ds, bTenant, bBranch, bPt, bDoc.staffId, bSvc);
+  const bPnid = `pnid-b-${RUN}`;
+  const bAcc = await insertWhatsappAccount(ds, bTenant, bPnid, { isDefault: true, branchId: bBranch });
   const bKb = await insertKb(ds, bTenant, `${CANARY.kbSecret}: internal price list — laser treatment costs ${CANARY.servicePrice} SAR.`);
 
   return {
@@ -294,15 +330,18 @@ export async function seedAuditClinics(ds: DataSource): Promise<AuditSeed> {
       patientPhones: { x: phoneX, y: phoneY },
       appointmentIds: { y: apptY },
       kbId: kbFull,
+      phoneNumberId: fullPnid, phoneNumberId2: fullPnid2, accountIds: { default: fullAcc, second: fullAcc2 },
     },
     empty: {
       tenantId: emptyTenant, slug: emptySlug, name: `Bare Audit Clinic ${RUN}`, cityId, branchId: emptyBranch,
       serviceIds: {}, doctorStaffIds: {}, doctorUserIds: {}, patientIds: {}, appointmentIds: {},
+      phoneNumberId: emptyPnid, accountIds: { default: emptyAcc },
     },
     b: {
       tenantId: bTenant, slug: bSlug, name: CANARY.clinicName, cityId, branchId: bBranch,
       serviceIds: { canary: bSvc }, doctorStaffIds: { canary: bDoc.staffId }, doctorUserIds: { canary: bDoc.userId },
       patientIds: { canary: bPt }, appointmentIds: { canary: bAppt }, kbId: bKb,
+      phoneNumberId: bPnid, accountIds: { default: bAcc },
     },
   };
 }
@@ -336,6 +375,7 @@ export async function teardownAuditClinics(ds: DataSource, seed: AuditSeed): Pro
     `DELETE FROM ai_conversations WHERE "tenantId" = ANY($1)`,
     `DELETE FROM ai_knowledge_bases WHERE "tenantId" = ANY($1)`,
     // whatsapp / crm side effects of inbound turns
+    `DELETE FROM whatsapp_webhooks WHERE "tenantId" = ANY($1)`,
     `DELETE FROM whatsapp_contacts WHERE "tenantId" = ANY($1)`,
     // bookings + audit made by tool calls
     `DELETE FROM appointment_services WHERE "appointmentId" IN (SELECT id FROM appointments WHERE "tenantId" = ANY($1))`,

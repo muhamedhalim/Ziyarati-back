@@ -42,17 +42,27 @@ describe('AI-W4 external-integration (WhatsApp) cross-tenant reproduction (T062)
   let seed: AiAuditSeed;
   let inbound: WhatsappInboundAiService;
   let router: WhatsappMessageRouter;
+  const pnid = `w4-pnid-${Math.random().toString(36).slice(2, 10)}`;
 
   beforeAll(async () => {
     harness = await buildAiAuditHarness();
     seed = await seedAiAudit(harness.app, harness.dataSource);
     inbound = harness.app.get(WhatsappInboundAiService);
     router = harness.app.get(WhatsappMessageRouter);
+    // A turn needs a thread, and the thread comes from the account the message
+    // arrived on: no live account, no AI answer.
+    await harness.dataSource.query(
+      `INSERT INTO whatsapp_accounts (phone_number_id, connection_status, is_default, is_active, "tenantId")
+       VALUES ($1,'CONNECTED',true,true,$2)`,
+      [pnid, seed.tenantA.id],
+    );
   }, 120_000);
 
   afterAll(async () => {
     await harness.dataSource.query(`DELETE FROM whatsapp_contacts WHERE "tenantId" = $1`, [seed.tenantA.id]).catch(() => undefined);
     await teardownAiAuditSeed(harness.dataSource, seed);
+    // After the seed teardown: conversations FK the account.
+    await harness.dataSource.query(`DELETE FROM whatsapp_accounts WHERE "tenantId" = $1`, [seed.tenantA.id]).catch(() => undefined);
     await harness.close();
   }, 60_000);
 
@@ -79,7 +89,7 @@ describe('AI-W4 external-integration (WhatsApp) cross-tenant reproduction (T062)
     const waId = `15550${Math.floor(100000 + Math.random() * 800000)}`;
     const value: MetaWebhookChangeValue = {
       messaging_product: 'whatsapp',
-      metadata: { display_phone_number: '15550000000', phone_number_id: 'test-phone-id' },
+      metadata: { display_phone_number: '15550000000', phone_number_id: pnid },
       contacts: [{ profile: { name: 'W4 Probe Contact' }, wa_id: waId }],
       messages: [
         {

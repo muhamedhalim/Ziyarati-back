@@ -347,7 +347,11 @@ describe('Phase 1 — WhatsApp booking state, tool loop and price honesty', () =
       );
 
       const everything = JSON.stringify(reactive.capturedRequests[0].messages);
-      expect(contextBlock(reactive.capturedRequests[0])).toBeUndefined();
+      // The turn still carries its clock (Step 2), but nothing about the foreign
+      // branch or doctor: no branch/doctor/service line, only the date.
+      const block = contextBlock(reactive.capturedRequests[0]);
+      expect(block).toMatch(/today: \d{4}-\d{2}-\d{2}/);
+      expect(block).not.toMatch(/branch|doctor|service/i);
       for (const canary of [
         b.branchId,
         b.doctorStaffIds.canary,

@@ -1273,16 +1273,32 @@ export class WhatsappInboundAiService {
     );
     if (match) return match;
 
-    return this.customers.create(tenantId, {
-      full_name: displayName,
-      phone: waId,
-      // Globally-unique synthetic address (schema requires a non-null, unique
-      // email); tenantId+waId guarantees no collision across tenants.
-      email: `whatsapp+${tenantId}-${waId}@bot.internal`,
-      whatsapp_id: waId,
-      whatsapp_name: displayName,
-      source: 'whatsapp',
-    });
+    try {
+      return await this.customers.create(tenantId, {
+        full_name: displayName,
+        phone: waId,
+        // Globally-unique synthetic address (schema requires a non-null, unique
+        // email); tenantId+waId guarantees no collision across tenants.
+        email: `whatsapp+${tenantId}-${waId}@bot.internal`,
+        whatsapp_id: waId,
+        whatsapp_name: displayName,
+        source: 'whatsapp',
+      });
+    } catch (err) {
+      // A patient's first two messages are picked up by different workers at
+      // once; both find no customer and both insert the SAME deterministic
+      // address. `UQ (tenantId, email)` lets one win; the loser must adopt the
+      // winner's row, not fail its turn (observed: the patient got the "could
+      // not process" apology instead of an answer to their first message).
+      const winner = await this.customers
+        .search(tenantId, { q: waId, page: 1, limit: 5 } as never)
+        .then((r) =>
+          r.data.find((c) => c.phone === waId || c.whatsapp_id === waId),
+        )
+        .catch(() => undefined);
+      if (winner) return winner;
+      throw err;
+    }
   }
 
   /**
