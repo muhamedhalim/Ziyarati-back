@@ -82,6 +82,9 @@ export class ConversationSessionService {
         ? { context: { ...(current.context ?? {}), ...cleaned.context } }
         : {}),
     } as AiSession;
+    // Re-asserting an unchanged value (the WhatsApp customer binding is applied
+    // on every turn) must not cost a write.
+    if (JSON.stringify(merged) === JSON.stringify(current)) return merged;
     conv.session = merged as Record<string, unknown>;
     await this.conversations.save(conv);
     return merged;
@@ -126,6 +129,9 @@ export class ConversationSessionService {
     },
   ): Promise<AiSession> {
     const conv = await this.load(tenantId, aiConversationId);
+    const before = JSON.stringify(conv.session ?? {});
+    const beforeChannel = conv.channel;
+    const beforeLanguage = conv.language;
     const session: AiSession = { ...(conv.session as AiSession) };
 
     if (session.activeChannel && session.activeChannel !== meta.channel) {
@@ -143,6 +149,14 @@ export class ConversationSessionService {
 
     conv.channel = meta.channel;
     if (meta.language) conv.language = meta.language;
+    // Same channel as last turn and nothing new to record: no write.
+    if (
+      JSON.stringify(session) === before &&
+      conv.channel === beforeChannel &&
+      conv.language === beforeLanguage
+    ) {
+      return session;
+    }
     conv.session = session as Record<string, unknown>;
     await this.conversations.save(conv);
     return session;

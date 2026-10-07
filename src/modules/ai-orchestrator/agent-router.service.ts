@@ -5,31 +5,41 @@ import { IsNull, Repository } from 'typeorm';
 import { AiAgent } from '../../entities/AI Agent/AiAgent';
 import { AGENT_ROLE, AgentRole, AiSession } from './ai-channel.constants';
 
-/** Intent keyword → agent role. First match wins; order = priority. */
+/**
+ * Intent keyword → agent role. First match wins; order = priority. Arabic stems
+ * sit beside the English ones (no `\b`: it is ASCII-only in JS and never matches
+ * next to an Arabic letter), so an Arabic patient routes like an English one.
+ */
 const ROLE_KEYWORDS: { role: AgentRole; patterns: RegExp }[] = [
   {
     role: AGENT_ROLE.BOOKING,
-    patterns: /\b(book|appointment|reschedul|cancel|availab|slot|schedul)/i,
+    patterns:
+      /\b(book|appointment|reschedul|cancel|availab|slot|schedul)|(?:حجز|احجز|أحجز|موعد|مواعيد|إلغاء|الغاء|الغي|ألغي|تأجيل|أجل|متاح|متوفر)/i,
   },
   {
     role: AGENT_ROLE.BILLING,
-    patterns: /\b(invoice|payment|refund|price|cost|bill|charge|pay)/i,
+    patterns:
+      /\b(invoice|payment|refund|price|cost|bill|charge|pay)|(?:فاتورة|الفاتورة|دفع|سداد|استرجاع|استرداد|سعر|أسعار|اسعار|تكلفة|كم\s+يكلف)/i,
   },
   {
     role: AGENT_ROLE.MEDICAL_FAQ,
-    patterns: /\b(symptom|pain|treatment|medic|doctor|diagnos|procedure)/i,
+    patterns:
+      /\b(symptom|pain|treatment|medic|doctor|diagnos|procedure)|(?:أعراض|اعراض|ألم|الم|وجع|علاج|دكتور|طبيب|تشخيص|إجراء)/i,
   },
   {
     role: AGENT_ROLE.REVIEW,
-    patterns: /\b(review|rating|feedback|complain|satisf)/i,
+    patterns:
+      /\b(review|rating|feedback|complain|satisf)|(?:تقييم|رأي|ملاحظات|شكوى|شكوي|رضا)/i,
   },
   {
     role: AGENT_ROLE.SUPPORT,
-    patterns: /\b(help|support|issue|problem|error|not working)/i,
+    patterns:
+      /\b(help|support|issue|problem|error|not working)|(?:مساعدة|ساعدني|دعم|مشكلة|خطأ|لا\s+يعمل)/i,
   },
   {
     role: AGENT_ROLE.CRM,
-    patterns: /\b(profile|my (info|details)|update my|contact)/i,
+    patterns:
+      /\b(profile|my (info|details)|update my|contact)|(?:ملفي|بياناتي|معلوماتي|حدث\s+بياناتي|تواصل)/i,
   },
 ];
 
