@@ -214,6 +214,11 @@ export class AiOrchestratorService {
     };
   }
 
+  /** Whether a turn keyed `key` (a WhatsApp wamid) already started: a replay. */
+  hasRequestClaim(tenantId: string, key: string): Promise<boolean> {
+    return this.execution.hasRequestClaim(tenantId, key);
+  }
+
   /**
    * Streaming turn (WebSocket, Feature 2). SAME orchestration (channel/session/
    * routing/memory) as `handle`, but delegates to the engine's `streamMessage`
