@@ -1245,11 +1245,9 @@ export const validate = (config: Record<string, unknown>) => {
   // (a) Key PREFIXES, in every environment, whenever a key is present: a live key
   //     pasted into the test slot (or the reverse) is how real money gets charged
   //     from "sandbox", so it must not boot. Names only — never the value.
-  // (b) Production + PAYMENT_PROVIDER=tap: the active credentials, the explicit
-  //     environment and a reachable webhook URL are mandatory. `tap` is the default
-  //     provider, so a production boot without credentials fails closed rather
-  //     than falling back to the Noop simulator. Opt out explicitly with
-  //     PAYMENT_PROVIDER=noop.
+  // (b) A webhook URL, when set in production, must be a public https URL.
+  //     Absent Tap variables never block boot; Tap operations fail clearly at
+  //     call time instead.
   {
     const tapTestKey = String(value.TAP_TEST_SECRET_KEY ?? '').trim();
     const tapLiveKey = String(value.TAP_LIVE_SECRET_KEY ?? '').trim();
@@ -1281,41 +1279,24 @@ export const validate = (config: Record<string, unknown>) => {
       );
     }
 
-    if (value.NODE_ENV === 'production' && value.PAYMENT_PROVIDER === 'tap') {
-      const missing: string[] = [];
-      if (!value.TAP_ENV) missing.push('TAP_ENV');
-      if (!String(value.TAP_MERCHANT_ID ?? '').trim())
-        missing.push('TAP_MERCHANT_ID');
-      const activeKeyVar =
-        value.TAP_ENV === 'live'
-          ? 'TAP_LIVE_SECRET_KEY'
-          : 'TAP_TEST_SECRET_KEY';
-      if (!String(value[activeKeyVar] ?? '').trim()) missing.push(activeKeyVar);
-
-      const webhookUrl = String(value.TAP_WEBHOOK_URL ?? '').trim();
-      if (!webhookUrl) {
-        missing.push('TAP_WEBHOOK_URL');
-      } else {
-        let ok = false;
-        try {
-          const u = new URL(webhookUrl);
-          ok =
-            u.protocol === 'https:' &&
-            !['localhost', '127.0.0.1', '::1', '[::1]'].includes(u.hostname);
-        } catch {
-          ok = false;
-        }
-        if (!ok) {
-          tapProblems.push(
-            'TAP_WEBHOOK_URL must be a public https URL (Tap cannot post to localhost)',
-          );
-        }
+    // Tap credentials are OPTIONAL at boot: an absent value must never stop the
+    // app from starting. A Tap operation that needs them fails with an
+    // actionable error at call time (PaymentGatewayFactory). Only a value that
+    // IS present is checked, so a malformed one is still refused.
+    const tapWebhookUrl = String(value.TAP_WEBHOOK_URL ?? '').trim();
+    if (value.NODE_ENV === 'production' && tapWebhookUrl) {
+      let ok = false;
+      try {
+        const u = new URL(tapWebhookUrl);
+        ok =
+          u.protocol === 'https:' &&
+          !['localhost', '127.0.0.1', '::1', '[::1]'].includes(u.hostname);
+      } catch {
+        ok = false;
       }
-      if (missing.length > 0) {
+      if (!ok) {
         tapProblems.push(
-          `PAYMENT_PROVIDER is "tap" in production but ${missing.join(', ')} ${
-            missing.length === 1 ? 'is' : 'are'
-          } not set`,
+          'TAP_WEBHOOK_URL must be a public https URL (Tap cannot post to localhost)',
         );
       }
     }
@@ -1323,7 +1304,7 @@ export const validate = (config: Record<string, unknown>) => {
     if (tapProblems.length > 0) {
       throw new Error(
         `❌ Env validation error: ${tapProblems.join('; ')}. ` +
-          `Set the variable(s) correctly, or set PAYMENT_PROVIDER=noop to explicitly disable live payments.`,
+          `Set the variable(s) correctly or remove them.`,
       );
     }
   }

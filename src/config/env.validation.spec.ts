@@ -538,17 +538,15 @@ describe('env.validation', () => {
   });
 
   describe('payments fail-fast (production)', () => {
-    // `tap` is the default provider, so a production boot that does not opt out
-    // (PAYMENT_PROVIDER=noop) fails closed without Tap credentials instead of
-    // falling back to the Noop simulator.
-    it('the default provider (tap) refuses to boot in production without credentials', () => {
-      expect(() =>
-        validate({
-          ...prodBase,
-          PAYMENT_PROVIDER: undefined,
-          CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
-        }),
-      ).toThrow(/TAP_ENV/);
+    // Tap credentials are OPTIONAL at boot: the app must start without them and
+    // a Tap operation fails clearly at call time (PaymentGatewayFactory spec).
+    it('the default provider (tap) boots in production with NO Tap variables', () => {
+      const value = validate({
+        ...prodBase,
+        PAYMENT_PROVIDER: undefined,
+        CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+      });
+      expect(value.PAYMENT_PROVIDER).toBe('tap');
     });
 
     describe('Tap (PAYMENT_PROVIDER=tap) in production', () => {
@@ -572,33 +570,15 @@ describe('env.validation', () => {
         TAP_WEBHOOK_URL: 'https://api.example.com/api/v1/payments/webhooks/tap',
       };
 
-      it('FAILS the boot when nothing is configured, naming every missing variable', () => {
-        let message = '';
-        try {
-          validate({ ...tapProd });
-        } catch (err) {
-          message = (err as Error).message;
-        }
-        expect(message).toMatch(/Env validation error/);
-        for (const name of ['TAP_ENV', 'TAP_MERCHANT_ID', 'TAP_TEST_SECRET_KEY', 'TAP_WEBHOOK_URL']) {
-          expect(message).toContain(name);
-        }
-        expect(message).toContain('PAYMENT_PROVIDER=noop'); // the explicit opt-out is offered
+      it('BOOTS when PAYMENT_PROVIDER=tap and no TAP_* variable is set', () => {
+        const value = validate({ ...tapProd });
+        expect(value.PAYMENT_PROVIDER).toBe('tap');
+        expect(value.TAP_ENV).toBeUndefined();
       });
 
-      it('names ONLY the missing variables, never a value', () => {
-        try {
-          validate({
-            ...liveOk,
-            TAP_MERCHANT_ID: undefined,
-          });
-          fail('expected validation to throw');
-        } catch (err) {
-          const m = (err as Error).message;
-          expect(m).toContain('TAP_MERCHANT_ID');
-          expect(m).not.toContain('sk_live_LiveKeyNotARealSecretValue');
-          expect(m).not.toContain('api.example.com');
-        }
+      it('still boots once the Tap variables are provided later', () => {
+        expect(validate({ ...tapProd }).PAYMENT_PROVIDER).toBe('tap');
+        expect(validate({ ...sandboxOk }).TAP_TEST_SECRET_KEY).toBeDefined();
       });
 
       it('boots with a complete SANDBOX configuration (staging runs NODE_ENV=production with test keys)', () => {
@@ -609,21 +589,6 @@ describe('env.validation', () => {
 
       it('boots with a complete LIVE configuration', () => {
         expect(validate({ ...liveOk }).TAP_ENV).toBe('live');
-      });
-
-      it('requires the key for the ACTIVE environment: live needs TAP_LIVE_SECRET_KEY even when a test key is set', () => {
-        expect(() =>
-          validate({
-            ...liveOk,
-            TAP_LIVE_SECRET_KEY: undefined,
-            TAP_TEST_SECRET_KEY: 'sk_test_SandboxKeyNotARealSecret',
-          }),
-        ).toThrow(/TAP_LIVE_SECRET_KEY/);
-      });
-
-      it('requires TAP_ENV to be EXPLICIT — a missing value must never silently pick an environment', () => {
-        expect(() => validate({ ...sandboxOk, TAP_ENV: undefined })).toThrow(/TAP_ENV/);
-        expect(() => validate({ ...sandboxOk, TAP_ENV: '' })).toThrow(/TAP_ENV/);
       });
 
       it.each([

@@ -45,7 +45,9 @@ export class PaymentGatewayFactory {
     if (provider === this.fallback && this.config.paymentsLive) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message:
-          'Payment gateway is not available: the configured provider is missing its credentials. Contact the platform operator.',
+          this.config.providerName === 'tap'
+            ? 'Tap payments are not configured: set TAP_ENV, TAP_MERCHANT_ID, the active secret key (TAP_LIVE_SECRET_KEY or TAP_TEST_SECRET_KEY) and TAP_WEBHOOK_URL.'
+            : 'Payment gateway is not available: the configured provider is missing its credentials. Contact the platform operator.',
       });
     }
     return provider;
