@@ -1488,6 +1488,12 @@ export class AiToolDispatchService {
     // is NOT permission-gated, and `resolveInsurance` WRITES through
     // `setInsuranceStatus`. With the model's id winning, a prompt injection
     // could read and then overwrite a stranger's health-insurance flag.
+    const unbound = await this.refuseUnboundWhatsapp(
+      ctx,
+      AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS,
+      args,
+    );
+    if (unbound) return unbound;
     const boundCustomerId = ctx.customerId;
     const customerId = boundCustomerId ?? this.str(args.customerId);
     if (!customerId) {
@@ -1550,6 +1556,12 @@ export class AiToolDispatchService {
         error: 'Booking is not available in this context (no acting user).',
       };
     }
+    const unbound = await this.refuseUnboundWhatsapp(
+      ctx,
+      AI_TOOL.BOOK_APPOINTMENT,
+      args,
+    );
+    if (unbound) return unbound;
     if (!(ctx.permissions ?? []).includes(PERMISSION.APPOINTMENTS_CREATE)) {
       const reason = `Forbidden: booking requires the "${PERMISSION.APPOINTMENTS_CREATE}" permission.`;
       await this.recordAttempt(
@@ -2431,6 +2443,30 @@ export class AiToolDispatchService {
       'appointmentId',
       ctx.customerId ? 'list_my_appointments' : 'the tool that listed it',
     );
+  }
+
+  /**
+   * A WhatsApp turn acts for exactly one patient: the customer the bridge bound
+   * to the session. The bot actor holds tenant-wide `appointments.create` and
+   * `customers.read`, so "no bound patient" must never fall back to a
+   * customerId the model supplied (a hallucinated or prompt-injected id would
+   * book or read against a stranger in the same clinic). Today the bridge always
+   * binds one; this keeps that invariant in the dispatcher instead of in the
+   * caller. Other channels are untouched — it can only turn a call into a
+   * refusal on WhatsApp, never into an allowance.
+   */
+  private async refuseUnboundWhatsapp(
+    ctx: ToolContext,
+    tool: string,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult | undefined> {
+    if (ctx.channel !== 'WHATSAPP' || ctx.customerId) return undefined;
+    const reason = 'No patient is identified for this conversation.';
+    await this.recordAttempt(ctx, tool, args, 'DENIED', reason);
+    return {
+      success: false,
+      error: `${reason} Offer to connect the person with the clinic team (request_human_handover).`,
+    };
   }
 
   /**
