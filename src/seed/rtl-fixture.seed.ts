@@ -272,6 +272,10 @@ export async function seedRtlFixture(manager: EntityManager): Promise<void> {
       user: clinicAdmin,
       title: 'Clinic Admin',
       is_available_for_booking: true,
+      // public_slug became NOT NULL + UNIQUE (StaffPublicSlug migration) after
+      // this fixture was written; set a deterministic value so the test-only
+      // seed matches the current schema.
+      public_slug: 'rtl-staff-admin',
     }),
   );
   logger.success('created clinic admin, receptionist, and staff profile');

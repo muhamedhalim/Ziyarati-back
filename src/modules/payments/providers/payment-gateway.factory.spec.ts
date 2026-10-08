@@ -61,7 +61,7 @@ describe('PaymentGatewayFactory (strategy selection)', () => {
         fallback,
         config({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'tap' }),
       );
-      expect(() => factory.resolve('legacy-gateway')).toThrow(/not available/i);
+      expect(() => factory.resolve('legacy-gateway')).toThrow(/not (available|configured)/i);
     });
 
     it('FAILS CLOSED in production when tap is selected but unconfigured (no silent Noop that fakes PAID)', () => {
@@ -71,7 +71,7 @@ describe('PaymentGatewayFactory (strategy selection)', () => {
         fallback,
         config({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'tap' }),
       );
-      expect(() => factory.resolve()).toThrow(/not available/i);
+      expect(() => factory.resolve()).toThrow(/Tap payments are not configured.*TAP_ENV.*TAP_WEBHOOK_URL/);
     });
   });
 
@@ -82,7 +82,7 @@ describe('PaymentGatewayFactory (strategy selection)', () => {
       fallback,
       config({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'tap' }),
     );
-    expect(() => factory.resolve()).toThrow(/not available/i);
+    expect(() => factory.resolve()).toThrow(/not (available|configured)/i);
   });
 
   it('still resolves Noop in production when payments are explicitly disabled', () => {
