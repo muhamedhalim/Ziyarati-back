@@ -92,14 +92,17 @@ resource "aws_iam_role_policy" "ops_execution_secrets" {
 # ── Shared runtime permissions ───────────────────────────────────────────────
 data "aws_iam_policy_document" "storage_and_email" {
   statement {
-    sid       = "UploadsObjects"
-    actions   = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"]
+    sid = "UploadsObjects"
+    # DeleteObjectVersion: StorageService.purgeObject/purgeTenantPrefix permanently remove EVERY
+    # version of a patient document (versioned bucket; residency plan P11). Without it the purge
+    # fails, the API logs a warning and still answers 200, and the document stays in S3.
+    actions   = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject", "s3:DeleteObjectVersion"]
     resources = ["${var.uploads_bucket_arn}/*"]
   }
   statement {
     # Lets HeadObject return 404 (not 403) for a missing key.
     sid       = "UploadsList"
-    actions   = ["s3:ListBucket"]
+    actions   = ["s3:ListBucket", "s3:ListBucketVersions"] # ListBucketVersions: enumerate versions to purge
     resources = [var.uploads_bucket_arn]
   }
   statement {

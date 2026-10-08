@@ -20,7 +20,7 @@
 # whose prebuilt binary for linux-x64 musl was verified on this exact base
 # (P1.2, 2026-09-04). linux-arm64 musl is NOT verified yet — keep ECS tasks on
 # X86_64 until it is (infra/docs/CURRENT-STATE-AUDIT.md F-12).
-ARG NODE_IMAGE=node:24.11-alpine3.22
+ARG NODE_IMAGE=node:24.16.0-alpine3.22
 # Amazon RDS trust anchors. Production refuses to connect to Postgres without
 # validating the server certificate (database-ssl.ts, ZT-012); the ECS task sets
 # DB_SSL_CA=/app/certs/rds-global-bundle.pem. Public CA bundle, not a secret.
@@ -92,7 +92,15 @@ ENV NODE_ENV=production \
 # /app/certs is created here (0755) on purpose: letting ADD --chmod=644 create
 # it applies 644 to the DIRECTORY too, which the non-root user cannot traverse
 # — the DB CA would be unreadable and production boot would fail.
-RUN apk add --no-cache tini && mkdir -p /app/certs && chmod 0755 /app/certs
+#
+# `apk upgrade` first: the official node images lag the Alpine repositories by weeks, so
+# even the newest base ships openssl/zlib/musl that ECR basic scanning reports as
+# CRITICAL/HIGH (2026-10-08: openssl 3.5.4 -> CVE-2026-31789 et al.; fixed in 3.5.9). This
+# trades bit-for-bit base reproducibility for current OS security patches; the base tag
+# stays pinned and the vulnerability gate in scripts/ecs-deploy.sh is the check.
+RUN apk upgrade --no-cache \
+ && apk add --no-cache tini \
+ && mkdir -p /app/certs && chmod 0755 /app/certs
 
 # Non-root. The `node` user (uid/gid 1000) ships with the base image. Nothing in
 # the app writes to disk at runtime — uploads go to object storage (S3, or R2

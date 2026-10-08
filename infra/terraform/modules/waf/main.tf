@@ -25,8 +25,9 @@ locals {
 }
 
 resource "aws_wafv2_web_acl" "this" {
-  name        = "${var.name}-api"
-  description = "ZiyaraTech API (${var.mode} mode)"
+  name = "${var.name}-api"
+  # No parentheses: the WAFv2 API only accepts [\w+=:#@/\-,\.] and spaces here.
+  description = "ZiyaraTech API - ${var.mode} mode"
   scope       = "REGIONAL"
 
   default_action {

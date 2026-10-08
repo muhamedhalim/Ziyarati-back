@@ -7,10 +7,10 @@
 # empty list every plan fails closed (modules/platform variable validation and
 # infra/scripts/region-gate.sh). Add a region ONLY after the hosting-location
 # decision is approved in writing; aws_region below must then be a member.
-approved_regions = []
+approved_regions = ["eu-central-1"] # D-1 confirmed by the owner in chat, 2026-10-08
 
-aws_region            = "me-central-1"
-availability_zone_ids = ["mec1-az1", "mec1-az2", "mec1-az3"]
+aws_region            = "eu-central-1"
+availability_zone_ids = ["euc1-az1", "euc1-az2", "euc1-az3"]
 vpc_cidr              = "10.20.0.0/16"
 nat_gateway_count     = 2
 
@@ -47,8 +47,8 @@ api_db_pool_max    = 10
 worker_db_pool_max = 10
 
 db = {
-  engine_major_version     = "17" # must be >= the Railway major (MIGRATION.md M0)
-  instance_class           = "db.t4g.medium"
+  engine_major_version     = "17"           # must be >= the Railway major (MIGRATION.md M0)
+  instance_class           = "db.t3.medium" # db.t4g.medium is not orderable in eu-central-1 for this account (2026-10-08)
   multi_az                 = true
   max_connections          = 300
   allocated_storage_gb     = 50

@@ -1,0 +1,21 @@
+const fs=require('fs'); const {execFileSync}=require('child_process'); const {init,Actor,multipart,check,results}=require('./lib.cjs');
+const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==','base64');
+const aws=(...a)=>execFileSync('aws',[...a,'--region','eu-central-1'],{encoding:'utf8',env:{...process.env,PYTHONUTF8:'1'}}).trim();
+const B='zt-production-uploads-270370109141';
+(async()=>{ await init(); const s=JSON.parse(fs.readFileSync('state.json','utf8')); const A=new Actor('A');
+ await A.call('POST','/auth/login',{json:{email:s.dtoA.email,password:s.dtoA.password},auth:false});
+ const cust=(await A.call('POST','/crm/customers',{json:{phone:'+966555000888',full_name:'ZZ s3 purge test'}})).data.id;
+ const up=await A.call('POST',`/crm/customers/${cust}/files`,{form:multipart({fileName:'p.png'},{field:'file',name:'p.png',type:'image/png',data:png})});
+ check('upload -> 201',up.status===201); const key=up.data.storage_key, fid=up.data.id;
+ // overwrite-style versioning: upload a 2nd object under the same key is not exposed by the API, so check version listing directly
+ const v1=JSON.parse(aws('s3api','list-object-versions','--bucket',B,'--prefix',key,'--output','json'));
+ check('S3: object present with >=1 version before delete',(v1.Versions||[]).length>=1,`versions=${(v1.Versions||[]).length}`);
+ const d=await A.call('DELETE',`/crm/customers/${cust}/files/${fid}`);
+ check('DELETE -> 200',d.status===200);
+ await new Promise(r=>setTimeout(r,2500));
+ const v2=JSON.parse(aws('s3api','list-object-versions','--bucket',B,'--prefix',key,'--output','json'));
+ check('S3: ALL versions purged',(v2.Versions||[]).length===0,`versions=${(v2.Versions||[]).length}`);
+ check('S3: no delete marker left behind (true erasure, not a soft delete)',(v2.DeleteMarkers||[]).length===0,`markers=${(v2.DeleteMarkers||[]).length}`);
+ await A.call('DELETE',`/crm/customers/${cust}`);
+ const f=results.filter(x=>!x.ok).length; console.log(`STAGE5: ${results.length-f}/${results.length}`); process.exit(f?1:0);
+})();

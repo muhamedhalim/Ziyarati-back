@@ -16,3 +16,8 @@ backend.hcl
 terraform.rc
 # Lock files ARE committed (provider checksum pinning).
 !.terraform.lock.hcl
+
+# aws-e2e harness state (test credentials)
+scripts/aws-e2e/state.json
+scripts/aws-e2e/admin.json
+scripts/aws-e2e/deploy-arns.json
