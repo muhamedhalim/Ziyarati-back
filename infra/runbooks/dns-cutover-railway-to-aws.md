@@ -19,7 +19,7 @@ so there is no data migration, no write freeze and no customer-visible downtime 
 |---|---|---|
 | 1 | Hardened image deployed, scan clean | ✅ done |
 | 2 | Auth, CRUD, RBAC, tenant isolation, S3, Redis, worker, Socket.IO validated on the ALB | ✅ done (see report) |
-| 3 | **A real platform super-admin exists** (nothing can be approved without one — new clinics start `PENDING_VERIFICATION`) | ❌ none (test admin deleted). Create with the one-off seed task below, using the owner's own email + password |
+| 3 | **A real platform super-admin exists** (nothing can be approved without one — new clinics start `PENDING_VERIFICATION`) | ✅ created 2026-10-08 via the one-off seed task (below); login + clinic approval verified on the ALB. **Owner still has to**: read the one-time password from the temporary secret `zt/production/bootstrap-super-admin-password`, change it at first login, then delete that secret |
 | 4 | SES: DNS records added (DKIM ×3, MAIL FROM MX+TXT, DMARC), identity `VERIFIED`, **production access** granted, then re-test a welcome email to a real inbox | ❌ pending (sandbox: 200/day, domain unverified) |
 | 5 | SNS alert subscription `alerts@ziyaratech.com` confirmed | ❌ PendingConfirmation |
 | 6 | Billing posture decided: `subscription_plans` is empty; platform billing mode defaults to FREE. Super-admin sets plans / mode in the console before onboarding paying clinics | ❌ owner decision |

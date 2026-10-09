@@ -80,3 +80,4 @@ ziyaratech.backup
 # raw per-run monitor series can be large; the merged results + manifests stay trackable
 /tests/load/reports/*.monitor.ndjson
 /app.json
+/.env.strix
