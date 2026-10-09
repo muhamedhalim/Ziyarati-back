@@ -163,8 +163,13 @@ export class SalesActivityService {
     employeeId: string,
     dto: CreateSalesActivityDto,
     actorUserId: string,
+    opts: { source?: 'admin_manual' | 'self' } = {},
   ): Promise<SalesActivityItem> {
-    await this.employees.requireEmployee(employeeId);
+    const source = opts.source ?? 'admin_manual';
+    await this.employees.requireEmployee(
+      employeeId,
+      source === 'self' ? { requireActive: true } : undefined,
+    );
 
     const prospect = dto.prospectName?.trim() || null;
     if (dto.tenantId && prospect) {
@@ -202,6 +207,15 @@ export class SalesActivityService {
         [dto.tenantId],
       )) as Array<{ id: string }>;
       if (!clinic[0]) invalid('tenantId', 'Clinic not found');
+      // A rep logs against the clinics they currently own; an admin may log for any.
+      if (source === 'self') {
+        const owned = (await this.dataSource.query(
+          `SELECT 1 FROM sales_clinic_assignments
+            WHERE sales_user_id = $1::uuid AND tenant_id = $2::uuid AND ended_at IS NULL`,
+          [employeeId, dto.tenantId],
+        )) as unknown[];
+        if (!owned[0]) invalid('tenantId', 'Clinic not found');
+      }
     }
 
     const inserted = (await this.dataSource.query(
@@ -209,7 +223,7 @@ export class SalesActivityService {
          (sales_user_id, tenant_id, prospect_name, type, occurred_at, outcome,
           note, source, recorded_by)
        VALUES ($1::uuid, $2::uuid, $3::varchar, $4::varchar, $5::timestamptz,
-               $6::varchar, $7::varchar, 'admin_manual', $8::uuid)
+               $6::varchar, $7::varchar, $9::varchar, $8::uuid)
        RETURNING id`,
       [
         employeeId,
@@ -220,6 +234,7 @@ export class SalesActivityService {
         dto.outcome ?? null,
         note,
         actorUserId,
+        source,
       ],
     )) as Array<{ id: string }>;
     const id = inserted[0].id;
@@ -232,6 +247,7 @@ export class SalesActivityService {
       tenantId: dto.tenantId ?? null,
       after: {
         employeeId,
+        source,
         type: dto.type,
         occurredAt: occurredAt.toISOString(),
         tenantId: dto.tenantId ?? null,

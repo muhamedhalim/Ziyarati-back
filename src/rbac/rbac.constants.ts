@@ -596,9 +596,11 @@ export const ROLE = {
   PLATFORM_SUPPORT: 'platform_support',
   /**
    * Platform-level system role (tenant = NULL, is_system = true) for a ZiyaraTech
-   * field-sales employee. Holds NO permissions: every `/platform/sales/**` route
-   * is Super Admin role-gated, so this role only classifies the account (it is
-   * what `SalesEmployeeService.requireEmployee` verifies before a clinic can be
+   * field-sales employee. Holds NO permissions: the admin `/platform/sales/**`
+   * routes are Super Admin role-gated, and the rep's own console API
+   * (`/platform/sales/me/**`, SalesSelfController) is gated on THIS ROLE, so it
+   * is what grants a rep their own data and nothing else (it is also what
+   * `SalesEmployeeService.requireEmployee` verifies before a clinic can be
    * assigned to a user). Never assigned to a tenant user (see
    * NON_STAFF_ROLE_SLUGS and API_PROTECTED_ROLE_SLUGS in roles.service.ts).
    */
@@ -2323,9 +2325,9 @@ export const ROLE_PERMISSIONS: Record<
     ...PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS,
   ],
 
-  // Platform Sales: classification only. Every /platform/sales/** route is
-  // gated on Super Admin by role (like /platform/staff), so this role has no
-  // permission slug — and therefore no console, no clinic-workspace access
-  // (no DASHBOARD_ACCESS) and no platform diagnostics.
+  // Platform Sales: no permission slug. The admin /platform/sales/** routes are
+  // gated on Super Admin by role (like /platform/staff); the rep's own
+  // /platform/sales/me/** routes are gated on this role. No clinic-workspace
+  // access (no DASHBOARD_ACCESS) and no platform diagnostics.
   [ROLE.PLATFORM_SALES]: [],
 };

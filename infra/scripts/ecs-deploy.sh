@@ -9,7 +9,9 @@
 #    migration must be backward-compatible with the previous image).
 # 3. Point both services at their new revisions; wait for steady state (the
 #    ECS deployment circuit breaker rolls back automatically on failure).
-# 4. Smoke-test liveness + readiness through the public ALB.
+# 4. verify-deployed-image.sh: both services run exactly this tag (single COMPLETED
+#    deployment, all tasks up, ECR digest == the digest CI pushed).
+# 5. Smoke-test liveness + readiness through the public ALB.
 #
 # Needs: aws cli v2, jq, curl. Credentials: the zt-<env>-github-deploy role.
 set -euo pipefail
@@ -118,6 +120,10 @@ if [[ "$RUNNING_WTD" != "$WORKER_TD" ]]; then
   log "DEPLOYMENT ROLLED BACK: worker is running ${RUNNING_WTD##*/}, expected ${WORKER_TD##*/}"
   exit 1
 fi
+
+# ── Prove ECS runs the image this run shipped (tag, completed rollout, digest) ──
+# EXPECTED_IMAGE_DIGEST is exported by the workflow after the push; empty on a rollback.
+bash "$(dirname "$0")/verify-deployed-image.sh" "$ENV" "$TAG" "${EXPECTED_IMAGE_DIGEST:-}"
 
 # ── Smoke test through the public entry point ───────────────────────────────
 curl -fsS --retry 5 --retry-delay 5 "${API_URL}/api/v1/health" >/dev/null

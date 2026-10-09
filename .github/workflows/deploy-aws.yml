@@ -1,15 +1,27 @@
 name: Deploy backend (AWS)
 
-# infra/docs/DEPLOYMENT.md. Keyless: GitHub OIDC → zt-<env>-github-deploy.
-# The image is built ONCE; staging and production receive the same image.
-# Production waits for the required reviewer on the `production` GitHub
-# Environment. Rollback = run this workflow with image_tag=<previous sha>.
+# infra/docs/DEPLOYMENT.md. Keyless: GitHub OIDC → zt-production-github-deploy.
 #
-# Repository variables (Settings → Variables; none are secrets):
-#   AWS_REGION, AWS_ACCOUNT_ID_STAGING, AWS_ACCOUNT_ID_PRODUCTION,
-#   API_URL_STAGING, API_URL_PRODUCTION,
-#   ALLOW_RED_UNIT_TESTS ("true" only while the known pre-existing red unit
-#   tests are being fixed — the choice stays visible in every run log)
+# PRODUCTION ONLY. There is no staging stack today (no zt-staging cluster, role or
+# account variables), so the former "deploy-staging" gate was removed instead of
+# being left to fail and silently block every production deploy. Production is
+# still gated by (1) the unit-test job and (2) the required reviewer on the
+# `production` GitHub Environment. If a staging stack is built later, re-add a
+# staging job in front of `deploy-production`.
+#
+# Flow:  push to master → preflight → build + typecheck + unit tests + image
+#        → [reviewer approves `production`] → push SHA tag to ECR (immutable)
+#        → ecs-deploy.sh (scan gate, migrate, roll, rollback check, image check,
+#          smoke) → verify-deployed-image.sh (ECS runs exactly this image).
+# Rollback = run this workflow manually with image_tag=<previous sha>.
+#
+# Repository variables (Settings → Variables; none are secrets) — preflight
+# fails with the names of any that are missing:
+#   AWS_REGION, AWS_ACCOUNT_ID_PRODUCTION, API_URL_PRODUCTION
+# Optional:
+#   ALLOW_RED_UNIT_TESTS ("true" only while known-red unit tests are being fixed;
+#   the choice stays visible in every run log. Leave UNSET.)
+#   ALLOW_CRITICAL_IMAGE_FINDINGS ("true" downgrades the CRITICAL-CVE gate to a warning)
 
 on:
   push:
@@ -21,14 +33,9 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Redeploy an EXISTING image tag (git sha) — skips the build. Empty = build this commit."
+        description: "ROLLBACK: redeploy an EXISTING image tag (git sha) — skips build and tests. Empty = build and test this commit."
         required: false
         default: ""
-      target:
-        description: "Where to deploy"
-        type: choice
-        options: [both, staging, production]
-        default: both
 
 permissions:
   contents: read
@@ -43,8 +50,34 @@ env:
   ECR_REPOSITORY: ziyaratech/backend
 
 jobs:
+  preflight:
+    # Deploys only ever come from master, whatever the trigger.
+    if: ${{ github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Required repository variables are set
+        env:
+          V_REGION: ${{ vars.AWS_REGION }}
+          V_ACCOUNT: ${{ vars.AWS_ACCOUNT_ID_PRODUCTION }}
+          V_API_URL: ${{ vars.API_URL_PRODUCTION }}
+        run: |
+          missing=""
+          [ -n "$V_REGION" ]  || missing="$missing AWS_REGION"
+          [ -n "$V_ACCOUNT" ] || missing="$missing AWS_ACCOUNT_ID_PRODUCTION"
+          [ -n "$V_API_URL" ] || missing="$missing API_URL_PRODUCTION"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository variables:${missing}. Settings → Secrets and variables → Actions → Variables."
+            exit 1
+          fi
+          case "$V_API_URL" in https://*) ;; *) echo "::error::API_URL_PRODUCTION must start with https://"; exit 1;; esac
+          if [ "${{ vars.ALLOW_RED_UNIT_TESTS }}" = "true" ]; then
+            echo "::warning::ALLOW_RED_UNIT_TESTS=true — failing unit tests will NOT block this deploy."
+          fi
+
   build:
-    if: ${{ github.event_name == 'push' || inputs.image_tag == '' }}
+    needs: preflight
+    if: ${{ inputs.image_tag == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     outputs:
@@ -88,51 +121,14 @@ jobs:
           path: image.tar.gz
           retention-days: 7
 
-  deploy-staging:
-    needs: build
-    if: ${{ always() && (needs.build.result == 'success' || needs.build.result == 'skipped') && (github.event_name == 'push' || inputs.target != 'production') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    environment: staging
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID_STAGING }}:role/zt-staging-github-deploy
-          aws-region: ${{ env.AWS_REGION }}
-
-      - id: ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Resolve tag
-        id: tag
-        run: echo "tag=${{ inputs.image_tag || needs.build.outputs.tag }}" >> "$GITHUB_OUTPUT"
-
-      - if: ${{ needs.build.result == 'success' }}
-        uses: actions/download-artifact@v4
-        with:
-          name: backend-image
-
-      - name: Push image
-        if: ${{ needs.build.result == 'success' }}
-        run: |
-          gunzip -c image.tar.gz | docker load
-          docker tag "backend:${{ steps.tag.outputs.tag }}" "${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${{ steps.tag.outputs.tag }}"
-          docker push "${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${{ steps.tag.outputs.tag }}"
-
-      - name: Migrate + deploy + smoke
-        env:
-          # New image: block on CRITICAL findings. Redeploying an existing tag (rollback) is never blocked.
-          IMAGE_SCAN_GATE: ${{ inputs.image_tag != '' && 'skip' || (vars.ALLOW_CRITICAL_IMAGE_FINDINGS == 'true' && 'warn' || 'enforce') }}
-        run: bash infra/scripts/ecs-deploy.sh staging "${{ steps.tag.outputs.tag }}" "${{ vars.API_URL_STAGING }}"
-
   deploy-production:
-    needs: [build, deploy-staging]
-    if: ${{ always() && (needs.build.result == 'success' || needs.build.result == 'skipped') && (needs.deploy-staging.result == 'success' || needs.deploy-staging.result == 'skipped') && (github.event_name == 'push' || inputs.target != 'staging') }}
+    needs: [preflight, build]
+    # Runs after a successful build, or — for a manual rollback only — with the
+    # build skipped. A FAILED build (red tests, failed typecheck) never reaches here.
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.image_tag != '')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: production # required reviewer gate
+    environment: production # required reviewer gate (must be configured in GitHub)
     steps:
       - uses: actions/checkout@v4
 
@@ -146,22 +142,50 @@ jobs:
 
       - name: Resolve tag
         id: tag
-        run: echo "tag=${{ inputs.image_tag || needs.build.outputs.tag }}" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_TAG: ${{ inputs.image_tag }}
+          BUILT_TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          tag="${INPUT_TAG:-$BUILT_TAG}"
+          # An image tag is a git sha — never a mutable name such as latest.
+          if ! [[ "$tag" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::image tag must be a 40-character git commit SHA (got '${tag}')"; exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
       - if: ${{ needs.build.result == 'success' }}
         uses: actions/download-artifact@v4
         with:
           name: backend-image
 
-      - name: Push the staging-tested image
-        if: ${{ needs.build.result == 'success' }}
+      - name: Push the tested image (immutable SHA tag)
+        id: push
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
-          gunzip -c image.tar.gz | docker load
-          docker tag "backend:${{ steps.tag.outputs.tag }}" "${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${{ steps.tag.outputs.tag }}"
-          docker push "${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${{ steps.tag.outputs.tag }}"
+          if [ "${{ needs.build.result }}" != "success" ]; then
+            echo "Rollback: reusing the existing image ${TAG}; nothing is pushed."
+            exit 0
+          fi
+          # The ECR repository is IMMUTABLE. A re-run of the same commit must reuse the image that was
+          # already pushed (and may already be scanned/deployed), not try to overwrite the tag.
+          if aws ecr describe-images --repository-name "${ECR_REPOSITORY}" --image-ids imageTag="${TAG}" >/dev/null 2>&1; then
+            echo "::notice::${TAG} already exists in ECR (immutable) — reusing it instead of pushing again."
+            digest="$(aws ecr describe-images --repository-name "${ECR_REPOSITORY}" --image-ids imageTag="${TAG}" --query 'imageDetails[0].imageDigest' --output text)"
+          else
+            gunzip -c image.tar.gz | docker load
+            docker tag "backend:${TAG}" "${REGISTRY}/${ECR_REPOSITORY}:${TAG}"
+            docker push "${REGISTRY}/${ECR_REPOSITORY}:${TAG}" | tee push.log
+            digest="$(grep -Eo 'sha256:[0-9a-f]{64}' push.log | tail -1)"
+          fi
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::could not determine the pushed image digest"; exit 1; }
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
-      - name: Migrate + deploy + smoke
+      - name: Migrate + deploy + verify + smoke
         env:
           # New image: block on CRITICAL findings. Redeploying an existing tag (rollback) is never blocked.
           IMAGE_SCAN_GATE: ${{ inputs.image_tag != '' && 'skip' || (vars.ALLOW_CRITICAL_IMAGE_FINDINGS == 'true' && 'warn' || 'enforce') }}
+          # The digest this run pushed; ecs-deploy.sh requires ECR and ECS to agree with it.
+          EXPECTED_IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
         run: bash infra/scripts/ecs-deploy.sh production "${{ steps.tag.outputs.tag }}" "${{ vars.API_URL_PRODUCTION }}"

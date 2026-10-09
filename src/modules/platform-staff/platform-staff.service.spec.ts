@@ -43,6 +43,7 @@ describe('PlatformStaffService', () => {
   let authService: {
     createUserWithRole: jest.Mock;
     issuePasswordSetupToken: jest.Mock;
+    invalidatePasswordSetupTokens: jest.Mock;
     passwordSetupUrl: jest.Mock;
     revokeAllForUser: jest.Mock;
   };
@@ -59,6 +60,7 @@ describe('PlatformStaffService', () => {
     authService = {
       createUserWithRole: jest.fn().mockResolvedValue({ id: TARGET_ID }),
       issuePasswordSetupToken: jest.fn().mockResolvedValue('raw-token'),
+      invalidatePasswordSetupTokens: jest.fn().mockResolvedValue(undefined),
       passwordSetupUrl: jest.fn(
         (t: string) => `https://app.example/auth/reset-password?token=${t}`,
       ),
@@ -499,6 +501,45 @@ describe('PlatformStaffService', () => {
       const result = await service.list({ page: 1, limit: 20 } as any);
 
       expect(result.data[0].invitationStatus).toBe('invitation_expired');
+    });
+  });
+
+  // ───────────────────────────── resendInvitation ─────────────────────────── //
+  describe('resendInvitation', () => {
+    const prime = (user: Record<string, unknown>) => {
+      users.findOne
+        .mockResolvedValueOnce({ id: TARGET_ID, email: 'rep@ziyaratech.com', is_active: true, last_login_at: null, ...user })
+        .mockResolvedValueOnce({ id: TARGET_ID, email: 'rep@ziyaratech.com', is_active: true });
+      userRoles.find.mockResolvedValue([]);
+      passwordResets.find.mockResolvedValue([]);
+    };
+
+    it('kills every earlier link BEFORE issuing the new one, then emails once', async () => {
+      prime({});
+      await service.resendInvitation(TARGET_ID, ACTOR_ID);
+      expect(authService.invalidatePasswordSetupTokens).toHaveBeenCalledWith(TARGET_ID);
+      const invalidated = authService.invalidatePasswordSetupTokens.mock.invocationCallOrder[0];
+      const issued = authService.issuePasswordSetupToken.mock.invocationCallOrder[0];
+      expect(invalidated).toBeLessThan(issued);
+      expect(email.sendInvitation).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses a deactivated account and touches no token', async () => {
+      prime({ is_active: false });
+      await expect(service.resendInvitation(TARGET_ID, ACTOR_ID)).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+      expect(authService.invalidatePasswordSetupTokens).not.toHaveBeenCalled();
+      expect(authService.issuePasswordSetupToken).not.toHaveBeenCalled();
+      expect(email.sendInvitation).not.toHaveBeenCalled();
+    });
+
+    it('refuses an account that has already signed in', async () => {
+      prime({ last_login_at: new Date() });
+      await expect(service.resendInvitation(TARGET_ID, ACTOR_ID)).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+      expect(authService.invalidatePasswordSetupTokens).not.toHaveBeenCalled();
     });
   });
 

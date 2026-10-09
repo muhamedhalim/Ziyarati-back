@@ -3,10 +3,12 @@ name: Terraform
 # infra/docs/TERRAFORM.md. fmt → validate → test (mocked AWS) on every PR;
 # plan per environment with the READ-ONLY role; apply only by manual dispatch
 # from the protected `infra-<env>` GitHub Environment (required reviewers).
+# NEVER applies on push or pull_request. Only a production stack exists today, so plan
+# and apply are production-only; re-add `staging` here when a staging stack exists.
 
 on:
   pull_request:
-    paths: ["infra/terraform/**", ".github/workflows/terraform.yml"]
+    paths: ["infra/terraform/**", "infra/scripts/**", ".github/workflows/terraform.yml"]
   push:
     branches: [master]
     paths: ["infra/terraform/**"]
@@ -15,7 +17,7 @@ on:
       environment:
         description: "Environment to APPLY"
         type: choice
-        options: [staging, production]
+        options: [production]
         required: true
 
 permissions:
@@ -53,10 +55,13 @@ jobs:
             --severity HIGH,CRITICAL --exit-code 1 --skip-dirs "**/.terraform" --skip-files "**/*.tftest.hcl"
       - name: terraform test (mocked AWS — no account needed)
         run: |
-          for m in network rds elasticache s3-uploads ecs waf kms backup secrets ecr alb account-baseline platform; do
+          for m in network rds elasticache s3-uploads ecs waf kms backup secrets ecr alb account-baseline platform github-deploy; do
             terraform -chdir="infra/terraform/modules/$m" init -backend=false -input=false
             terraform -chdir="infra/terraform/modules/$m" test
           done
+
+      - name: deploy-image verifier (offline test of the gate that proves ECS runs the pushed image)
+        run: bash infra/scripts/tests/verify-deployed-image.test.sh
 
   plan:
     needs: static
@@ -66,7 +71,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        environment: [staging, production]
+        environment: [production]
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3

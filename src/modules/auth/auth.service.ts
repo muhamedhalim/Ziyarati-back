@@ -1142,6 +1142,22 @@ export class AuthService {
     return rawToken;
   }
 
+  /**
+   * Marks every unused set-password / reset token of a user as used, so only
+   * the link issued next (or none) can still be redeemed. One set-based UPDATE.
+   */
+  async invalidatePasswordSetupTokens(
+    userId: string,
+    manager?: EntityManager,
+  ): Promise<void> {
+    await (manager ?? this.dataSource.manager)
+      .createQueryBuilder()
+      .update(PasswordReset)
+      .set({ used_at: new Date() })
+      .where('"userId" = :userId AND used_at IS NULL', { userId })
+      .execute();
+  }
+
   /** Absolute URL of the set-password / reset-password screen for a raw token. */
   passwordSetupUrl(rawToken: string): string {
     return `${this.appUrl()}/auth/reset-password?token=${rawToken}`;
@@ -1229,17 +1245,27 @@ export class AuthService {
       });
     }
 
+    const passwordHash = await bcrypt.hash(dto.newPassword, BCRYPT_ROUNDS);
     await this.dataSource.transaction(async (manager) => {
+      // Claim the token FIRST, conditionally: of two simultaneous submissions of
+      // the same token exactly one gets `affected = 1`; the other rolls back here
+      // without having touched the password.
+      const claimed = await manager.update(
+        PasswordReset,
+        { id: reset.id, used_at: IsNull() },
+        { used_at: new Date() },
+      );
+      if (!claimed.affected) {
+        throw new AppError(ErrorCode.INVALID_RESET_TOKEN);
+      }
       await manager.update(
         User,
         { id: reset.user.id },
-        { password_hash: await bcrypt.hash(dto.newPassword, BCRYPT_ROUNDS) },
+        { password_hash: passwordHash },
       );
-      await manager.update(
-        PasswordReset,
-        { id: reset.id },
-        { used_at: new Date() },
-      );
+      // Any other outstanding invitation / reset link would let a stale email
+      // set the password again after this one, so they die with it.
+      await this.invalidatePasswordSetupTokens(reset.user.id, manager);
     });
 
     await this.revokeAllForUser(reset.user.id);

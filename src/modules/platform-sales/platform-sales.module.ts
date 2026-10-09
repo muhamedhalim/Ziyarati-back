@@ -15,6 +15,8 @@ import { SalesBonusService } from './sales-bonus.service';
 import { SalesEmployeeService } from './sales-employee.service';
 import { SalesEmployeesController } from './sales-employees.controller';
 import { SalesProgressService } from './sales-progress.service';
+import { SalesSelfController } from './sales-self.controller';
+import { SalesSelfService } from './sales-self.service';
 import { SalesTargetService } from './sales-target.service';
 import { SalesTargetsController } from './sales-targets.controller';
 
@@ -42,6 +44,7 @@ import { SalesTargetsController } from './sales-targets.controller';
     SalesTargetsController,
     SalesBonusesController,
     SalesActivitiesController,
+    SalesSelfController,
   ],
   providers: [
     SalesEmployeeService,
@@ -51,6 +54,7 @@ import { SalesTargetsController } from './sales-targets.controller';
     SalesTargetService,
     SalesBonusService,
     SalesActivityService,
+    SalesSelfService,
   ],
   exports: [SalesEmployeeService],
 })

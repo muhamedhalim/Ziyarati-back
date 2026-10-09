@@ -12,13 +12,14 @@ const CLINIC = '11111111-1111-4111-8111-111111111111';
 const minutesFromNow = (m: number) => new Date(Date.now() + m * 60_000).toISOString();
 const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString();
 
-function build(opts: { clinicExists?: boolean } = {}) {
+function build(opts: { clinicExists?: boolean; owned?: boolean } = {}) {
   const statements: Array<{ sql: string; params?: unknown[] }> = [];
   let deleteRows: unknown[] = [];
   const dataSource = {
     query: jest.fn(async (sql: string, params?: unknown[]) => {
       statements.push({ sql, params });
       if (/FROM tenants WHERE id/.test(sql)) return opts.clinicExists === false ? [] : [{ id: CLINIC }];
+      if (/FROM sales_clinic_assignments/.test(sql)) return opts.owned === false ? [] : [{ '?column?': 1 }];
       if (/INSERT INTO sales_activities/.test(sql)) return [{ id: 'a1' }];
       if (/^\s*UPDATE sales_activities/.test(sql)) return [deleteRows, deleteRows.length];
       if (/COUNT\(\*\)/.test(sql)) return [{ total: 0 }];
@@ -121,7 +122,7 @@ describe('SalesActivityService.create', () => {
       'admin',
     );
     const ins = t.insert()!;
-    expect(ins.sql).toMatch(/'admin_manual'/);
+    expect(ins.params![8]).toBe('admin_manual');
     expect(ins.params![0]).toBe('e1');
     expect(ins.params![1]).toBeNull(); //          tenant
     expect(ins.params![2]).toBe('Al Noor Clinic'); // trimmed
@@ -210,5 +211,37 @@ describe('SalesActivityService.remove', () => {
       code: ErrorCode.SALES_ACTIVITY_NOT_FOUND,
     });
     expect(t.audit.record).not.toHaveBeenCalled();
+  });
+
+  describe('logged by the rep (source self)', () => {
+    const own = { ...base, tenantId: CLINIC };
+
+    it('stores source self, recorded by the rep, and asks for an ACTIVE employee', async () => {
+      const t = build();
+      await t.service.create('e1', own as any, 'e1', { source: 'self' });
+      expect(t.employees.requireEmployee.mock.calls[0][1]).toEqual({ requireActive: true });
+      const ins = t.insert()!;
+      expect(ins.params![7]).toBe('e1');
+      expect(ins.params![8]).toBe('self');
+      expect(t.audit.record.mock.calls[0][0].after).toMatchObject({ source: 'self' });
+    });
+
+    it('refuses a clinic the rep does not currently own, with the same error as a missing clinic', async () => {
+      const t = build({ owned: false });
+      await failsOn(t.service.create('e1', own as any, 'e1', { source: 'self' }), 'tenantId');
+      expect(t.insert()).toBeUndefined();
+    });
+
+    it('a prospect needs no ownership check', async () => {
+      const t = build({ owned: false });
+      await t.service.create('e1', { ...base, prospectName: 'Al Noor' } as any, 'e1', { source: 'self' });
+      expect(t.insert()).toBeDefined();
+    });
+
+    it('an admin may still log for a clinic the employee does not own', async () => {
+      const t = build({ owned: false });
+      await t.service.create('e1', own as any, 'admin');
+      expect(t.insert()).toBeDefined();
+    });
   });
 });

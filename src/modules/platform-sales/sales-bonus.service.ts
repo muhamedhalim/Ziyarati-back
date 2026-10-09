@@ -225,10 +225,13 @@ export class SalesBonusService {
   async list(
     employeeId: string,
     query: QuerySalesBonusesDto,
+    opts: { excludeVoid?: boolean } = {},
   ): Promise<SalesBonusList> {
     await this.employees.requireEmployee(employeeId);
     const params: unknown[] = [employeeId];
     const filters = ['b.sales_user_id = $1'];
+    // The employee's own view never lists a voided record (an admin correction).
+    if (opts.excludeVoid) filters.push("b.status <> 'void'");
     if (query.period) {
       params.push(parseSalesPeriod(query.period).periodMonth);
       filters.push(`b.period_month = $${params.length}::date`);

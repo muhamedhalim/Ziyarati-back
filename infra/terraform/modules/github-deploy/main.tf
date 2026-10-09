@@ -6,6 +6,7 @@
 # master secret).
 
 data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
 
 locals {
   tags = merge(var.tags, { Component = "ci" })
@@ -69,6 +70,23 @@ data "aws_iam_policy_document" "deploy" {
       "ecs:ListTaskDefinitions",
     ]
     resources = ["*"] # these actions do not support resource-level scoping
+  }
+
+  # ecs-deploy.sh re-registers each family WITH its tags (`describe-task-definition
+  # --include TAGS` → `register-task-definition`). ECS authorises the tags on
+  # registration through ecs:TagResource, so without this statement every deploy
+  # fails at the first register call. Limited to the three families the script
+  # registers, in this account and region, and only as a side effect of
+  # RegisterTaskDefinition (it cannot be used to retag existing resources).
+  statement {
+    sid       = "TagRegisteredTaskDefinitions"
+    actions   = ["ecs:TagResource"]
+    resources = [for f in ["api", "worker", "migrate"] : "arn:aws:ecs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:task-definition/${var.name}-${f}:*"]
+    condition {
+      test     = "StringEquals"
+      variable = "ecs:CreateAction"
+      values   = ["RegisterTaskDefinition"]
+    }
   }
 
   statement {

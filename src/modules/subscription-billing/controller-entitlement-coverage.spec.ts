@@ -65,6 +65,7 @@ const PLATFORM_AND_PUBLIC_SURFACES = new Set([
   'platform-sales/sales-assignments.controller.ts',
   'platform-sales/sales-bonuses.controller.ts',
   'platform-sales/sales-employees.controller.ts',
+  'platform-sales/sales-self.controller.ts',
   'platform-sales/sales-targets.controller.ts',
   'platform-staff/platform-staff.controller.ts',
   'platform-support/platform-support-actions.controller.ts',

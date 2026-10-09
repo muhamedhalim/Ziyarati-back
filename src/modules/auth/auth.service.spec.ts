@@ -1301,6 +1301,22 @@ describe('AuthService', () => {
       expect(refreshTokens.update).toHaveBeenCalled(); // revoke all
     });
 
+    it('kills every other outstanding link for the user in the same transaction', async () => {
+      passwordResets.findOne.mockResolvedValueOnce(reset());
+      await service.resetPassword({ token: 'tok', newPassword: 'NewPass123!' } as any);
+      expect(dataSource.manager.createQueryBuilder).toHaveBeenCalled();
+    });
+
+    it('the loser of a double submit changes nothing: claim affects 0 rows -> invalid token, password untouched', async () => {
+      passwordResets.findOne.mockResolvedValueOnce(reset());
+      dataSource.manager.update.mockResolvedValueOnce({ affected: 0 });
+      await expect(
+        service.resetPassword({ token: 'tok', newPassword: 'NewPass123!' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.INVALID_RESET_TOKEN });
+      expect(dataSource.manager.update).toHaveBeenCalledTimes(1); // only the claim
+      expect(refreshTokens.update).not.toHaveBeenCalled();
+    });
+
     it('rejects an unknown/used token', async () => {
       passwordResets.findOne.mockResolvedValueOnce(null);
       await expect(

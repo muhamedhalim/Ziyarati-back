@@ -248,7 +248,14 @@ export class PlatformStaffService {
         message: 'This staff member has no email address',
       });
     }
+    if (!user.is_active) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'Reactivate this staff member before sending an invitation',
+      });
+    }
 
+    // The new link replaces every earlier one: an older email must not stay valid.
+    await this.authService.invalidatePasswordSetupTokens(user.id);
     const roleSlug = await this.primaryRoleSlug(id);
     await this.sendInvitation(
       user.id,
