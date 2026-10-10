@@ -27,33 +27,26 @@ IMAGE="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/ziyaratech/backend:${TAG}"
 
 log() { printf '[deploy %s] %s\n' "$ENV" "$*"; }
 
-# Confirm the image exists before touching anything.
-aws ecr describe-images --repository-name ziyaratech/backend --image-ids imageTag="$TAG" \
-  --query 'imageDetails[0].imageDigest' --output text >/dev/null
-log "image ${IMAGE}"
-
-# ── Image vulnerability gate ────────────────────────────────────────────────
-# ECR scans on push (basic scanning). Block a NEW image with CRITICAL findings.
-# Never block a ROLLBACK to an already-deployed tag: IMAGE_SCAN_GATE=skip is set
-# by the workflow when an existing image_tag is redeployed; "warn" reports only.
-GATE="${IMAGE_SCAN_GATE:-enforce}"
-if [[ "$GATE" != "skip" ]]; then
-  if aws ecr wait image-scan-complete --repository-name ziyaratech/backend \
-      --image-id imageTag="$TAG" 2>/dev/null; then
-    CRIT="$(aws ecr describe-image-scan-findings --repository-name ziyaratech/backend \
-      --image-id imageTag="$TAG" \
-      --query 'imageScanFindings.findingSeverityCounts.CRITICAL' --output text)"
-    if [[ "$CRIT" =~ ^[0-9]+$ && "$CRIT" -gt 0 ]]; then
-      log "image has ${CRIT} CRITICAL vulnerabilities (aws ecr describe-image-scan-findings ... imageTag=${TAG})"
-      [[ "$GATE" == "enforce" ]] && exit 1
-    else
-      log "image scan: no CRITICAL findings"
-    fi
-  else
-    log "image scan did not complete in time — gate could not be evaluated"
-    [[ "$GATE" == "enforce" ]] && exit 1
-  fi
+# Confirm the image exists before touching anything, and pin everything below to its DIGEST.
+IMAGE_DIGEST="$(aws ecr describe-images --repository-name ziyaratech/backend --image-ids imageTag="$TAG"   --query 'imageDetails[0].imageDigest' --output text)"
+if ! [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  log "image tag ${TAG} not found in ECR (got '${IMAGE_DIGEST}')"
+  exit 1
 fi
+if [[ -n "${EXPECTED_IMAGE_DIGEST:-}" && "$IMAGE_DIGEST" != "$EXPECTED_IMAGE_DIGEST" ]]; then
+  log "ECR tag ${TAG} is ${IMAGE_DIGEST} but this run pushed ${EXPECTED_IMAGE_DIGEST} - refusing to deploy"
+  exit 1
+fi
+log "image ${IMAGE} (${IMAGE_DIGEST})"
+
+# -- Image vulnerability gate ------------------------------------------------
+# ECR scans on push, asynchronously. ecr-scan-gate.sh polls the scan of THIS digest with a
+# bounded deadline, distinguishes IN_PROGRESS / COMPLETE / FAILED / UNSUPPORTED / API errors, and
+# only evaluates CRITICAL findings once the scan is COMPLETE. IMAGE_SCAN_GATE:
+#   enforce (default) - CRITICAL findings, or a scan that cannot be evaluated, block the deploy
+#   warn              - the same conditions are reported but do not block
+#   skip              - set by the workflow when an existing image_tag is redeployed (rollback)
+bash "$(dirname "$0")/ecr-scan-gate.sh" "$IMAGE_DIGEST" "${IMAGE_SCAN_GATE:-enforce}"
 
 register_with_image() {
   local family="$1"

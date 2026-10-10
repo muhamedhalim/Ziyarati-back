@@ -50,6 +50,12 @@ variable "direct_api_routing" {
   default     = false
 }
 
+variable "enable_interface_endpoints" {
+  description = "Residency plan T15: PrivateLink interface endpoints for the tasks' AWS API calls. Billed per AZ-hour; default false."
+  type        = bool
+  default     = false
+}
+
 variable "frontend_origins" {
   type = list(string)
 }

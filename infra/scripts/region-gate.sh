@@ -26,13 +26,23 @@ REGION_RE='\b(us|eu|ap|me|sa|ca|af|il|mx)(-gov)?-(east|west|central|south|north|
 # Regions come from variables. The ONE documented exception is the Route 53
 # health-check alias provider in the environment roots (its metrics exist only in
 # us-east-1). Tests and mock data are not deployed code, so they are skipped.
+# The organisation-guardrails module and root (SCP documents) talk ABOUT that same
+# region (the health-check exception and its documentation), so the token us-east-1
+# is tolerated in those paths; any other region code there still fails.
 scan_literals() {
   local hits
   hits=$(grep -rnEI "$REGION_RE" "$TF_ROOT" --include='*.tf' \
     --exclude-dir=.terraform --exclude-dir=tests --exclude-dir=testing \
     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(#|//)' \
     | grep -vE "^${TF_ROOT}/environments/(staging|production)/main\.tf:[0-9]+:[[:space:]]*region[[:space:]]*=[[:space:]]*\"us-east-1\"" \
-    || true)
+    | while IFS= read -r line; do
+        case "$line" in
+          *org-guardrails*)
+            rest="${line//us-east-1/}"
+            if echo "$rest" | grep -qEI "$REGION_RE"; then echo "$line"; fi ;;
+          *) echo "$line" ;;
+        esac
+      done)
   if [ -n "$hits" ]; then
     fail "region literal(s) in Terraform code — use var.aws_region / approved_regions:"
     echo "$hits"
@@ -115,17 +125,48 @@ check_env() { # env, enforce(0|1)
   fi
 }
 
+# The organisation SCP must never be narrower than an environment (it would lock
+# the environment out of its own region), and its us-east-1 health-check exception
+# must be on while the platform still creates the Route 53 alarm there.
+check_org_guardrails() {
+  local vars="$TF_ROOT/environments/org-guardrails/terraform.tfvars"
+  [ -f "$vars" ] || return 0
+
+  local org env_regions env_dr exc r e
+  org=$(list "$vars" approved_regions)
+  if [ -z "$org" ]; then
+    note "org-guardrails: approved_regions is empty (expected until the organisation rollout starts)"
+    return 0
+  fi
+
+  for e in staging production; do
+    [ -f "$TF_ROOT/environments/$e/terraform.tfvars" ] || continue
+    env_regions=$(list "$TF_ROOT/environments/$e/terraform.tfvars" approved_regions)
+    env_dr=$(scalar "$TF_ROOT/environments/$e/terraform.tfvars" dr_backup_region)
+    for r in $env_regions $env_dr; do
+      echo "$org" | in_list "$r" || fail "org-guardrails: $e uses region '$r' which is not in the organisation SCP approved_regions — the SCP would block it"
+    done
+  done
+
+  exc=$(sed -nE 's/^[[:space:]]*us_east_1_health_check_exception[[:space:]]*=[[:space:]]*(true|false).*/\1/p' "$vars" | head -1)
+  if [ "$exc" != "true" ] && ! echo "$org" | in_list "us-east-1"; then
+    fail "org-guardrails: us_east_1_health_check_exception is not true and us-east-1 is not approved, but modules/monitoring creates the Route 53 health-check alarm and SNS topic in us-east-1 — the SCP would block that apply"
+  fi
+}
+
 case "$MODE" in
   static)
     scan_literals
     scan_forbidden
     for e in staging production; do check_env "$e" 0; done
+    check_org_guardrails
     ;;
   deploy)
     case "$ENVIRONMENT" in staging|production) ;; *) echo "usage: $0 deploy <staging|production>"; exit 2 ;; esac
     scan_literals
     scan_forbidden
     check_env "$ENVIRONMENT" 1
+    check_org_guardrails
     ;;
   *)
     echo "usage: $0 static | deploy <staging|production>"

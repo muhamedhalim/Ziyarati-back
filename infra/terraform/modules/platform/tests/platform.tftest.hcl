@@ -297,3 +297,25 @@ run "a_leading_dot_csrf_cookie_domain_is_refused" {
 
   expect_failures = [var.csrf_cookie_domain]
 }
+
+run "interface_endpoints_are_opt_in_and_reach_the_network_module" {
+  command = plan
+
+  assert {
+    condition     = length(output.interface_endpoint_services) == 0
+    error_message = "Interface endpoints are billed per AZ-hour and must default to off"
+  }
+}
+
+run "interface_endpoints_can_be_enabled" {
+  command = plan
+
+  variables {
+    enable_interface_endpoints = true
+  }
+
+  assert {
+    condition     = toset(output.interface_endpoint_services) == toset(["secretsmanager", "kms", "ecr.api", "ecr.dkr", "logs", "sqs", "email", "sts"])
+    error_message = "Enabling the flag must create the plan T15 endpoint set"
+  }
+}

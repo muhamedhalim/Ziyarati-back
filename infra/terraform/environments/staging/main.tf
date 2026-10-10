@@ -88,6 +88,8 @@ module "platform" {
   frontend_origins   = var.frontend_origins
   app_url            = var.app_url
 
+  enable_interface_endpoints = var.enable_interface_endpoints
+
   image_tag               = var.image_tag
   api                     = var.api
   worker                  = var.worker

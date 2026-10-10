@@ -45,7 +45,7 @@ jobs:
         run: bash infra/scripts/region-gate.sh static
       - name: validate roots
         run: |
-          for d in bootstrap environments/staging environments/production; do
+          for d in bootstrap environments/staging environments/production environments/org-guardrails; do
             terraform -chdir="infra/terraform/$d" init -backend=false -input=false
             terraform -chdir="infra/terraform/$d" validate
           done
@@ -55,13 +55,19 @@ jobs:
             --severity HIGH,CRITICAL --exit-code 1 --skip-dirs "**/.terraform" --skip-files "**/*.tftest.hcl"
       - name: terraform test (mocked AWS — no account needed)
         run: |
-          for m in network rds elasticache s3-uploads ecs waf kms backup secrets ecr alb account-baseline platform github-deploy; do
+          for m in network rds elasticache s3-uploads ecs waf kms backup secrets ecr alb account-baseline platform github-deploy org-guardrails/policies org-guardrails; do
             terraform -chdir="infra/terraform/modules/$m" init -backend=false -input=false
             terraform -chdir="infra/terraform/modules/$m" test
           done
 
+      - name: SCP semantics (rendered service control policies evaluated against concrete API requests)
+        run: node --test infra/scripts/tests/scp-semantics.test.cjs
+
       - name: deploy-image verifier (offline test of the gate that proves ECS runs the pushed image)
         run: bash infra/scripts/tests/verify-deployed-image.test.sh
+
+      - name: ECR scan gate (offline test of scan polling, failure reporting and the CRITICAL policy)
+        run: bash infra/scripts/tests/ecr-scan-gate.test.sh
 
   plan:
     needs: static

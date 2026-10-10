@@ -76,3 +76,8 @@ output "nat_egress_ips" {
 output "alerts_topic_arn" {
   value = module.monitoring.alerts_topic_arn
 }
+
+output "interface_endpoint_services" {
+  description = "AWS services reached through PrivateLink interface endpoints (empty while enable_interface_endpoints is false)"
+  value       = module.network.interface_endpoint_services
+}

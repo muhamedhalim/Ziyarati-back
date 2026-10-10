@@ -62,6 +62,34 @@ variable "flow_log_retention_days" {
   default     = 90
 }
 
+variable "enable_interface_endpoints" {
+  description = "Residency plan T15: PrivateLink interface endpoints so the tasks' AWS API calls (image pull, secrets, logs, mail, queues) stay on the AWS network instead of leaving through NAT. Off by default: each endpoint is billed per AZ-hour (infra/docs/COST-MODEL.md)."
+  type        = bool
+  default     = false
+}
+
+variable "interface_endpoint_services" {
+  description = "Endpoint service suffixes (com.amazonaws.<region>.<suffix>). Defaults to the plan's T15 list; the evidence for each is in infra/docs/COST-MODEL.md. 'email' (SES API) is unverified for a target region until the Launch Readiness Gate lists it."
+  type        = list(string)
+  default     = ["secretsmanager", "kms", "ecr.api", "ecr.dkr", "logs", "sqs", "email", "sts"]
+
+  validation {
+    condition     = alltrue([for s in var.interface_endpoint_services : contains(["secretsmanager", "kms", "ecr.api", "ecr.dkr", "logs", "sqs", "email", "sts"], s)])
+    error_message = "interface_endpoint_services may only contain: secretsmanager, kms, ecr.api, ecr.dkr, logs, sqs, email, sts. Add a service here deliberately, with its evidence."
+  }
+
+  validation {
+    condition     = length(distinct(var.interface_endpoint_services)) == length(var.interface_endpoint_services)
+    error_message = "interface_endpoint_services must not contain duplicates."
+  }
+}
+
+variable "restrict_interface_endpoints_to_account" {
+  description = "Attach an endpoint policy that only lets principals of THIS account use the endpoints (a data-perimeter control: the VPC cannot be used to reach another account's secrets, queues or repositories). Not proven against a live task start until the staging apply; set false only to unblock a failing deploy, then fix the cause."
+  type        = bool
+  default     = true
+}
+
 variable "tags" {
   description = "Extra tags"
   type        = map(string)

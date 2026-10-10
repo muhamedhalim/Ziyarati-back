@@ -351,3 +351,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "enable_interface_endpoints" {
+  description = "Residency plan T15: PrivateLink interface endpoints (Secrets Manager, KMS, ECR api+dkr, CloudWatch Logs, SQS, SES, STS) so the tasks' AWS API calls stay off the NAT path. Billed per endpoint per AZ-hour (infra/docs/COST-MODEL.md). Default false = current behaviour."
+  type        = bool
+  default     = false
+}

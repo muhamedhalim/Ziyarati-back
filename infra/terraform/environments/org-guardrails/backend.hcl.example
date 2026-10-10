@@ -1,0 +1,7 @@
+# cp backend.hcl.example backend.hcl  (backend.hcl is git-ignored)
+# A versioned, encrypted, private bucket in the MANAGEMENT account, in an approved
+# region. The state holds policy JSON and ids only.
+bucket     = "zt-org-guardrails-tfstate-<MANAGEMENT_ACCOUNT_ID>"
+region     = "<APPROVED_REGION>"
+key        = "org-guardrails/<APPROVED_REGION>/terraform.tfstate"
+kms_key_id = "arn:aws:kms:<APPROVED_REGION>:<MANAGEMENT_ACCOUNT_ID>:key/<STATE_KEY_ID>"

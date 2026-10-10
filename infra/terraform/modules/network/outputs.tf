@@ -37,3 +37,13 @@ output "nat_gateway_ids" {
   description = "NAT gateway ids (ErrorPortAllocation alarms)"
   value       = aws_nat_gateway.this[*].id
 }
+
+output "interface_endpoint_services" {
+  description = "Service suffixes that have an interface endpoint (empty while the feature is off)"
+  value       = sort(keys(aws_vpc_endpoint.interface))
+}
+
+output "interface_endpoint_security_group_id" {
+  description = "Security group on the interface endpoints (null while the feature is off)"
+  value       = one(aws_security_group.endpoints[*].id)
+}

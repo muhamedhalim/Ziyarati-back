@@ -98,6 +98,7 @@ module "network" {
   nat_gateway_count            = var.nat_gateway_count
   api_container_port           = var.container_port
   allow_worker_egress_any_port = var.allow_worker_egress_any_port
+  enable_interface_endpoints   = var.enable_interface_endpoints
   tags                         = local.tags
 }
 
