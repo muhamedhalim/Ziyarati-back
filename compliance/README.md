@@ -47,3 +47,12 @@ node --test infra/scripts/tests/production-gate.test.cjs
 | `scps-applied` | SCPs applied, policy-simulator evidence kept |
 | `restore-drill-record` | a dated restore drill with measured RTO/RPO |
 | `incident-response-runbook` | runbook completed and exercised once |
+
+## Temporary deferral (2026-10-10)
+
+The seven open `legal` / `document` items carry `deferred_until`, `deferred_owner` and `deferred_reason` in `production-gate.yaml`. They stay `open`, keep their (empty) evidence, and are printed as `::warning::` on every run with "follow-up is still required".
+
+- **Honoured only when** `PRODUCTION_GATE_ALLOW_DEFERRALS=true`. `deploy-aws.yml` sets it; `terraform.yml` (production apply) does not, so apply stays strict.
+- **Never deferrable:** `technical` items (tests, CI steps). Anything open without a deferral still blocks.
+- **Expires** at `deferred_until` (max 90 days ahead is enforced) and then blocks again. Review date today: 2026-11-10. Owners are `UNASSIGNED` — assign them.
+- **Restore strict enforcement:** remove the `PRODUCTION_GATE_ALLOW_DEFERRALS` env block from `deploy-aws.yml` (or delete the `deferred_*` lines). A satisfied item's leftover `deferred_*` fields are ignored.

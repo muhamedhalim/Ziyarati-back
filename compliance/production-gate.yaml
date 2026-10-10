@@ -7,6 +7,12 @@
 #                   this repository, or `external: <where the document is kept>`.
 #   * technical items are proven by tests, not by this file (`ci_verified`).
 #
+# TEMPORARY DEFERRALS (2026-10-10): the seven open legal/document items carry deferred_until /
+# deferred_owner / deferred_reason. They are still `open`, still tracked, and still reported on every
+# run. deploy-aws.yml opts in with PRODUCTION_GATE_ALLOW_DEFERRALS=true; terraform apply does not.
+# Review by 2026-11-10 (max 90 days ahead is enforced). Assign real owners. To restore strict
+# enforcement: remove the env var from deploy-aws.yml, or delete the three deferred_* lines per item.
+#
 # This file changes only by reviewed pull request. It is a gate on deploys; it is
 # NOT a statement that the platform complies with the PDPL or any other law.
 #
@@ -22,6 +28,9 @@ items:
     evidence: ""
     approved_by: ""
     date: ""
+    deferred_until: "2026-11-10"
+    deferred_owner: "UNASSIGNED"
+    deferred_reason: "Hosting location approval needs counsel; owner accepted deploying eu-central-1 meanwhile (decision D-1, not a legal approval)."
 
   - id: transfer-inventory-complete
     title: "Transfer inventory complete: every flow F1-F18 reviewed and each processor in the register"
@@ -30,6 +39,9 @@ items:
     evidence: ""
     approved_by: ""
     date: ""
+    deferred_until: "2026-11-10"
+    deferred_owner: "UNASSIGNED"
+    deferred_reason: "Transfer inventory review is outstanding; deploy proceeds under owner risk acceptance while it is completed."
 
   - id: dpa-critical-processors
     title: "A DPA held for every critical processor (OpenAI, Meta, Tap, Vercel, the email provider, AWS or the interim host)"
@@ -38,6 +50,9 @@ items:
     evidence: ""
     approved_by: ""
     date: ""
+    deferred_until: "2026-11-10"
+    deferred_owner: "UNASSIGNED"
+    deferred_reason: "Processor DPAs are still being obtained; deploy proceeds under owner risk acceptance until they are held."
 
   - id: scc-or-alternative
     title: "SDAIA SCCs, or counsel's written alternative, for every transfer that needs one; transfer risk assessment where counsel requires it"
@@ -46,6 +61,9 @@ items:
     evidence: ""
     approved_by: ""
     date: ""
+    deferred_until: "2026-11-10"
+    deferred_owner: "UNASSIGNED"
+    deferred_reason: "SCCs or counsel alternative not yet obtained; deploy proceeds under owner risk acceptance until counsel responds."
 
   - id: ai-minimiser-tests
     title: "AI data-minimiser and vision-gate tests exist and run in CI"
@@ -93,6 +111,9 @@ items:
     evidence: ""
     approved_by: ""
     date: ""
+    deferred_until: "2026-11-10"
+    deferred_owner: "UNASSIGNED"
+    deferred_reason: "Organisation SCP rollout and simulator evidence are pending; deploy proceeds under owner risk acceptance."
 
   - id: restore-drill-record
     title: "Restore drill completed in staging with a dated record (RTO/RPO measured)"
@@ -101,6 +122,9 @@ items:
     evidence: ""
     approved_by: ""
     date: ""
+    deferred_until: "2026-11-10"
+    deferred_owner: "UNASSIGNED"
+    deferred_reason: "Staging restore drill not yet performed or recorded; deploy proceeds under owner risk acceptance."
 
   - id: incident-response-runbook
     title: "Incident-response runbook completed (owners, contacts, regulator and clinic notification path) and exercised once"
@@ -109,3 +133,6 @@ items:
     evidence: ""
     approved_by: ""
     date: ""
+    deferred_until: "2026-11-10"
+    deferred_owner: "UNASSIGNED"
+    deferred_reason: "Incident-response runbook not yet completed or exercised; deploy proceeds under owner risk acceptance."
