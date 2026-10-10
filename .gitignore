@@ -68,6 +68,22 @@ docs
 !/docs/
 /docs/*
 !/docs/PARTNER_INTEGRATION_GUIDE.md
+
+# The residency / compliance documents are TRACKED: src/modules/data-governance/compliance-docs.spec.ts
+# compares the generated tables in the first three with the code registers, so CI needs them,
+# and the rest are reviewed with them. Other files in infra/docs/ stay ignored as before.
+!infra/docs/
+infra/docs/*
+!infra/docs/SUBPROCESSORS.md
+!infra/docs/DATA-CLASSIFICATION.md
+!infra/docs/RETENTION-POLICY.md
+!infra/docs/DATA-FLOW.md
+!infra/docs/DATA-RESIDENCY.md
+!infra/docs/PDPL-COMPLIANCE.md
+!infra/docs/TRANSFER-IMPACT-ASSESSMENT.md
+!infra/docs/INCIDENT-RESPONSE.md
+!infra/docs/AWS-SECURITY.md
+!infra/docs/AWS-REGION-STRATEGY.md
 ziyaratech.backup
 
 # TestSprite backend tests — one file carries a platform-admin login inline

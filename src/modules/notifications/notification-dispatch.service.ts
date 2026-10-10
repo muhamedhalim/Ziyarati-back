@@ -6,6 +6,7 @@ import { Repository } from 'typeorm';
 import { ScheduledNotification } from '../../entities/Notifications/ScheduledNotification';
 import { Customer } from '../../entities/CRM/Customer';
 import { AppError } from '../../common/errors';
+import { scrubFailureReason } from '../../common/utils/log-scrubber.util';
 import { USAGE_METRIC } from '../subscription-billing/usage-metric';
 
 import { NotificationLogService } from './notification-log.service';
@@ -199,7 +200,11 @@ export class NotificationDispatchService {
     try {
       res = await this.whatsapp.sendTemplateMessage(tenantId, providerTemplateId, sendDto);
     } catch (err) {
-      const reason = err instanceof AppError ? err.message : (err as Error)?.message ?? 'send failed';
+      // Scrubbed once, here: `reason` is stored on the notification, written to the
+      // delivery log and returned in the outcome (residency plan P7).
+      const reason = scrubFailureReason(
+        err instanceof AppError ? err.message : (err as Error)?.message ?? 'send failed',
+      );
       // T053 (S3, FR-M009) — a quota-exhausted send is PERMANENT but must
       // NEVER fall back to email: doing so would let a clinic evade its
       // WhatsApp plan limit for free by having every over-quota message
@@ -274,7 +279,8 @@ export class NotificationDispatchService {
     }
 
     if (result.transient) {
-      const reason = result.error ?? 'email provider send failed';
+      // Also becomes the TransientNotificationError message, i.e. the queue's failedReason.
+      const reason = scrubFailureReason(result.error ?? 'email provider send failed');
       await this.scheduled.update(
         { id },
         { status: NOTIFICATION_STATUS.SCHEDULED, processing_at: null, send_attempted: false, failure_reason: reason },
@@ -308,7 +314,8 @@ export class NotificationDispatchService {
   }
 
   /** DLQ reconcile: terminal FAILED so the sweep stops re-queuing it. */
-  async markDeadLettered(tenantId: string, id: string, reason: string): Promise<void> {
+  async markDeadLettered(tenantId: string, id: string, rawReason: string): Promise<void> {
+    const reason = scrubFailureReason(rawReason);
     const res = await this.scheduled
       .createQueryBuilder()
       .update(ScheduledNotification)

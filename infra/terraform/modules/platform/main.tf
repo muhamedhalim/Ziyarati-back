@@ -320,3 +320,18 @@ module "github_deploy" {
   migrate_log_group_arn = module.ecs.log_group_arns.migrate
   tags                  = local.tags
 }
+
+# Residency plan T16. One policy document on every log group this stack owns.
+# Keys are literal so for_each is known at plan time; names may be computed.
+module "log_protection" {
+  count  = var.enable_log_data_protection ? 1 : 0
+  source = "../log-protection"
+  log_groups = merge(
+    { for k, n in module.ecs.log_group_names : "ecs-${k}" => n },
+    { for k, n in module.rds.log_group_names : "rds-${k}" => n },
+    {
+      "elasticache-slow" = module.elasticache.slow_log_group_name
+      "waf"              = module.waf.log_group_name
+    },
+  )
+}

@@ -11,6 +11,7 @@ import {
 import { NotificationLog } from '../../entities/Notifications/NotificationLog';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
+import { scrubFailureReason } from '../../common/utils/log-scrubber.util';
 import { NotificationLogFilterDto } from './dto/notification-log-filter.dto';
 
 export interface RecordLogInput {
@@ -49,7 +50,12 @@ export class NotificationLogService {
       channel: input.channel,
       status: input.status,
       provider_ref: input.providerRef,
-      error_message: input.errorMessage,
+      // Provider and transport errors can echo a recipient number, an e-mail or a
+      // token (residency plan P7). The one write seam scrubs, so no caller can forget.
+      error_message:
+        input.errorMessage === undefined
+          ? undefined
+          : scrubFailureReason(input.errorMessage),
       sent_at: input.sentAt,
     });
     return this.logs.save(log);

@@ -154,3 +154,9 @@ variable "github_repository" {
   type    = string
   default = "muhamedhalim/Ziyarati-back"
 }
+
+variable "enable_log_data_protection" {
+  description = "Residency plan T16: CloudWatch Logs data-protection policy on every log group (backstop behind application scrubbing)."
+  type        = bool
+  default     = true
+}

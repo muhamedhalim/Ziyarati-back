@@ -106,6 +106,33 @@ describe('OpenAiBatchProvider (mocked SDK — real Batch API surface)', () => {
     expect(handle.counts.total).toBe(2);
   });
 
+  it('minimises a chat-completions batch before the file is uploaded (residency plan P2)', async () => {
+    const { provider, files } = setup();
+    await provider.uploadInputFile('tenant-1', [
+      {
+        customId: 'c-1',
+        method: 'POST',
+        url: '/v1/chat/completions',
+        body: { model: 'm', messages: [{ role: 'user', content: 'call +966501234567 or sara@example.com' }] },
+      },
+    ]);
+    const uploaded = files.create.mock.calls[0][0].file as Blob;
+    const text = await uploaded.text();
+    expect(text).not.toContain('501234567');
+    expect(text).not.toContain('sara@example.com');
+    expect(text).toContain('[PHONE]');
+  });
+
+  it('refuses an unreviewed batch endpoint without uploading anything', async () => {
+    const { provider, files } = setup();
+    await expect(
+      provider.uploadInputFile('tenant-1', [
+        { customId: 'x', method: 'POST', url: '/v1/completions', body: {} },
+      ]),
+    ).rejects.toThrow(/not allowed/);
+    expect(files.create).not.toHaveBeenCalled();
+  });
+
   it('polls and downloads output + error files, splitting success from failure', async () => {
     const { provider, files, batches } = setup();
     batches.retrieve.mockResolvedValue({

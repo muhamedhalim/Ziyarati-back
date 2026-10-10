@@ -90,6 +90,8 @@ module "platform" {
 
   enable_interface_endpoints = var.enable_interface_endpoints
 
+  enable_log_data_protection = var.enable_log_data_protection
+
   image_tag               = var.image_tag
   api                     = var.api
   worker                  = var.worker

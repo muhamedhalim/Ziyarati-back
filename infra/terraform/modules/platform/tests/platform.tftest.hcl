@@ -319,3 +319,28 @@ run "interface_endpoints_can_be_enabled" {
     error_message = "Enabling the flag must create the plan T15 endpoint set"
   }
 }
+
+run "log_data_protection_covers_every_owned_log_group" {
+  command = plan
+
+  assert {
+    condition = toset(output.log_data_protection_groups) == toset([
+      "ecs-api", "ecs-worker", "ecs-migrate", "ecs-ops",
+      "rds-postgresql", "rds-upgrade", "elasticache-slow", "waf",
+    ])
+    error_message = "Every log group the stack owns must carry the data-protection policy (T16)"
+  }
+}
+
+run "log_data_protection_can_be_switched_off" {
+  command = plan
+
+  variables {
+    enable_log_data_protection = false
+  }
+
+  assert {
+    condition     = length(output.log_data_protection_groups) == 0
+    error_message = "The toggle must remove the policies"
+  }
+}

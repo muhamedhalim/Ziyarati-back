@@ -27,12 +27,14 @@ on:
     branches: [master]
     paths-ignore:
       - "infra/**"
+      - "compliance/**"
       - "docs/**"
       - "**/*.md"
   push:
     branches: [master]
     paths-ignore:
       - "infra/**"
+      - "compliance/**"
       - "docs/**"
       - "**/*.md"
   workflow_dispatch:
@@ -167,6 +169,12 @@ jobs:
       id-token: write # OIDC → zt-production-github-deploy (trust pinned to this repo + the production Environment)
     steps:
       - uses: actions/checkout@v4
+
+      # Residency plan section 16. Skipped for a rollback so a regressed evidence item can never
+      # block recovery; `compliance/README.md`.
+      - name: production gate (every legal / document item evidenced)
+        if: ${{ inputs.image_tag == '' }}
+        run: node infra/scripts/production-gate.cjs enforce
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:

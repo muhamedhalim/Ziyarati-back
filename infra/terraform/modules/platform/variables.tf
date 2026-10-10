@@ -357,3 +357,9 @@ variable "enable_interface_endpoints" {
   type        = bool
   default     = false
 }
+
+variable "enable_log_data_protection" {
+  description = "Residency plan T16: attach a CloudWatch Logs data-protection policy (mask e-mail, Saudi mobile / national ID patterns, JWTs, pre-signed signatures) to every log group this stack owns. A backstop behind application-side scrubbing. Needs logs:PutDataProtectionPolicy on the apply role; set false only if that is refused and record why."
+  type        = bool
+  default     = true
+}

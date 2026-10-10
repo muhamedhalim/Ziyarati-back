@@ -81,3 +81,8 @@ output "interface_endpoint_services" {
   description = "AWS services reached through PrivateLink interface endpoints (empty while enable_interface_endpoints is false)"
   value       = module.network.interface_endpoint_services
 }
+
+output "log_data_protection_groups" {
+  description = "Log groups carrying the CloudWatch data-protection policy (empty while enable_log_data_protection is false)"
+  value       = one(module.log_protection[*].protected_log_groups) == null ? [] : one(module.log_protection[*].protected_log_groups)
+}

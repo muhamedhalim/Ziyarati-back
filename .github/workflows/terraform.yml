@@ -8,7 +8,7 @@ name: Terraform
 
 on:
   pull_request:
-    paths: ["infra/terraform/**", "infra/scripts/**", ".github/workflows/terraform.yml"]
+    paths: ["infra/terraform/**", "infra/scripts/**", "compliance/**", ".github/workflows/terraform.yml"]
   push:
     branches: [master]
     paths: ["infra/terraform/**"]
@@ -55,7 +55,7 @@ jobs:
             --severity HIGH,CRITICAL --exit-code 1 --skip-dirs "**/.terraform" --skip-files "**/*.tftest.hcl"
       - name: terraform test (mocked AWS — no account needed)
         run: |
-          for m in network rds elasticache s3-uploads ecs waf kms backup secrets ecr alb account-baseline platform github-deploy org-guardrails/policies org-guardrails; do
+          for m in network rds elasticache s3-uploads ecs waf kms backup secrets ecr alb account-baseline platform github-deploy org-guardrails/policies org-guardrails log-protection; do
             terraform -chdir="infra/terraform/modules/$m" init -backend=false -input=false
             terraform -chdir="infra/terraform/modules/$m" test
           done
@@ -68,6 +68,11 @@ jobs:
 
       - name: ECR scan gate (offline test of scan polling, failure reporting and the CRITICAL policy)
         run: bash infra/scripts/tests/ecr-scan-gate.test.sh
+
+      - name: production gate (manifest well formed; checker tested offline)
+        run: |
+          node infra/scripts/production-gate.cjs validate
+          node --test infra/scripts/tests/production-gate.test.cjs
 
   plan:
     needs: static
@@ -132,6 +137,8 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
       - name: region gate (a region must be approved before any plan or apply)
         run: bash infra/scripts/region-gate.sh deploy ${{ inputs.environment }}
+      - name: production gate (every legal / document item evidenced; technical items still present in CI)
+        run: node infra/scripts/production-gate.cjs enforce
       - name: Account id
         id: acct
         run: |
@@ -179,6 +186,8 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
       - name: region gate (a region must be approved before any plan or apply)
         run: bash infra/scripts/region-gate.sh deploy ${{ inputs.environment }}
+      - name: production gate (every legal / document item evidenced; technical items still present in CI)
+        run: node infra/scripts/production-gate.cjs enforce
       - name: Account id
         id: acct
         run: |

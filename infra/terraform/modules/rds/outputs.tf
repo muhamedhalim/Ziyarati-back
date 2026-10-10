@@ -23,3 +23,11 @@ output "master_user_secret_arn" {
 output "database_name" {
   value = aws_db_instance.this.db_name
 }
+
+output "log_group_names" {
+  description = "Log groups this module pre-creates (key => name); the data-protection policy attaches to them."
+  value = {
+    postgresql = aws_cloudwatch_log_group.postgresql.name
+    upgrade    = aws_cloudwatch_log_group.upgrade.name
+  }
+}

@@ -16,3 +16,8 @@ output "redis_url" {
   value       = "rediss://:${random_password.auth.result}@${aws_elasticache_replication_group.this.primary_endpoint_address}:6379/0"
   sensitive   = true
 }
+
+output "slow_log_group_name" {
+  description = "Slow-log group (the data-protection policy attaches to it)."
+  value       = aws_cloudwatch_log_group.slow.name
+}

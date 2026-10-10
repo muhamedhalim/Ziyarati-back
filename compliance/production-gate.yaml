@@ -1,0 +1,111 @@
+# Production-readiness gate manifest (residency plan section 16).
+#
+# Read compliance/README.md first. Short version:
+#   * `open`      = nothing is evidenced yet. EVERY legal / document item below is open
+#                   today, on purpose. Do not flip one without the document in hand.
+#   * `satisfied` = needs `evidence`, `approved_by` and `date`. Evidence is a path in
+#                   this repository, or `external: <where the document is kept>`.
+#   * technical items are proven by tests, not by this file (`ci_verified`).
+#
+# This file changes only by reviewed pull request. It is a gate on deploys; it is
+# NOT a statement that the platform complies with the PDPL or any other law.
+#
+# Checked by infra/scripts/production-gate.cjs
+#   validate  every PR (terraform.yml `static`)
+#   enforce   before `terraform apply` to production and before a production image deploy
+version: 1
+items:
+  - id: legal-hosting-approval
+    title: "Written legal approval of the hosting location (residency plan L1/L2)"
+    kind: legal
+    status: open
+    evidence: ""
+    approved_by: ""
+    date: ""
+
+  - id: transfer-inventory-complete
+    title: "Transfer inventory complete: every flow F1-F18 reviewed and each processor in the register"
+    kind: document
+    status: open
+    evidence: ""
+    approved_by: ""
+    date: ""
+
+  - id: dpa-critical-processors
+    title: "A DPA held for every critical processor (OpenAI, Meta, Tap, Vercel, the email provider, AWS or the interim host)"
+    kind: document
+    status: open
+    evidence: ""
+    approved_by: ""
+    date: ""
+
+  - id: scc-or-alternative
+    title: "SDAIA SCCs, or counsel's written alternative, for every transfer that needs one; transfer risk assessment where counsel requires it"
+    kind: legal
+    status: open
+    evidence: ""
+    approved_by: ""
+    date: ""
+
+  - id: ai-minimiser-tests
+    title: "AI data-minimiser and vision-gate tests exist and run in CI"
+    kind: technical
+    status: ci_verified
+    checks:
+      - src/modules/ai/minimization/ai-minimizer.spec.ts
+      - src/modules/ai/providers/openai-chat.provider.minimization.spec.ts
+    ci_steps:
+      - "npx jest --ci"
+
+  - id: log-scrubbing-tests
+    title: "Log, job-payload and activity-log redaction tests exist and run in CI"
+    kind: technical
+    status: ci_verified
+    checks:
+      - src/common/logging/redacting-logger.spec.ts
+      - src/common/utils/log-scrubber.util.spec.ts
+      - src/queue/job-pii-redaction.spec.ts
+      - src/modules/activity-log/activity-redaction.spec.ts
+    ci_steps:
+      - "npx jest --ci"
+
+  - id: data-boundary-terraform-tests
+    title: "Region gate, data-boundary Terraform tests and SCP semantics tests exist and run in CI"
+    kind: technical
+    status: ci_verified
+    checks:
+      - infra/scripts/region-gate.sh
+      - infra/scripts/tests/scp-semantics.test.cjs
+      - infra/terraform/modules/org-guardrails/policies/tests/policies.tftest.hcl
+      - infra/terraform/modules/platform/tests/platform.tftest.hcl
+      - infra/terraform/modules/rds/tests/rds.tftest.hcl
+      - infra/terraform/modules/s3-uploads/tests/s3.tftest.hcl
+      - infra/terraform/modules/kms/tests/kms.tftest.hcl
+    ci_steps:
+      - "region-gate.sh static"
+      - 'terraform -chdir="infra/terraform/modules/$m" test'
+      - "node --test infra/scripts/tests/scp-semantics.test.cjs"
+
+  - id: scps-applied
+    title: "Organisation SCPs applied; IAM policy-simulator results kept (runbooks/org-guardrails-rollout.md section 6)"
+    kind: document
+    status: open
+    evidence: ""
+    approved_by: ""
+    date: ""
+
+  - id: restore-drill-record
+    title: "Restore drill completed in staging with a dated record (RTO/RPO measured)"
+    kind: document
+    status: open
+    evidence: ""
+    approved_by: ""
+    date: ""
+
+  - id: incident-response-runbook
+    title: "Incident-response runbook completed (owners, contacts, regulator and clinic notification path) and exercised once"
+    kind: document
+    status: open
+    evidence: ""
+    approved_by: ""
+    date: ""

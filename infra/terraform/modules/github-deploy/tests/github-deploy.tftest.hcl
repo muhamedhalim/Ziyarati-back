@@ -61,3 +61,42 @@ run "tag_resource_is_scoped_to_the_three_task_definition_families" {
     error_message = "No broader permissions were added"
   }
 }
+
+# Every IAM action on the real deploy path (traced from deploy-aws.yml, ecs-deploy.sh,
+# ecr-scan-gate.sh and verify-deployed-image.sh). If one is dropped the deploy fails mid-run
+# with AccessDenied, after the image was already pushed and the migration possibly started.
+run "deploy_path_actions_are_all_granted" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for a in [
+        "ecr:GetAuthorizationToken", "ecr:BatchCheckLayerAvailability", "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage", "ecr:DescribeImages",
+        "ecr:DescribeImageScanFindings",
+        "ecs:DescribeTaskDefinition", "ecs:RegisterTaskDefinition", "ecs:TagResource",
+        "ecs:RunTask", "ecs:DescribeTasks", "ecs:UpdateService", "ecs:DescribeServices",
+        "iam:PassRole",
+      ] : contains(flatten([for s in data.aws_iam_policy_document.deploy.statement : s.actions]), a)
+    ])
+    error_message = "A required deploy-path action is missing from the deploy role policy"
+  }
+
+  assert {
+    condition = alltrue([
+      for s in data.aws_iam_policy_document.deploy.statement :
+      length([for c in s.condition : c if c.variable == "iam:PassedToService" && contains(c.values, "ecs-tasks.amazonaws.com")]) == 1
+      if contains(s.actions, "iam:PassRole")
+    ])
+    error_message = "iam:PassRole must stay restricted to ecs-tasks.amazonaws.com"
+  }
+
+  assert {
+    condition = alltrue([
+      for s in data.aws_iam_policy_document.deploy.statement :
+      length([for c in s.condition : c if c.variable == "ecs:cluster"]) == 1
+      if contains(s.actions, "ecs:UpdateService")
+    ])
+    error_message = "Service/task actions must stay pinned to the production cluster"
+  }
+}

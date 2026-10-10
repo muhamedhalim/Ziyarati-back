@@ -15,6 +15,7 @@ import {
 import { OpenAiClientProvider } from './openai-client.provider';
 import { OpenAiRequestPolicy } from './openai-request-policy';
 import { mapOpenAiBatchStatus } from '../execution/ai-execution.constants';
+import { minimizeBatchRequests } from '../minimization/batch-minimizer';
 
 /**
  * OpenAI Batch API adapter.
@@ -35,6 +36,7 @@ export class OpenAiBatchProvider implements AiBatchProvider {
   private readonly client?: OpenAI;
   private readonly policy: OpenAiRequestPolicy;
   private readonly defaultWindow: string;
+  private readonly minimizerEnabled: boolean;
 
   constructor(
     private readonly config: ConfigService,
@@ -45,6 +47,8 @@ export class OpenAiBatchProvider implements AiBatchProvider {
       'AI_BATCH_COMPLETION_WINDOW',
       '24h',
     );
+    this.minimizerEnabled =
+      String(config.get('AI_MINIMIZER_ENABLED', 'true')) !== 'false';
     this.policy = new OpenAiRequestPolicy(
       Number(config.get('OPENAI_PROVIDER_MAX_RETRIES', 2)),
       Number(config.get('OPENAI_RETRY_BASE_MS', 500)),
@@ -70,7 +74,11 @@ export class OpenAiBatchProvider implements AiBatchProvider {
     // Resolve (and thereby VERIFY) the tenant's regional deployment BEFORE any
     // bytes leave our process — a fail-closed residency throw aborts here.
     const client = await this.clientFor(tenantId);
-    const jsonl = buildBatchJsonl(requests);
+    // The uploaded file is retained by the provider: minimise at this seam, after
+    // the residency check and before any byte is serialised (residency plan P2).
+    const jsonl = buildBatchJsonl(
+      minimizeBatchRequests(requests, this.minimizerEnabled),
+    );
     const uploaded = await this.policy.execute(
       async () =>
         client.files.create({
