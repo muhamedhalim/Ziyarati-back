@@ -118,6 +118,25 @@ export function invalidMessageField(body: {
   return null;
 }
 
+/**
+ * Bounds for the events that are NOT an AI turn (join, typing, seen, handover,
+ * presence, agent reply). `ai:message` has its own Redis-backed limits; these
+ * had none at all, and each one costs a database lookup to authorise — so one
+ * anonymous socket could drive unlimited queries by looping `ai:join` over
+ * random ids. Counted per socket, in memory: the point is to cap what a single
+ * connection can make the server do, and a per-event Redis round trip would
+ * cost more than the thing it protects.
+ */
+export const WS_AUX_EVENT_LIMIT = 60;
+export const WS_AUX_EVENT_WINDOW_MS = 10_000;
+
+/** Mirrors `CreateHandoverRequestDto.reason` and `SendHandoverReplyDto.content`. */
+const HANDOVER_REASON_MAX_CHARS = 2000;
+const AGENT_REPLY_MAX_CHARS = 4000;
+
+const isUuid = (v: unknown): v is string =>
+  typeof v === 'string' && UUID_PATTERN.test(v);
+
 interface MessagePayload {
   content: string;
   idempotencyKey?: string;
@@ -375,6 +394,79 @@ export class AiRealtimeGateway
   }
 
   /**
+   * Per-socket budget for the non-turn events (see {@link WS_AUX_EVENT_LIMIT}).
+   * Says so once when the budget is first exceeded, then drops quietly until
+   * the window rolls over — an error per dropped event would itself be a flood.
+   */
+  private withinEventBudget(client: Socket): boolean {
+    const now = Date.now();
+    const current = client.data.auxEvents as
+      | { since: number; count: number }
+      | undefined;
+    const window =
+      current && now - current.since < WS_AUX_EVENT_WINDOW_MS
+        ? current
+        : { since: now, count: 0 };
+    window.count += 1;
+    client.data.auxEvents = window;
+    if (window.count <= WS_AUX_EVENT_LIMIT) return true;
+    if (window.count === WS_AUX_EVENT_LIMIT + 1) {
+      client.emit(AI_EVENT.ERROR, {
+        code: ErrorCode.RATE_LIMITED,
+        message: 'Too many requests. Please slow down.',
+      });
+    }
+    return false;
+  }
+
+  /**
+   * Takes a clinic's staff OUT of a conversation room they were in only because
+   * of a handover that has now ended.
+   *
+   * A web guest's AI conversation lives in the shared discovery tenant; a
+   * clinic's agents may join its room while they hold a handover request on it.
+   * Nothing removed them when the conversation was returned to the AI, so an
+   * agent who stayed connected kept receiving that visitor's conversation
+   * events — by then possibly about a booking at a different clinic. Staff whose
+   * OWN tenant owns the conversation (WhatsApp, dashboard) are entitled to the
+   * room by permission and are left in it.
+   *
+   * `fetchSockets` goes through the adapter, so this reaches sockets held by
+   * other API instances too. Never throws: it runs from an event listener.
+   */
+  async evictHandoverAgents(
+    tenantId: string,
+    aiConversationId: string | undefined,
+  ): Promise<void> {
+    if (!tenantId || !aiConversationId) return;
+    try {
+      // A non-guest principal's access is decided by tenant alone, so one
+      // lookup answers it for every staff socket of this clinic.
+      if (
+        await this.access.canAccess(tenantId, aiConversationId, {
+          guest: false,
+        } as AuthenticatedUser)
+      ) {
+        return;
+      }
+      const target = room.conversation(aiConversationId);
+      const sockets = await this.server.in(target).fetchSockets();
+      for (const socket of sockets) {
+        const data = socket.data as {
+          tenantId?: string;
+          user?: AuthenticatedUser;
+        };
+        if (data.user?.guest || data.tenantId !== tenantId) continue;
+        socket.leave(target);
+      }
+    } catch (err) {
+      this.logger.warn(
+        `could not remove handover agents from conversation ${aiConversationId}: ${(err as Error)?.message}`,
+      );
+    }
+  }
+
+  /**
    * Exact expiry check for the credential that admitted this socket.
    *
    * A token is verified once, at the handshake, and a socket can live for hours.
@@ -613,6 +705,7 @@ export class AiRealtimeGateway
     @MessageBody() body: { aiConversationId: string },
   ) {
     if (!this.assertLive(client)) return { joined: null };
+    if (!this.withinEventBudget(client)) return { joined: null };
     // F-6: a conversation room delivers a human agent's replies and lifecycle
     // events, and `mayAccess` below is tenant-scoped for staff — so without a
     // permission check ANY staff member (a doctor with no AI role at all) could
@@ -626,7 +719,10 @@ export class AiRealtimeGateway
       return { joined: null };
     }
     if (
-      !(await this.mayAccess(client, body?.aiConversationId, {
+      // Shape first: a value that is not a UUID cannot name a conversation, and
+      // must not reach a uuid comparison in the database to find that out.
+      !isUuid(body?.aiConversationId) ||
+      !(await this.mayAccess(client, body.aiConversationId, {
         asHandoverAgent: true,
       }))
     ) {
@@ -666,6 +762,8 @@ export class AiRealtimeGateway
     @MessageBody() body: { aiConversationId: string; typing: boolean },
   ) {
     if (!this.assertLive(client)) return;
+    if (!this.withinEventBudget(client)) return;
+    if (!isUuid(body?.aiConversationId)) return;
     // N-2: this used to emit into an arbitrary room WITHOUT joining it — a
     // cross-tenant event-injection primitive that needed no membership at all.
     // Ownership first, then membership (a socket that never joined has no
@@ -691,6 +789,10 @@ export class AiRealtimeGateway
     @MessageBody() body: { aiConversationId: string; messageId: string },
   ) {
     if (!this.assertLive(client)) return;
+    if (!this.withinEventBudget(client)) return;
+    // `messageId` is relayed to the other party's client as-is, so it is held
+    // to the shape of a message id rather than forwarded as whatever was sent.
+    if (!isUuid(body?.aiConversationId) || !isUuid(body?.messageId)) return;
     if (
       !(await this.mayAccess(client, body?.aiConversationId, {
         asHandoverAgent: true,
@@ -713,9 +815,11 @@ export class AiRealtimeGateway
     @MessageBody() body: { status: 'ONLINE' | 'BUSY' | 'AWAY' },
   ) {
     if (!this.assertLive(client)) return { ok: false };
+    if (!this.withinEventBudget(client)) return { ok: false };
     const tenantId = client.data.tenantId as string | undefined;
     const userId = client.data.userId as string | undefined;
     if (!tenantId || !userId || !body?.status) return { ok: false };
+    if (!['ONLINE', 'BUSY', 'AWAY'].includes(body.status)) return { ok: false };
     // F-6: presence describes AGENTS. A socket only registers it at connect if
     // the principal holds `ai.handover.read`; this event let any authenticated
     // socket write itself into the tenant's presence map (which the queue's
@@ -740,6 +844,7 @@ export class AiRealtimeGateway
   @SubscribeMessage(AI_EVENT.PRESENCE_SNAPSHOT)
   async onPresenceSnapshot(@ConnectedSocket() client: Socket) {
     if (!this.assertLive(client)) return [];
+    if (!this.withinEventBudget(client)) return [];
     const tenantId = client.data.tenantId as string | undefined;
     if (!tenantId) return [];
     // F-6: the snapshot is the tenant's staff roster with their status — inbox
@@ -768,11 +873,26 @@ export class AiRealtimeGateway
     @MessageBody() body: { aiConversationId: string; reason?: string },
   ) {
     if (!this.assertLive(client)) return { ok: false };
+    if (!this.withinEventBudget(client)) return { ok: false };
     const tenantId = client.data.tenantId as string | undefined;
-    if (!tenantId || !body?.aiConversationId) {
+    if (!tenantId || !isUuid(body?.aiConversationId)) {
       client.emit(AI_EVENT.ERROR, {
         code: ErrorCode.VALIDATION_ERROR,
         message: 'Missing aiConversationId',
+      });
+      return { ok: false };
+    }
+    // The reason is stored, shown in the clinic's inbox and broadcast to its
+    // agents. REST bounds it in `CreateHandoverRequestDto`; this transport did not.
+    if (
+      body.reason !== undefined &&
+      body.reason !== null &&
+      (typeof body.reason !== 'string' ||
+        body.reason.length > HANDOVER_REASON_MAX_CHARS)
+    ) {
+      client.emit(AI_EVENT.ERROR, {
+        code: ErrorCode.VALIDATION_ERROR,
+        message: `reason must be text of at most ${HANDOVER_REASON_MAX_CHARS} characters`,
       });
       return { ok: false };
     }
@@ -798,7 +918,7 @@ export class AiRealtimeGateway
         client.data.user as AuthenticatedUser | undefined,
         {
           aiConversationId: body.aiConversationId,
-          reason: body.reason,
+          reason: body.reason ?? undefined,
         },
       );
       return { ok: true, handoverId: handover.id };
@@ -820,14 +940,17 @@ export class AiRealtimeGateway
     @MessageBody() body: { aiConversationId: string; content: string },
   ) {
     if (!this.assertLive(client)) return { ok: false };
+    if (!this.withinEventBudget(client)) return { ok: false };
     const tenantId = client.data.tenantId as string | undefined;
     const userId = client.data.userId as string | undefined;
     const user = client.data.user as AuthenticatedUser | undefined;
     if (
       !tenantId ||
       !userId ||
-      !body?.aiConversationId ||
-      !body?.content?.trim()
+      !isUuid(body?.aiConversationId) ||
+      typeof body?.content !== 'string' ||
+      !body.content.trim() ||
+      body.content.length > AGENT_REPLY_MAX_CHARS
     ) {
       client.emit(AI_EVENT.ERROR, {
         code: ErrorCode.VALIDATION_ERROR,
@@ -1123,9 +1246,19 @@ export class AiRealtimeGateway
       client.emit(AI_EVENT.DONE, done);
       // Notify other viewers of this conversation + the tenant's dashboards
       // (the Agent Inbox refreshes on this signal even while HANDED_OVER).
+      //
+      // A SIGNAL, not the reply. This used to send the whole `done` payload —
+      // the assistant's text and, after a booking, the confirmation with its
+      // payment link — to everyone in the room. The room can hold another
+      // clinic's agent (a guest handover), and no listener reads anything but
+      // the fact that something changed: they refetch through REST, where the
+      // caller's own permissions decide what comes back.
       client
         .to(room.conversation(result.aiConversationId))
-        .emit(AI_EVENT.CONVERSATION_UPDATE, done);
+        .emit(AI_EVENT.CONVERSATION_UPDATE, {
+          aiConversationId: result.aiConversationId,
+          handedOver: done.handedOver,
+        });
       // A guest's conversation id goes to its own conversation room (above) and
       // nowhere else: the tenant room is the Agent Inbox's, and a guest's
       // "tenant" is the one every visitor shares.

@@ -36,6 +36,8 @@
  * would block real work.
  */
 
+import { normalizeForScreening } from '../prompt/untrusted-text';
+
 export type ScopeCategory =
   | 'override'
   | 'extraction'
@@ -68,7 +70,7 @@ const OVERRIDE: RegExp[] = [
   /\bdo\s+anything\s+now\b/i,
   /\bDAN\s+(?:mode|prompt)\b/,
   // Arabic
-  /(?:تجاهل|تجاهلي|تناسى|انسى|انسَ|أهمل|اهمل)\s+[^.!?؟\n]{0,40}(?:التعليمات|الأوامر|الاوامر|القواعد|البرومبت|القيود|ما\s+سبق|السابقة)/,
+  /(?:تجاهل|تجاهلي|تناسى|انسى|انس|أهمل|اهمل)\s+[^.!?؟\n]{0,40}(?:التعليمات|الأوامر|الاوامر|القواعد|البرومبت|القيود|ما\s+سبق|السابقة)/,
   // No trailing \b in any Arabic pattern: \b is ASCII-only in JS and never matches
   // next to an Arabic letter.
   /(?:أنت|انت)\s+(?:الآن|الان)/,
@@ -179,11 +181,21 @@ const OFFTOPIC: RegExp[] = [
  * model? First matching category wins; order is by how confident the pattern is.
  */
 export function screenUserMessage(text: string): ScopeVerdict {
-  const message = (text ?? '').trim();
+  // Matched against a folded copy, never the stored text: without it every
+  // pattern below was defeated by a character that changes the bytes and not
+  // the meaning (a zero-width space inside a keyword, full-width letters, an
+  // Arabic tatweel, an instruction written in invisible tag characters).
+  const message = normalizeForScreening(text ?? '').trim();
   if (!message) return { blocked: false };
 
-  if (any(message, OVERRIDE)) return { blocked: true, category: 'override' };
-  if (any(message, EXTRACTION))
+  // The two categories that are attacks rather than off-topic asks are also
+  // matched with line breaks read as spaces: the patterns stop at a line break
+  // (a sentence is one line), so "ignore" on one line and "all previous
+  // instructions" on the next walked straight past them.
+  const oneLine = message.replace(/\s*\n\s*/g, ' ');
+  if (any(message, OVERRIDE) || any(oneLine, OVERRIDE))
+    return { blocked: true, category: 'override' };
+  if (any(message, EXTRACTION) || any(oneLine, EXTRACTION))
     return { blocked: true, category: 'extraction' };
 
   if (FENCE.test(message)) return { blocked: true, category: 'code' };

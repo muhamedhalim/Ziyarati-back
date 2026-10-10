@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, HttpException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
 import { AppError } from '../../../common/errors';
@@ -20,6 +20,7 @@ import {
 } from '../../scheduling/availability.service';
 import { safeZone, zonedYmd } from '../../scheduling/timezone.util';
 import { describeToday } from '../prompt/turn-clock';
+import { isIsoInstant, promptLine } from '../prompt/untrusted-text';
 import { DashboardMetricService } from '../../analytics/dashboard-metric.service';
 import { SubscriptionService } from '../../subscription-billing/subscription.service';
 import { UsageService } from '../../subscription-billing/usage.service';
@@ -31,7 +32,7 @@ import { PaymentLinkService } from '../../payments/payment-link.service';
 import { AiToolCall } from '../providers/ai-provider.interface';
 import { AiAnalyticsService } from '../ai-analytics.service';
 import { HandoverRequestService } from '../handover-request.service';
-import { AI_TOOL } from './ai-tools.constants';
+import { AI_TOOL, AI_TOOL_PERMISSION } from './ai-tools.constants';
 import { AI_PUBLIC_TOOL } from './ai-public-booking-tools.constants';
 import { PublicBookingContextService } from '../../public-booking/public-booking-context.service';
 import {
@@ -140,7 +141,27 @@ export interface ToolContext {
    * Absent means the caller cannot prove a later turn, so nothing is confirmable.
    */
   turnId?: string;
+  /**
+   * The names of the tools this turn actually OFFERED the model — set by
+   * `AiExecutionService` from the list it sent to the provider.
+   *
+   * Which tools a principal is offered is a security decision (a guest gets the
+   * public booking set, a WhatsApp patient the own-clinic set and never the
+   * cross-clinic discovery tools), but until this was enforced here it was only
+   * a decision about what to ADVERTISE: a model can emit a call for any name,
+   * and one steered by injected text will. A call for a tool that was not
+   * offered is refused and recorded as a denial (see `notOffered`). Absent (direct callers and
+   * tests that build their own context) means no restriction, as before.
+   */
+  allowedTools?: readonly string[];
 }
+
+/** Every tool the dispatcher can execute (an unknown name keeps its own answer). */
+const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
+  ...Object.values(AI_TOOL),
+  ...Object.values(AI_PUBLIC_TOOL),
+  ...Object.values(AI_ADMIN_TOOL),
+]);
 
 /** The structured result handed back to the model as the `tool` message. */
 type ToolResult = Record<string, unknown>;
@@ -236,6 +257,18 @@ export class AiToolDispatchService {
         success: false,
         error: 'Invalid tool arguments (not valid JSON).',
       };
+    }
+
+    if (this.notOffered(ctx, call.name)) {
+      const reason = `Forbidden: "${call.name}" is not available in this conversation.`;
+      this.logger.warn(
+        `refused tool "${call.name}": not offered on this turn (conversation=${ctx.aiConversationId})`,
+      );
+      // Recorded like every other denial, so an injected attempt leaves a trace.
+      await this.recordAttempt(ctx, call.name, args, 'DENIED', reason).catch(
+        () => undefined,
+      );
+      return { success: false, error: reason };
     }
 
     try {
@@ -357,6 +390,25 @@ export class AiToolDispatchService {
       // Defensive: business errors are handled per-tool; this catches the rest.
       return { success: false, error: this.msg(err) };
     }
+  }
+
+  /**
+   * Is this a call for a real tool that this turn did NOT offer the model?
+   *
+   * Tools that carry their own permission requirement (the staff booking tools
+   * and the admin tools) are left to that check: it is the stricter one, it
+   * names the missing permission, and it already records the denial. What this
+   * closes is everything WITHOUT such a requirement, where "not offered" was
+   * the only control: the cross-clinic discovery tools on WhatsApp, the public
+   * booking tools for anyone who is not an anonymous visitor, and the
+   * own-clinic tools outside WhatsApp.
+   */
+  private notOffered(ctx: ToolContext, name: string): boolean {
+    if (!ctx.allowedTools || ctx.allowedTools.includes(name)) return false;
+    if (name in AI_TOOL_PERMISSION || name in AI_ADMIN_TOOL_PERMISSION) {
+      return false;
+    }
+    return KNOWN_TOOL_NAMES.has(name);
   }
 
   // ───────────────────────── Dashboard Assistant tools ────────────────────── //
@@ -1212,10 +1264,7 @@ export class AiToolDispatchService {
    * structure nor carry a paragraph of instructions into it.
    */
   private oneLine(text: string | null | undefined): string {
-    return String(text ?? '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 60);
+    return promptLine(text, 60);
   }
 
   // ───────────────────────── Own-clinic discovery (WhatsApp) ─────────────── //
@@ -2049,11 +2098,15 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    const startAt = this.str(args.startAt);
-    if (!startAt || Number.isNaN(new Date(startAt).getTime())) {
+    // Strict shape, not `new Date()`: that parser accepts free text ("book me
+    // at 5"), and this value is stored on the session and shown back to the
+    // model in the pinned booking context.
+    const startAt = this.str(args.startAt)?.trim();
+    if (!isIsoInstant(startAt)) {
       return {
         success: false,
-        error: 'startAt must be a valid ISO-8601 timestamp.',
+        error:
+          'startAt must be the ISO-8601 timestamp exactly as returned by search_public_availability.',
       };
     }
     // Requires a doctor first: a time means nothing without whose calendar it is.
@@ -3193,8 +3246,21 @@ export class AiToolDispatchService {
     };
   }
 
+  /**
+   * The error text handed back to the MODEL, which may repeat it to the person.
+   *
+   * An `AppError` / `HttpException` message is written for a caller and is safe
+   * to show. Anything else is an unexpected failure — a driver error naming a
+   * column or constraint, a TypeError with an internal path — and is logged here
+   * and replaced with a fixed line, so internals never enter the conversation.
+   */
   private msg(err: unknown): string {
-    if (err instanceof AppError) return err.message;
-    return err instanceof Error ? err.message : 'Tool execution failed.';
+    if (err instanceof AppError || err instanceof HttpException) {
+      return err.message;
+    }
+    this.logger.warn(
+      `tool failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return 'Tool execution failed.';
   }
 }

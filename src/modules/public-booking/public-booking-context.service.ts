@@ -14,6 +14,8 @@ import { AI_CONVERSATION_STATUS } from '../ai/ai.constants';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { describeToday } from '../ai/prompt/turn-clock';
+import { isIsoInstant, promptLine } from '../ai/prompt/untrusted-text';
+import { safeZone } from '../scheduling/timezone.util';
 
 /** How far the caller needs the selection to have progressed. */
 export type BookingStep =
@@ -329,13 +331,22 @@ export class PublicBookingContextService {
     // the two a day apart whenever the visitor and the clinic are on opposite
     // sides of midnight — the model then asks for a day the patient did not
     // mean and is told there is nothing free.
+    //
+    // Everything below this point is written into a SYSTEM message. The names
+    // are the clinic's own (it edits them in its dashboard), the timezone is a
+    // free-text column and the slot is a value the model supplied — so each is
+    // reduced to one short inert line (`promptLine`) or checked against its
+    // shape before it is shown. Without that, a clinic could name a branch
+    // with a line break followed by "NEW RULE: …" and have that line read as the
+    // platform's own.
     const lines: string[] = [
-      describeToday(branch?.timezone ?? session.timezone),
+      describeToday(safeZone(branch?.timezone ?? session.timezone)),
     ];
 
     if (session.selectedCityId) {
       const city = await this.cityName(session.selectedCityId);
-      if (city) lines.push(`city: ${city} (id ${session.selectedCityId})`);
+      if (city)
+        lines.push(`city: ${promptLine(city)} (id ${session.selectedCityId})`);
       else stale.push('city');
     }
 
@@ -353,7 +364,7 @@ export class PublicBookingContextService {
       }
       const clinic = await this.clinicName(clinicId);
       if (clinic) {
-        lines.push(`clinic: ${clinic} (id ${clinicId})`);
+        lines.push(`clinic: ${promptLine(clinic)} (id ${clinicId})`);
         lines.push(
           'clinic bookability: CONFIRMED by the database (approved, active, public booking enabled).',
         );
@@ -363,9 +374,11 @@ export class PublicBookingContextService {
     }
 
     if (branch) {
-      const where = [branch.city, branch.address].filter(Boolean).join(' — ');
+      const where = [promptLine(branch.city), promptLine(branch.address, 120)]
+        .filter(Boolean)
+        .join(' — ');
       lines.push(
-        `branch: ${branch.name}${where ? ` (${where})` : ''} (id ${branch.id})`,
+        `branch: ${promptLine(branch.name)}${where ? ` (${where})` : ''} (id ${branch.id})`,
       );
     }
 
@@ -374,7 +387,8 @@ export class PublicBookingContextService {
         branch.tenantId,
         session.selectedServiceIds,
       );
-      if (names.length) lines.push(`services: ${names.join(', ')}`);
+      if (names.length)
+        lines.push(`services: ${names.map((n) => promptLine(n)).join(', ')}`);
       else stale.push('service');
     }
 
@@ -384,12 +398,20 @@ export class PublicBookingContextService {
         session.selectedDoctorId,
       );
       if (doctor)
-        lines.push(`doctor: ${doctor} (id ${session.selectedDoctorId})`);
+        lines.push(
+          `doctor: ${promptLine(doctor)} (id ${session.selectedDoctorId})`,
+        );
       else stale.push('doctor');
     }
 
     if (session.selectedStartAt) {
-      lines.push(`slot: ${session.selectedStartAt}`);
+      // Recorded by `select_slot` from a model-supplied argument. Shown only if
+      // it is exactly a timestamp; anything else is reported as cleared.
+      if (isIsoInstant(session.selectedStartAt)) {
+        lines.push(`slot: ${session.selectedStartAt}`);
+      } else {
+        stale.push('slot');
+      }
     }
 
     const next = branch

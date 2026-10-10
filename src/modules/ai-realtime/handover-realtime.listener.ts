@@ -80,6 +80,9 @@ export class HandoverRealtimeListener {
     };
     this.broadcast(e.tenantId, payload);
     this.toCustomer(e.aiConversationId, payload);
+    // The handover is over: this clinic's agents no longer belong in a guest's
+    // conversation room (a no-op when the conversation is the clinic's own).
+    void this.gateway.evictHandoverAgents(e.tenantId, e.aiConversationId);
   }
 
   @OnEvent(HandoverResolvedEvent.eventName)

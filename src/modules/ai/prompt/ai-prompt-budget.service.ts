@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { AiChatMessage, AiToolDefinition } from '../providers/ai-provider.interface';
 import { RetrievedChunk } from '../ai-rag.service';
 import { AiModelDefinition } from '../routing/ai-model-registry';
+import { neutralizePromptDelimiters } from './untrusted-text';
 
 export interface PromptBudgetTelemetry {
   estimatedInputTokens: number;
@@ -15,30 +16,7 @@ export interface PromptBudgetTelemetry {
   truncatedToolSchemaTokens: number;
 }
 
-/**
- * Makes third-party text unable to close (or reopen) the block it is quoted in.
- *
- * Retrieved knowledge and recalled memory are wrapped in `<knowledge>` /
- * `<memory>` and the model is told to treat everything between the tags as
- * data. That instruction is only as strong as the tags: a knowledge entry
- * containing the literal closing tag ended the block early, and whatever
- * followed it was read at the same level as the platform's own framing. On the
- * public assistant the knowledge belongs to whichever clinic the visitor
- * selected, so one clinic's text could address the shared assistant directly.
- *
- * Only the wrapper tags (and the chat-template role markers some models honour)
- * are rewritten, to a visibly inert form — ordinary angle brackets, HTML in a
- * policy document and every other character are left exactly as written. Runs
- * AFTER truncation so the budget is spent on the original text.
- */
-const PROMPT_DELIMITER_PATTERN =
-  /<\s*\/?\s*(knowledge|memory|system|assistant|user|tool|developer)\b[^>]*>|<\|[^|>\n]{0,40}\|>/gi;
-
-export function neutralizePromptDelimiters(text: string): string {
-  return text.replace(PROMPT_DELIMITER_PATTERN, (tag) =>
-    tag.replace(/</g, '‹').replace(/>/g, '›'),
-  );
-}
+export { neutralizePromptDelimiters };
 
 export interface PromptBuildInput {
   systemPrompt?: string;
@@ -187,7 +165,9 @@ export class AiPromptBudgetService {
   }
 
   truncateToolResult(value: Record<string, unknown>): { content: string; truncatedTokens: number } {
-    const json = JSON.stringify(value);
+    // A tool result carries clinic-owned text (names, descriptions, addresses).
+    // Same treatment as retrieved knowledge: no hidden characters, no wrapper tags.
+    const json = neutralizePromptDelimiters(JSON.stringify(value));
     const content = this.truncate(json, this.maxToolOutputTokens);
     return { content, truncatedTokens: Math.max(0, this.estimate(json) - this.estimate(content)) };
   }

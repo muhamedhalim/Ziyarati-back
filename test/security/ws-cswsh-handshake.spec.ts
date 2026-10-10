@@ -624,7 +624,7 @@ describe('CSWSH — Socket.IO handshake admission, on the wire', () => {
           DISCOVERY,
           'h1',
           'msg-conv',
-          'conv-of-A',
+          '00000000-0000-4000-8000-00000000c00a',
           'PRIVATE-REASON-FROM-A',
         ),
       );
@@ -633,7 +633,7 @@ describe('CSWSH — Socket.IO handshake admission, on the wire', () => {
       await wait(150);
       expect(atAgent[0]).toMatchObject({
         reason: 'PRIVATE-REASON-FROM-A',
-        aiConversationId: 'conv-of-A',
+        aiConversationId: '00000000-0000-4000-8000-00000000c00a',
       });
       expect(atA).toEqual([]);
       expect(atB).toEqual([]);
@@ -678,7 +678,9 @@ describe('CSWSH — Socket.IO handshake admission, on the wire', () => {
       });
 
       // Guest A's turn.
-      orchestrator.handleStream.mockResolvedValueOnce(reply('conv-of-A'));
+      orchestrator.handleStream.mockResolvedValueOnce(
+        reply('00000000-0000-4000-8000-00000000c00a'),
+      );
       guestA.socket.emit(AI_EVENT.MESSAGE, { content: 'hello' });
       await waitFor(() => doneAtA.length === 1);
       await wait(150);
@@ -687,15 +689,19 @@ describe('CSWSH — Socket.IO handshake admission, on the wire', () => {
 
       // Control: a STAFF turn is announced to the inbox, so the silence above is
       // the guard, not a broken broadcast.
-      orchestrator.handleStream.mockResolvedValueOnce(reply('conv-of-staff'));
+      orchestrator.handleStream.mockResolvedValueOnce(
+        reply('00000000-0000-4000-8000-00000000c00c'),
+      );
       agent2.socket.emit(AI_EVENT.MESSAGE, { content: 'hello' });
       await waitFor(() => updatesAtAgent.length === 1);
-      expect(updatesAtAgent[0]).toEqual({ aiConversationId: 'conv-of-staff' });
+      expect(updatesAtAgent[0]).toEqual({
+        aiConversationId: '00000000-0000-4000-8000-00000000c00c',
+      });
       expect(updatesAtB).toEqual([]);
     });
 
     it("guest B cannot join guest A's conversation room, and so never gets the human agent's replies", async () => {
-      conversations.set('conv-of-A', {
+      conversations.set('00000000-0000-4000-8000-00000000c00a', {
         tenantId: DISCOVERY,
         guestSubject: 'guest-A',
       });
@@ -710,15 +716,15 @@ describe('CSWSH — Socket.IO handshake admission, on the wire', () => {
 
       expect(
         await emitAck(guestB.socket, AI_EVENT.JOIN, {
-          aiConversationId: 'conv-of-A',
+          aiConversationId: '00000000-0000-4000-8000-00000000c00a',
         }),
       ).toEqual({ joined: null });
       expect(errorsAtB.map((e) => e.code)).toEqual([ErrorCode.NOT_FOUND]);
       expect(
         await emitAck(guestA.socket, AI_EVENT.JOIN, {
-          aiConversationId: 'conv-of-A',
+          aiConversationId: '00000000-0000-4000-8000-00000000c00a',
         }),
-      ).toEqual({ joined: 'conv-of-A' });
+      ).toEqual({ joined: '00000000-0000-4000-8000-00000000c00a' });
 
       listener.onAccepted(
         new HandoverAcceptedEvent(
@@ -726,7 +732,7 @@ describe('CSWSH — Socket.IO handshake admission, on the wire', () => {
           'h1',
           'msg-conv',
           'agent-1',
-          'conv-of-A',
+          '00000000-0000-4000-8000-00000000c00a',
         ),
       );
       await waitFor(() => atA.length === 1);
@@ -743,14 +749,22 @@ describe('CSWSH — Socket.IO handshake admission, on the wire', () => {
     it("tenant A staff receive nothing broadcast to tenant B, and cannot join tenant B's conversation", async () => {
       principals.set('staff-a', staff('staff-a', TENANT_A, INBOX));
       principals.set('staff-b', staff('staff-b', TENANT_B, INBOX));
-      conversations.set('conv-of-B', { tenantId: TENANT_B });
+      conversations.set('00000000-0000-4000-8000-00000000c00b', {
+        tenantId: TENANT_B,
+      });
       const a = await dial({ token: await staffToken('staff-a', TENANT_A) });
       const b = await dial({ token: await staffToken('staff-b', TENANT_B) });
       const atA = collect(a.socket, AI_EVENT.HANDOVER);
       const atB = collect(b.socket, AI_EVENT.HANDOVER);
 
       listener.onRequested(
-        new HandoverRequestedEvent(TENANT_B, 'h1', 'mc', 'conv-of-B', 'why'),
+        new HandoverRequestedEvent(
+          TENANT_B,
+          'h1',
+          'mc',
+          '00000000-0000-4000-8000-00000000c00b',
+          'why',
+        ),
       );
       await waitFor(() => atB.length === 1);
       await wait(150);
@@ -758,14 +772,14 @@ describe('CSWSH — Socket.IO handshake admission, on the wire', () => {
 
       expect(
         await emitAck(a.socket, AI_EVENT.JOIN, {
-          aiConversationId: 'conv-of-B',
+          aiConversationId: '00000000-0000-4000-8000-00000000c00b',
         }),
       ).toEqual({ joined: null });
       expect(
         await emitAck(b.socket, AI_EVENT.JOIN, {
-          aiConversationId: 'conv-of-B',
+          aiConversationId: '00000000-0000-4000-8000-00000000c00b',
         }),
-      ).toEqual({ joined: 'conv-of-B' });
+      ).toEqual({ joined: '00000000-0000-4000-8000-00000000c00b' });
     });
   });
 
@@ -778,14 +792,18 @@ describe('CSWSH — Socket.IO handshake admission, on the wire', () => {
         'doctor',
         staff('doctor', TENANT_A, ['appointments.read']),
       );
-      conversations.set('conv-1', { tenantId: TENANT_A });
+      conversations.set('00000000-0000-4000-8000-00000000c0a1', {
+        tenantId: TENANT_A,
+      });
       const d = await dial({ token: await staffToken('doctor', TENANT_A) });
       expect(d.connected).toBe(true);
       const errors = collect<{ code: string }>(d.socket, AI_EVENT.ERROR);
 
       expect(serverSide(d.socket).rooms.has(room.tenant(TENANT_A))).toBe(false);
       expect(
-        await emitAck(d.socket, AI_EVENT.JOIN, { aiConversationId: 'conv-1' }),
+        await emitAck(d.socket, AI_EVENT.JOIN, {
+          aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
+        }),
       ).toEqual({ joined: null });
       expect(
         await emitAck(d.socket, AI_EVENT.PRESENCE_UPDATE, { status: 'BUSY' }),
@@ -810,13 +828,15 @@ describe('CSWSH — Socket.IO handshake admission, on the wire', () => {
       "may join their tenant's conversation with only %s",
       async (permission) => {
         principals.set('s', staff('s', TENANT_A, [permission]));
-        conversations.set('conv-1', { tenantId: TENANT_A });
+        conversations.set('00000000-0000-4000-8000-00000000c0a1', {
+          tenantId: TENANT_A,
+        });
         const s = await dial({ token: await staffToken('s', TENANT_A) });
         expect(
           await emitAck(s.socket, AI_EVENT.JOIN, {
-            aiConversationId: 'conv-1',
+            aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
           }),
-        ).toEqual({ joined: 'conv-1' });
+        ).toEqual({ joined: '00000000-0000-4000-8000-00000000c0a1' });
       },
     );
 
@@ -884,15 +904,21 @@ describe('CSWSH — Socket.IO handshake admission, on the wire', () => {
 
     it('a revoked permission takes the socket OUT of the tenant room and conversation rooms, and refuses the next join', async () => {
       principals.set('agent', staff('agent', TENANT_A, INBOX));
-      conversations.set('conv-1', { tenantId: TENANT_A });
+      conversations.set('00000000-0000-4000-8000-00000000c0a1', {
+        tenantId: TENANT_A,
+      });
       const a = await dial({ token: await staffToken('agent', TENANT_A) });
       await waitFor(() => presence.connect.mock.calls.length === 1);
       expect(
-        await emitAck(a.socket, AI_EVENT.JOIN, { aiConversationId: 'conv-1' }),
-      ).toEqual({ joined: 'conv-1' });
+        await emitAck(a.socket, AI_EVENT.JOIN, {
+          aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
+        }),
+      ).toEqual({ joined: '00000000-0000-4000-8000-00000000c0a1' });
       const s = serverSide(a.socket);
       expect(s.rooms.has(room.tenant(TENANT_A))).toBe(true);
-      expect(s.rooms.has(room.conversation('conv-1'))).toBe(true);
+      expect(
+        s.rooms.has(room.conversation('00000000-0000-4000-8000-00000000c0a1')),
+      ).toBe(true);
       const errors = collect<{ code: string }>(a.socket, AI_EVENT.ERROR);
 
       principals.set('agent', staff('agent', TENANT_A, [])); // role stripped
@@ -900,10 +926,14 @@ describe('CSWSH — Socket.IO handshake admission, on the wire', () => {
 
       expect(s.connected).toBe(true); // reduced, not disconnected
       expect(s.rooms.has(room.tenant(TENANT_A))).toBe(false);
-      expect(s.rooms.has(room.conversation('conv-1'))).toBe(false);
+      expect(
+        s.rooms.has(room.conversation('00000000-0000-4000-8000-00000000c0a1')),
+      ).toBe(false);
       expect(presence.disconnect).toHaveBeenCalledTimes(1); // presence count balanced
       expect(
-        await emitAck(a.socket, AI_EVENT.JOIN, { aiConversationId: 'conv-1' }),
+        await emitAck(a.socket, AI_EVENT.JOIN, {
+          aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
+        }),
       ).toEqual({ joined: null });
       expect(
         await emitAck(a.socket, AI_EVENT.PRESENCE_UPDATE, { status: 'AWAY' }),

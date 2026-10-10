@@ -675,6 +675,8 @@ export class AiExecutionService {
         principal: this.ctx.getUser() ?? undefined,
         channel,
         turnId: userMessage?.id,
+        // Only what this turn offered the model may be executed (see ToolContext).
+        allowedTools: tools.map((t) => t.name),
       };
 
       let promptTokens = 0;
@@ -1704,6 +1706,8 @@ export class AiExecutionService {
         principal: this.ctx.getUser() ?? undefined,
         channel,
         turnId: userMessage?.id,
+        // Only what this turn offered the model may be executed (see ToolContext).
+        allowedTools: tools.map((t) => t.name),
       };
 
       let full = '';

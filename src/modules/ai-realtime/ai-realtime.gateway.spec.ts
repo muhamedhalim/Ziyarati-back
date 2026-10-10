@@ -106,7 +106,7 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
   beforeEach(() => {
     orchestrator = {
       handleStream: jest.fn().mockResolvedValue({
-        aiConversationId: 'conv-1',
+        aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
         reply: { content: 'hi' },
         usage: {},
         streamed: false,
@@ -360,22 +360,30 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
 
     describe('F-14 — message size', () => {
       const errors = (client: Socket) =>
-        (client.emit as jest.Mock).mock.calls.filter(([event]) => event === AI_EVENT.ERROR);
+        (client.emit as jest.Mock).mock.calls.filter(
+          ([event]) => event === AI_EVENT.ERROR,
+        );
 
       it('refuses a message over the REST limit with VALIDATION_ERROR, before any entitlement, rate-limit or turn work', async () => {
         const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
-        await gateway.onMessage(client, { content: 'A'.repeat(AI_MESSAGE_MAX_CHARS + 1) });
+        await gateway.onMessage(client, {
+          content: 'A'.repeat(AI_MESSAGE_MAX_CHARS + 1),
+        });
 
         expect(errors(client)).toHaveLength(1);
-        expect(errors(client)[0][1]).toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+        expect(errors(client)[0][1]).toMatchObject({
+          code: ErrorCode.VALIDATION_ERROR,
+        });
         expect(entitlements.resolve).not.toHaveBeenCalled();
         expect(wsRateLimit.checkAndRecord).not.toHaveBeenCalled();
         expect(orchestrator.handleStream).not.toHaveBeenCalled();
       });
 
-      it('accepts a message of exactly the limit — the bound is inclusive, as the REST DTO\'s is', async () => {
+      it("accepts a message of exactly the limit — the bound is inclusive, as the REST DTO's is", async () => {
         const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
-        await gateway.onMessage(client, { content: 'A'.repeat(AI_MESSAGE_MAX_CHARS) });
+        await gateway.onMessage(client, {
+          content: 'A'.repeat(AI_MESSAGE_MAX_CHARS),
+        });
 
         expect(errors(client)).toHaveLength(0);
         expect(orchestrator.handleStream).toHaveBeenCalled();
@@ -385,16 +393,27 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
         const client = guestSocket();
         await gateway.onMessage(client, { content: 'A'.repeat(20_000) });
 
-        expect(errors(client)[0][1]).toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+        expect(errors(client)[0][1]).toMatchObject({
+          code: ErrorCode.VALIDATION_ERROR,
+        });
         expect(orchestrator.handleStream).not.toHaveBeenCalled();
       });
 
-      it.each([{ content: 12345 }, { content: { toString: () => 'x' } }, { content: ['a'] }, { content: null }])(
+      it.each([
+        { content: 12345 },
+        { content: { toString: () => 'x' } },
+        { content: ['a'] },
+        { content: null },
+      ])(
         'a non-string content (%j) is a validation error, not a TypeError thrown across the socket',
         async (body) => {
           const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
-          await expect(gateway.onMessage(client, body as never)).resolves.toBeUndefined();
-          expect(errors(client)[0][1]).toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+          await expect(
+            gateway.onMessage(client, body as never),
+          ).resolves.toBeUndefined();
+          expect(errors(client)[0][1]).toMatchObject({
+            code: ErrorCode.VALIDATION_ERROR,
+          });
         },
       );
 
@@ -405,22 +424,33 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
 
     describe('F-16 — anonymous turns are bounded beyond the per-guest limit', () => {
       const withAddress = (client: Socket, address: string | undefined) => {
-        (client as unknown as { handshake: { address?: string } }).handshake = { address };
+        (client as unknown as { handshake: { address?: string } }).handshake = {
+          address,
+        };
         return client;
       };
-      const tiersCalled = () => wsRateLimit.checkAndRecord.mock.calls.map(([, tier]) => tier);
+      const tiersCalled = () =>
+        wsRateLimit.checkAndRecord.mock.calls.map(([, tier]) => tier);
       const refuseTier = (tier: string, code = ErrorCode.RATE_LIMITED) =>
-        wsRateLimit.checkAndRecord.mockImplementation(async (_id: string, t: string) =>
-          t === tier ? { allowed: false, code, tier } : { allowed: true },
+        wsRateLimit.checkAndRecord.mockImplementation(
+          async (_id: string, t: string) =>
+            t === tier ? { allowed: false, code, tier } : { allowed: true },
         );
       const errorOf = (client: Socket) =>
-        (client.emit as jest.Mock).mock.calls.find(([event]) => event === AI_EVENT.ERROR)?.[1];
+        (client.emit as jest.Mock).mock.calls.find(
+          ([event]) => event === AI_EVENT.ERROR,
+        )?.[1];
 
       it('a guest is checked per guest, then per network address, then against the platform-wide daily budget — in that order', async () => {
-        await gateway.onMessage(withAddress(guestSocket(), '203.0.113.7'), { content: 'hello' });
+        await gateway.onMessage(withAddress(guestSocket(), '203.0.113.7'), {
+          content: 'hello',
+        });
 
         expect(tiersCalled()).toEqual(['guest', 'guest-source', 'guest-day']);
-        expect(wsRateLimit.checkAndRecord).toHaveBeenCalledWith('203.0.113.7', 'guest-source');
+        expect(wsRateLimit.checkAndRecord).toHaveBeenCalledWith(
+          '203.0.113.7',
+          'guest-source',
+        );
         expect(orchestrator.handleStream).toHaveBeenCalled();
       });
 
@@ -445,7 +475,9 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
         await gateway.onMessage(client, { content: 'hello' });
 
         expect(errorOf(client).code).toBe(ErrorCode.RATE_LIMITED);
-        expect(errorOf(client).message).toMatch(/limit for anonymous visitors today/i);
+        expect(errorOf(client).message).toMatch(
+          /limit for anonymous visitors today/i,
+        );
         expect(errorOf(client).message).toMatch(/contact the clinic/i);
         expect(orchestrator.handleStream).not.toHaveBeenCalled();
       });
@@ -461,15 +493,23 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
 
       it('a guest already refused on their own limit consumes nothing further', async () => {
         refuseTier('guest');
-        await gateway.onMessage(withAddress(guestSocket(), '203.0.113.7'), { content: 'hello' });
+        await gateway.onMessage(withAddress(guestSocket(), '203.0.113.7'), {
+          content: 'hello',
+        });
 
         expect(tiersCalled()).toEqual(['guest']);
       });
 
       it('STAFF are not subject to the anonymous tiers', async () => {
-        await gateway.onMessage(withAddress(socket([PERMISSION.AI_CONVERSATIONS_MANAGE]), '203.0.113.7'), {
-          content: 'hello',
-        });
+        await gateway.onMessage(
+          withAddress(
+            socket([PERMISSION.AI_CONVERSATIONS_MANAGE]),
+            '203.0.113.7',
+          ),
+          {
+            content: 'hello',
+          },
+        );
 
         expect(tiersCalled()).toEqual(['authenticated']);
       });
@@ -598,7 +638,7 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
       entitlements.resolve.mockResolvedValueOnce(denied);
 
       const res = await gateway.onHandover(socket(), {
-        aiConversationId: 'conv-1',
+        aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
       });
 
       expect(res).toEqual({ ok: false });
@@ -610,7 +650,10 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
 
       const res = await gateway.onAgentReply(
         socket([PERMISSION.AI_HANDOVER_MANAGE]),
-        { aiConversationId: 'conv-1', content: 'hi' },
+        {
+          aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
+          content: 'hi',
+        },
       );
 
       expect(res).toEqual({ ok: false });
@@ -620,7 +663,10 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
     it('allows ai:agent:reply for an entitled clinic with the permission', async () => {
       const res = await gateway.onAgentReply(
         socket([PERMISSION.AI_HANDOVER_MANAGE]),
-        { aiConversationId: 'conv-1', content: 'hi' },
+        {
+          aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
+          content: 'hi',
+        },
       );
 
       expect(res).toMatchObject({ ok: true });
@@ -633,7 +679,7 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
      */
     it('still refuses ai:agent:reply without the permission, entitlement notwithstanding', async () => {
       const res = await gateway.onAgentReply(socket(), {
-        aiConversationId: 'conv-1',
+        aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
         content: 'hi',
       });
 
@@ -660,7 +706,7 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
       const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
 
       const res = await gateway.onJoin(client, {
-        aiConversationId: 'stale-conv',
+        aiConversationId: '00000000-0000-4000-8000-00000000c0a3',
       });
 
       expect(res).toEqual({ joined: null });
@@ -673,9 +719,11 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
     it('ai:join emits no error on success', async () => {
       const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
 
-      const res = await gateway.onJoin(client, { aiConversationId: 'conv-1' });
+      const res = await gateway.onJoin(client, {
+        aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
+      });
 
-      expect(res).toEqual({ joined: 'conv-1' });
+      expect(res).toEqual({ joined: '00000000-0000-4000-8000-00000000c0a1' });
       expect(client.emit).not.toHaveBeenCalledWith(
         AI_EVENT.ERROR,
         expect.anything(),
@@ -686,7 +734,9 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
       conversationAccess.canAccess.mockResolvedValueOnce(false);
       const client = socket();
 
-      await gateway.onHandover(client, { aiConversationId: 'stale-conv' });
+      await gateway.onHandover(client, {
+        aiConversationId: '00000000-0000-4000-8000-00000000c0a3',
+      });
 
       expect(client.emit).toHaveBeenCalledWith(AI_EVENT.ERROR, {
         code: ErrorCode.NOT_FOUND,
@@ -699,7 +749,7 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
       const client = socket([PERMISSION.AI_HANDOVER_MANAGE]);
 
       await gateway.onAgentReply(client, {
-        aiConversationId: 'stale-conv',
+        aiConversationId: '00000000-0000-4000-8000-00000000c0a3',
         content: 'hi',
       });
 
@@ -783,7 +833,7 @@ describe('AiRealtimeGateway — ai:tool progress', () => {
       onToolEvent?.({ name: 'search_public_availability', phase: 'start' });
       onToolEvent?.({ name: 'search_public_availability', phase: 'end' });
       return {
-        aiConversationId: 'conv-1',
+        aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
         reply: { content: 'here are the times' },
         usage: {},
         streamed: true,
@@ -822,7 +872,7 @@ describe('AiRealtimeGateway — ai:tool progress', () => {
     const stream = jest.fn(async (_tenantId, _input, _onToken, onToolEvent) => {
       onToolEvent?.({ name: 'list_cities', phase: 'start' });
       return {
-        aiConversationId: 'conv-1',
+        aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
         reply: { content: 'ok' },
         usage: {},
         streamed: true,
@@ -841,7 +891,7 @@ describe('AiRealtimeGateway — ai:tool progress', () => {
 
   it('a turn that calls no tool emits no ai:tool at all', async () => {
     const stream = jest.fn(async () => ({
-      aiConversationId: 'conv-1',
+      aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
       reply: { content: 'we open at 9' },
       usage: {},
       streamed: true,
@@ -946,7 +996,7 @@ describe('AiRealtimeGateway — ai:done bookingConfirmation forwarding', () => {
 
   it('forwards the booking data when the last tool call was a successful book_public_appointment', async () => {
     const gateway = build({
-      aiConversationId: 'conv-1',
+      aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
       reply: { content: 'You are all set for Tuesday at 9am.' },
       usage: {},
       streamed: true,
@@ -971,7 +1021,7 @@ describe('AiRealtimeGateway — ai:done bookingConfirmation forwarding', () => {
 
   it('includes paymentLink when one was created (an uninsured booking)', async () => {
     const gateway = build({
-      aiConversationId: 'conv-1',
+      aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
       reply: { content: 'You are all set.' },
       usage: {},
       streamed: true,
@@ -1002,7 +1052,7 @@ describe('AiRealtimeGateway — ai:done bookingConfirmation forwarding', () => {
 
   it('omits paymentLink for an insured booking, never inventing one', async () => {
     const gateway = build({
-      aiConversationId: 'conv-1',
+      aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
       reply: { content: 'You are all set — covered by your insurance.' },
       usage: {},
       streamed: true,
@@ -1022,7 +1072,7 @@ describe('AiRealtimeGateway — ai:done bookingConfirmation forwarding', () => {
 
   it('omits bookingConfirmation when the last tool was not the booking tool', async () => {
     const gateway = build({
-      aiConversationId: 'conv-1',
+      aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
       reply: { content: 'Here are the clinics in Riyadh.' },
       usage: {},
       streamed: true,
@@ -1039,7 +1089,7 @@ describe('AiRealtimeGateway — ai:done bookingConfirmation forwarding', () => {
     // A failed attempt (validation error, slot just taken) carries no
     // booking fields to forward — and must never be misreported as success.
     const gateway = build({
-      aiConversationId: 'conv-1',
+      aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
       reply: { content: 'That slot was just taken — here are other times.' },
       usage: {},
       streamed: true,
@@ -1057,7 +1107,7 @@ describe('AiRealtimeGateway — ai:done bookingConfirmation forwarding', () => {
 
   it('omits bookingConfirmation when the turn called no tool at all', async () => {
     const gateway = build({
-      aiConversationId: 'conv-1',
+      aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
       reply: { content: 'Hi! How can I help?' },
       usage: {},
       streamed: true,
@@ -1088,7 +1138,7 @@ describe('AiRealtimeGateway — ai:message frame validation', () => {
 
   function build() {
     const handleStream = jest.fn().mockResolvedValue({
-      aiConversationId: 'conv-1',
+      aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
       reply: { content: 'ok' },
       usage: {},
       streamed: true,
@@ -1105,7 +1155,9 @@ describe('AiRealtimeGateway — ai:message frame validation', () => {
       } as unknown as HandoverRequestService,
       { sendAgentReply: jest.fn() } as unknown as HandoverChatService,
       {} as unknown as AgentPresenceService,
-      { canAccess: jest.fn().mockResolvedValue(true) } as unknown as AiConversationAccessService,
+      {
+        canAccess: jest.fn().mockResolvedValue(true),
+      } as unknown as AiConversationAccessService,
       {
         resolve: jest.fn().mockResolvedValue({
           allowed: true,
@@ -1127,7 +1179,13 @@ describe('AiRealtimeGateway — ai:message frame validation', () => {
       data: {
         tenantId: TENANT_ID,
         userId: 'guest-1',
-        user: { id: 'guest-1', tenantId: TENANT_ID, roles: [], permissions: [], guest: true },
+        user: {
+          id: 'guest-1',
+          tenantId: TENANT_ID,
+          roles: [],
+          permissions: [],
+          guest: true,
+        },
       },
       emit: jest.fn(),
       join: jest.fn(),
@@ -1287,7 +1345,7 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
     };
     orchestrator = {
       handleStream: jest.fn().mockResolvedValue({
-        aiConversationId: 'conv-1',
+        aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
         reply: { content: 'hi' },
         usage: {},
         streamed: false,
@@ -1419,7 +1477,9 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
     it('refuses ai:join for staff with no AI permission — before any ownership lookup', async () => {
       const client = fake(staffUser(['appointments.read']));
       await expect(
-        gateway.onJoin(client, { aiConversationId: 'c1' }),
+        gateway.onJoin(client, {
+          aiConversationId: '00000000-0000-4000-8000-0000000000c1',
+        }),
       ).resolves.toEqual({ joined: null });
       expect(client.join).not.toHaveBeenCalled();
       expect(access.canAccess).not.toHaveBeenCalled();
@@ -1437,19 +1497,25 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
     ])('lets staff join with just %s', async (permission) => {
       const client = fake(staffUser([permission]));
       await expect(
-        gateway.onJoin(client, { aiConversationId: 'c1' }),
-      ).resolves.toEqual({ joined: 'c1' });
-      expect(client.join).toHaveBeenCalledWith('conv:c1');
+        gateway.onJoin(client, {
+          aiConversationId: '00000000-0000-4000-8000-0000000000c1',
+        }),
+      ).resolves.toEqual({ joined: '00000000-0000-4000-8000-0000000000c1' });
+      expect(client.join).toHaveBeenCalledWith(
+        'conv:00000000-0000-4000-8000-0000000000c1',
+      );
     });
 
     it('exempts a guest from the staff-permission gate — its access is its own conversation, proven by ownership', async () => {
       const client = fake(guestUser());
       await expect(
-        gateway.onJoin(client, { aiConversationId: 'c1' }),
-      ).resolves.toEqual({ joined: 'c1' });
+        gateway.onJoin(client, {
+          aiConversationId: '00000000-0000-4000-8000-0000000000c1',
+        }),
+      ).resolves.toEqual({ joined: '00000000-0000-4000-8000-0000000000c1' });
       expect(access.canAccess).toHaveBeenCalledWith(
         T,
-        'c1',
+        '00000000-0000-4000-8000-0000000000c1',
         expect.objectContaining({ guest: true }),
       );
     });
@@ -1458,7 +1524,9 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
       access.canAccess.mockResolvedValueOnce(false);
       const client = fake(staffUser([READ]));
       await expect(
-        gateway.onJoin(client, { aiConversationId: 'foreign' }),
+        gateway.onJoin(client, {
+          aiConversationId: '00000000-0000-4000-8000-00000000c0a4',
+        }),
       ).resolves.toEqual({ joined: null });
       expect(client.emit).toHaveBeenCalledWith(AI_EVENT.ERROR, {
         code: ErrorCode.NOT_FOUND,
@@ -1476,11 +1544,13 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
         const client = fake(staffUser(CLINIC_STAFF_PERMS));
 
         await expect(
-          gateway.onJoin(client, { aiConversationId: 'guest-conv' }),
-        ).resolves.toEqual({ joined: 'guest-conv' });
+          gateway.onJoin(client, {
+            aiConversationId: '00000000-0000-4000-8000-00000000c0a2',
+          }),
+        ).resolves.toEqual({ joined: '00000000-0000-4000-8000-00000000c0a2' });
         expect(handoverAgentAccess).toHaveBeenCalledWith(
           expect.any(String),
-          'guest-conv',
+          '00000000-0000-4000-8000-00000000c0a2',
         );
       });
 
@@ -1490,7 +1560,9 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
         const client = fake(staffUser(CLINIC_STAFF_PERMS));
 
         await expect(
-          gateway.onJoin(client, { aiConversationId: 'guest-conv' }),
+          gateway.onJoin(client, {
+            aiConversationId: '00000000-0000-4000-8000-00000000c0a2',
+          }),
         ).resolves.toEqual({ joined: null });
       });
 
@@ -1498,7 +1570,9 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
         access.canAccess.mockResolvedValue(false);
         const client = fake(staffUser([]));
 
-        await gateway.onJoin(client, { aiConversationId: 'guest-conv' });
+        await gateway.onJoin(client, {
+          aiConversationId: '00000000-0000-4000-8000-00000000c0a2',
+        });
 
         expect(handoverAgentAccess).not.toHaveBeenCalled();
       });
@@ -1507,9 +1581,11 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
         access.canAccess.mockResolvedValue(false);
         const client = fake(guestUser());
 
-        await gateway.onJoin(client, { aiConversationId: 'guest-conv' });
+        await gateway.onJoin(client, {
+          aiConversationId: '00000000-0000-4000-8000-00000000c0a2',
+        });
         await gateway.onTyping(client, {
-          aiConversationId: 'guest-conv',
+          aiConversationId: '00000000-0000-4000-8000-00000000c0a2',
           typing: true,
         });
 
@@ -1522,14 +1598,13 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
         const client = fake(staffUser(CLINIC_STAFF_PERMS));
 
         const res = await gateway.onHandover(client, {
-          aiConversationId: 'guest-conv',
+          aiConversationId: '00000000-0000-4000-8000-00000000c0a2',
         });
 
         expect(res).toEqual({ ok: false });
         expect(handoverAgentAccess).not.toHaveBeenCalled();
       });
     });
-
 
     it('refuses presence:update and presence:snapshot for non-inbox principals, touching nothing', async () => {
       for (const user of [
@@ -1567,7 +1642,9 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
       const client = fake(guestUser());
       await gateway.onMessage(client, { content: 'hello' } as never);
       expect(client.to).not.toHaveBeenCalledWith(`tenant:${T}`);
-      expect(client.to).toHaveBeenCalledWith('conv:conv-1'); // its own conversation room still is
+      expect(client.to).toHaveBeenCalledWith(
+        'conv:00000000-0000-4000-8000-00000000c0a1',
+      ); // its own conversation room still is
     });
 
     it("is still made for a staff turn — the Agent Inbox's refresh signal", async () => {
@@ -1575,7 +1652,7 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
       await gateway.onMessage(client, { content: 'hello' } as never);
       expect(client.to).toHaveBeenCalledWith(`tenant:${T}`);
       expect(client.toEmit).toHaveBeenCalledWith(AI_EVENT.CONVERSATION_UPDATE, {
-        aiConversationId: 'conv-1',
+        aiConversationId: '00000000-0000-4000-8000-00000000c0a1',
       });
     });
   });
@@ -1588,19 +1665,43 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
       (g: AiRealtimeGateway, c: Socket) => Promise<unknown>,
     ][] = [
       ['ai:message', (g, c) => g.onMessage(c, { content: 'x' } as never)],
-      ['ai:join', (g, c) => g.onJoin(c, { aiConversationId: 'c1' })],
-      ['ai:handover', (g, c) => g.onHandover(c, { aiConversationId: 'c1' })],
+      [
+        'ai:join',
+        (g, c) =>
+          g.onJoin(c, {
+            aiConversationId: '00000000-0000-4000-8000-0000000000c1',
+          }),
+      ],
+      [
+        'ai:handover',
+        (g, c) =>
+          g.onHandover(c, {
+            aiConversationId: '00000000-0000-4000-8000-0000000000c1',
+          }),
+      ],
       [
         'ai:agent:reply',
-        (g, c) => g.onAgentReply(c, { aiConversationId: 'c1', content: 'x' }),
+        (g, c) =>
+          g.onAgentReply(c, {
+            aiConversationId: '00000000-0000-4000-8000-0000000000c1',
+            content: 'x',
+          }),
       ],
       [
         'ai:typing',
-        (g, c) => g.onTyping(c, { aiConversationId: 'c1', typing: true }),
+        (g, c) =>
+          g.onTyping(c, {
+            aiConversationId: '00000000-0000-4000-8000-0000000000c1',
+            typing: true,
+          }),
       ],
       [
         'ai:seen',
-        (g, c) => g.onSeen(c, { aiConversationId: 'c1', messageId: 'm' }),
+        (g, c) =>
+          g.onSeen(c, {
+            aiConversationId: '00000000-0000-4000-8000-0000000000c1',
+            messageId: '00000000-0000-4000-8000-0000000000a1',
+          }),
       ],
       [
         'ai:presence:update',
@@ -1636,16 +1737,20 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
         tokenExpiresAt: Date.now() + 60_000,
       });
       await expect(
-        gateway.onJoin(client, { aiConversationId: 'c1' }),
-      ).resolves.toEqual({ joined: 'c1' });
+        gateway.onJoin(client, {
+          aiConversationId: '00000000-0000-4000-8000-0000000000c1',
+        }),
+      ).resolves.toEqual({ joined: '00000000-0000-4000-8000-0000000000c1' });
       expect(client.disconnect).not.toHaveBeenCalled();
     });
 
     it('treats a socket with no recorded expiry as having nothing to enforce (a token minted without exp)', async () => {
       const client = fake(staffUser([READ]), { tokenExpiresAt: null });
       await expect(
-        gateway.onJoin(client, { aiConversationId: 'c1' }),
-      ).resolves.toEqual({ joined: 'c1' });
+        gateway.onJoin(client, {
+          aiConversationId: '00000000-0000-4000-8000-0000000000c1',
+        }),
+      ).resolves.toEqual({ joined: '00000000-0000-4000-8000-0000000000c1' });
     });
 
     it('counts a running turn, and releases the count even when the turn fails', async () => {
@@ -1746,7 +1851,7 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
       wsAuth.revalidate.mockResolvedValue(staffUser([]));
       const c = staffSocket([READ], { presenceRegistered: true });
       c.rooms.add(`tenant:${T}`);
-      c.rooms.add('conv:c1');
+      c.rooms.add('conv:00000000-0000-4000-8000-0000000000c1');
       c.rooms.add('conv:c2');
       c.rooms.add('some-other-room');
       withSockets(c);
