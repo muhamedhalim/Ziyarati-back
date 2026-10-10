@@ -62,6 +62,12 @@ pids
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 docs
+# The generated partner guide is a TRACKED artifact: src/config/integration-api-guide.spec.ts
+# fails when docs/PARTNER_INTEGRATION_GUIDE.md is missing or out of sync, so CI needs it.
+# Everything else under the repo-root docs/ stays ignored; nested docs/ dirs stay ignored.
+!/docs/
+/docs/*
+!/docs/PARTNER_INTEGRATION_GUIDE.md
 ziyaratech.backup
 
 # TestSprite backend tests — one file carries a platform-admin login inline

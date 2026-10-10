@@ -189,7 +189,8 @@ describe('Patient Journey — data moves from the database to the API response',
       const user = await ds.getRepository(User).save(
         ds.getRepository(User).create({
           tenant: { id: t } as Tenant,
-          email: `rd-${tag}-${suffix}@example.test`,
+          // users.email is CHECK-constrained to lowercase (ck_user_email_lowercase); `tag` is mixed-case
+          email: `rd-${tag}-${suffix}@example.test`.toLowerCase(),
           full_name: `Dr. ${tag}`,
           is_active: true,
         }),

@@ -9,7 +9,8 @@ name: Deploy backend (AWS)
 # `production` GitHub Environment. If a staging stack is built later, re-add a
 # staging job in front of `deploy-production`.
 #
-# Flow:  push to master → preflight → build + typecheck + unit tests + image
+# Flow:  pull request → build + typecheck + tests + image (VALIDATION ONLY — no AWS access, no deploy)
+#        push to master → build + typecheck + tests + image → preflight
 #        → [reviewer approves `production`] → push SHA tag to ECR (immutable)
 #        → ecs-deploy.sh (scan gate, migrate, roll, rollback check, image check,
 #          smoke) → verify-deployed-image.sh (ECS runs exactly this image).
@@ -19,11 +20,15 @@ name: Deploy backend (AWS)
 # fails with the names of any that are missing:
 #   AWS_REGION, AWS_ACCOUNT_ID_PRODUCTION, API_URL_PRODUCTION
 # Optional:
-#   ALLOW_RED_UNIT_TESTS ("true" only while known-red unit tests are being fixed;
-#   the choice stays visible in every run log. Leave UNSET.)
 #   ALLOW_CRITICAL_IMAGE_FINDINGS ("true" downgrades the CRITICAL-CVE gate to a warning)
 
 on:
+  pull_request:
+    branches: [master]
+    paths-ignore:
+      - "infra/**"
+      - "docs/**"
+      - "**/*.md"
   push:
     branches: [master]
     paths-ignore:
@@ -38,12 +43,7 @@ on:
         default: ""
 
 permissions:
-  contents: read
-  id-token: write # OIDC
-
-concurrency:
-  group: deploy-aws
-  cancel-in-progress: false
+  contents: read # everything below; only deploy-production adds id-token for OIDC
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
@@ -51,8 +51,8 @@ env:
 
 jobs:
   preflight:
-    # Deploys only ever come from master, whatever the trigger.
-    if: ${{ github.ref == 'refs/heads/master' }}
+    # Deploys only ever come from master pushes or manual runs on master — never from a pull request.
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -71,15 +71,40 @@ jobs:
             exit 1
           fi
           case "$V_API_URL" in https://*) ;; *) echo "::error::API_URL_PRODUCTION must start with https://"; exit 1;; esac
-          if [ "${{ vars.ALLOW_RED_UNIT_TESTS }}" = "true" ]; then
-            echo "::warning::ALLOW_RED_UNIT_TESTS=true — failing unit tests will NOT block this deploy."
-          fi
 
   build:
-    needs: preflight
+    # Pull requests and master pushes build and test; a manual rollback (image_tag) skips it.
     if: ${{ inputs.image_tag == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }} # superseded PR pushes are cancelled; master builds are not
+
+    # Real Postgres for the database-backed specs (analytics conformance, patient journey).
+    # pgvector image: the AI migrations need the `vector` extension (same as production RDS).
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ziyarati_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      NODE_ENV: test
+      DB_HOST: localhost
+      DB_PORT: "5432"
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: ziyarati_ci
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/ziyarati_ci # disposable CI database, not a secret
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
@@ -95,9 +120,11 @@ jobs:
       - name: Typecheck + build
         run: npm run build
 
-      - name: Unit tests
+      - name: Provision the CI database from the migration chain
+        run: node node_modules/typeorm/cli.js migration:run -d dist/src/config/data-source.js
+
+      - name: Tests (no bypass - any failure stops the pipeline before AWS is touched)
         run: npx jest --ci
-        continue-on-error: ${{ vars.ALLOW_RED_UNIT_TESTS == 'true' }}
 
       - id: tag
         run: echo "tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
@@ -115,7 +142,8 @@ jobs:
           test "$(docker run --rm --entrypoint sh "backend:${GITHUB_SHA}" -c 'test -s /app/certs/rds-global-bundle.pem && echo ok')" = ok
           docker save "backend:${GITHUB_SHA}" | gzip -1 > image.tar.gz
 
-      - uses: actions/upload-artifact@v4
+      - if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/upload-artifact@v4
         with:
           name: backend-image
           path: image.tar.gz
@@ -124,11 +152,19 @@ jobs:
   deploy-production:
     needs: [preflight, build]
     # Runs after a successful build, or — for a manual rollback only — with the
-    # build skipped. A FAILED build (red tests, failed typecheck) never reaches here.
-    if: ${{ always() && needs.preflight.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.image_tag != '')) }}
+    # build skipped. A FAILED build (red tests, failed typecheck) never reaches here,
+    # and a pull request never does (preflight is skipped for PRs).
+    if: ${{ always() && github.event_name != 'pull_request' && needs.preflight.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.image_tag != '')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # ONE production deploy at a time; a second run waits (never cancelled mid-rollout, never races a rollback).
+    concurrency:
+      group: deploy-aws-production
+      cancel-in-progress: false
     environment: production # required reviewer gate (must be configured in GitHub)
+    permissions:
+      contents: read
+      id-token: write # OIDC → zt-production-github-deploy (trust pinned to this repo + the production Environment)
     steps:
       - uses: actions/checkout@v4
 

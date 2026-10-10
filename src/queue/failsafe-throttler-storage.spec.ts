@@ -149,21 +149,34 @@ describe('FailsafeThrottlerStorage', () => {
     // shared timer array on every expiry — O(n²) across a burst. That
     // combination would make 100,000 distinct keys measurably slow (seconds
     // to tens of seconds) in addition to growing memory linearly with key
-    // count. Completing quickly, on top of BoundedLocalCounter's own
+    // count. Completing in linear time, on top of BoundedLocalCounter's own
     // deterministic allocatedBytes proof (bounded-local-counter.spec.ts),
     // is itself evidence neither defect survived the replacement.
-    const startedAt = Date.now();
-    for (let i = 0; i < 100_000; i++) {
-      await storage.increment(
-        `distinct-key-${i}`,
-        60_000,
-        300,
-        60_000,
-        'default',
-      );
-    }
-    const elapsedMs = Date.now() - startedAt;
-    expect(elapsedMs).toBeLessThan(5_000);
+    //
+    // The proof is the SCALING between two burst sizes, not an absolute wall
+    // clock: an absolute 5 s bound passed alone (4.4 s) but failed on a loaded
+    // CI runner running suites in parallel (5.4–5.9 s) without any code change.
+    // A 10x larger burst must cost roughly 10x as much (linear); quadratic
+    // growth would cost ~100x. The ratio is independent of machine speed.
+    const burst = async (n: number, prefix: string): Promise<number> => {
+      const startedAt = process.hrtime.bigint();
+      for (let i = 0; i < n; i++) {
+        await storage.increment(
+          `${prefix}-${i}`,
+          60_000,
+          300,
+          60_000,
+          'default',
+        );
+      }
+      return Number(process.hrtime.bigint() - startedAt) / 1e6;
+    };
+    const smallMs = await burst(10_000, 'small');
+    const largeMs = await burst(100_000, 'large');
+    // Linear ≈ 10x; allow 3x headroom for GC/JIT noise, still far below the ~100x of O(n²).
+    expect(largeMs).toBeLessThan(Math.max(smallMs, 50) * 30);
+    // Safety net for an outright hang or blow-up on any machine.
+    expect(largeMs).toBeLessThan(25_000);
   }, 30_000);
 
   it('creates zero timers across a sustained outage, including many increments and distinct keys', async () => {

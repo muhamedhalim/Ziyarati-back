@@ -145,6 +145,14 @@ const EMPTY_DAY = (date: string, reason: string) => ({
 
 // ───────────────────── §3 / §9 / §10: "what are your hours? where are you?" ──
 
+/** YYYY-MM-DD of today (Asia/Riyadh, the zone the mocked branch uses) plus `n` days. */
+function ymdFromToday(n: number): string {
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Riyadh' }).format(new Date());
+  const d = new Date(`${today}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
 describe('get_branch_info — the hours and location question', () => {
   const INFO = {
     branch: {
@@ -442,9 +450,12 @@ describe('search_public_availability — never a dead end', () => {
   });
 
   it('caps daysAhead at the anonymous horizon however large the model asks for', async () => {
+    // The service searches from max(today, requested date) in the branch's zone, so a hard-coded
+    // calendar date goes stale (it was a time-bomb once the date passed). Use a date 3 days ahead.
+    const requested = ymdFromToday(3);
     const publicRangeAvailability = jest.fn().mockResolvedValue({
       timezone: 'Asia/Riyadh',
-      days: [EMPTY_DAY('2026-09-01', 'fully_booked')],
+      days: [EMPTY_DAY(requested, 'fully_booked')],
     });
     const { service } = build({
       publicRangeAvailability,
@@ -454,14 +465,14 @@ describe('search_public_availability — never a dead end', () => {
     await service.execute(
       GUEST_CTX,
       call(AI_TOOL.SEARCH_PUBLIC_AVAILABILITY, {
-        date: '2026-09-01',
+        date: requested,
         daysAhead: 3650,
       }),
     );
 
     const forwardSearch = publicRangeAvailability.mock.calls[1][2];
-    // 2026-09-02 .. 2026-09-15 — 14 days, the pre-existing abuse control.
-    expect(forwardSearch.toDate).toBe('2026-09-15');
+    // requested+1 .. requested+14 — 14 days, the pre-existing abuse control.
+    expect(forwardSearch.toDate).toBe(ymdFromToday(3 + 14));
   });
 });
 

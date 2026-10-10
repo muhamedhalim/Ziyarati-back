@@ -413,7 +413,10 @@ export const ROLE_GATED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set(
   [
     PERMISSION.PLATFORM_SETTINGS_READ, // system-setting.controller.ts:70, @Roles(ROLE.SUPER_ADMIN)
     PERMISSION.PLATFORM_SETTINGS_MANAGE, // ditto — same blanket controller-level gate
-    PERMISSION.TENANTS_MANAGE, // tenant.controller.ts:151 (class) + per-method @Roles(ROLE.SUPER_ADMIN)
+    // `tenants.manage` is still role-gated by tenant.controller.ts:151 (class) + per-method
+    // @Roles(ROLE.SUPER_ADMIN), but it is no longer listed HERE: notification-catalog.ts now
+    // references `PERMISSION.TENANTS_MANAGE` (recipient resolution), so the coverage scan sees it
+    // and the stale-entry invariant (rbac.constants.spec.ts) forbids keeping it in this set.
   ],
 );
 

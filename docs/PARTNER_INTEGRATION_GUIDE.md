@@ -1,0 +1,243 @@
+# Ziyarati Integration API — partner guide
+
+> Generated from `src/config/integration-api-guide.ts` — do not edit by hand.
+> `<api-host>` is the API address your Ziyarati contact gives you.
+
+Connect an existing clinic system (PMS / EMR / booking tool) to Ziyarati:
+**read** clinic data, **write** (upsert) records, **push** changes to us with
+signed webhooks, and **receive** signed webhooks from us. Everything runs over
+HTTPS + JSON. No database access and no internal knowledge is needed.
+
+## Quick start
+
+1. In the clinic dashboard open the **Developer** page. Create an **API key** with
+   the scopes you need, and copy it — it is shown **once**.
+2. Create a **Connection** for your system (this gives you a **Connection ID**).
+3. Check the key works — no side effects:
+   `curl -H "X-API-Key: zk_..." https://<api-host>/api/v1/integrations/me`
+4. Read data (`GET /integrations/services`) and/or write it
+   (`POST /integrations/customers/upsert`).
+5. Optional: add an **inbound webhook endpoint** so your system can push events,
+   and an **outbound webhook endpoint** so Ziyarati can notify you. Use
+   "Send test event" to verify your receiver.
+
+## Base URL, versioning, format
+
+- Base URL: `https://<api-host>/api/v1` — the version is part of the path.
+- Requests and responses are JSON, UTF-8 (`Content-Type: application/json`).
+- Dates are ISO-8601 with an offset (UTC recommended). Platform ids are UUIDs;
+  your own ids travel as `externalId` (max 255 characters).
+- Field naming is per resource and is **not** uniform: customers use
+  `snake_case` (`full_name`), services / staff / appointments use
+  `camelCase` (`durationMinutes`). Use the exact names listed below.
+
+## Authentication and scopes
+
+Send the key on every request as **either**
+`X-API-Key: zk_...` **or** `Authorization: ApiKey zk_...`.
+The clinic (tenant) is derived from the key alone — never send or trust a tenant
+id. A key works only for the scopes it was created with; a missing scope is
+`403 FORBIDDEN`. A missing, unknown, expired or revoked key is `401 UNAUTHORIZED`
+with the same body in every case (the reason is deliberately not disclosed).
+
+| Scope | Allows |
+|---|---|
+| `integration.services.read` / `staff.read` / `availability.read` / `customers.read` / `appointments.read` | the matching `GET` endpoints |
+| `integration.customers.write` / `services.write` / `staff.write` / `appointments.write` | the matching `POST .../upsert` |
+
+- Use **one key per system**, the **fewest scopes**, and an **expiry date**.
+- **Rotating** a key invalidates the old one immediately — deploy the new key first
+  in your secret store, then rotate. Revoked keys stop working at once.
+- `GET /integrations/me` returns `{ keyId, keyPrefix, name, tenantName, scopes, expiresAt, lastUsedAt }`
+  and never the key itself. Needs no particular scope.
+
+## Reading data
+
+`GET /integrations/{services|staff|customers|appointments}` (list) and `.../:id`
+(one), plus `GET /integrations/availability`. Lists take `page` (1-based) and
+`limit` (max 100) and return `{ data, total, page, limit }`. Order is stable
+across pages (ties are broken by id), so paging never repeats or skips a record.
+An id that does not exist **or belongs to another clinic** is `404`.
+
+## Writing data (upsert)
+
+`POST /integrations/{customers|services|staff|appointments}/upsert`
+
+```json
+{ "connectionId": "<uuid>", "externalId": "PMS-1042", "data": { "full_name": "Amal Khan", "phone": "+966500000001" } }
+```
+
+The pair (connection, `externalId`) identifies the record, so repeating a call is
+safe. Response `200`: `{ outcome, externalId, internalId, changedFields? }` where
+`outcome` is `created`, `updated`, `linked` (matched an existing record and
+mapped it), or `skipped` (nothing changed). A payload the platform will not apply
+is an error, not a silent success (see Errors).
+
+**Idempotency.** Send `Idempotency-Key: <unique string>` to make a retry return
+the original response. Keys live 24 hours. Same key + same body = replay; same key
++ a different body = `422`; same key while the first request is still running =
+`409`.
+
+**Writable fields (exact names):**
+
+- customer: `full_name`, `phone`, `email`, `gender`, `date_of_birth`, `source`, `marketing_opt_in`, `is_active`
+- service: `name`, `description`, `durationMinutes`, `pricingType`, `basePrice`, `isActive`, `categoryId`
+- staff: `title`, `bio`, `isAvailableForBooking`, `bookingBufferMinutes` — **update / link only**. Staff are never created
+  through the API (a person needs a login account created by the clinic); an
+  unmatched staff record is queued for the clinic to review.
+- appointment: `startAt`, `endAt`, `staffId`, `customerId`, `branchId`, `serviceIds`, `notes` — plus the hints
+  `customerExternalId`, `staffExternalId`, `serviceExternalIds`, `action`
+  (`"cancel"` | `"reschedule"`) and `reason`. References must already be
+  mapped (upsert the customer / staff / service first) or the call fails with
+  `422` and `context.reason = "missing_dependency"`. Availability is re-checked
+  inside a transaction, so a double-booking is refused, never created.
+
+**Protected fields are rejected, not ignored.** Naming a platform-owned field
+(ids, tenant, timestamps, `status`, `currency`, payment / settlement / fee
+fields, roles, credentials, `source` on appointments…) returns `422` with
+`context.protectedFields`. Unknown fields are ignored. When the clinic edited a
+record too, the connection's conflict policy decides who wins.
+
+## Limits
+
+| What | Limit |
+|---|---|
+| Read requests | 120 / minute / key by default (per-deployment setting) |
+| Write requests | 300 / minute / key, 600 / minute / clinic |
+| Inbound webhooks to us | 600 / minute / connection, 1200 / minute / clinic |
+| Request body | 100 KB of JSON — larger returns `413` |
+| Page size | 100 |
+| Idempotency window | 24 hours |
+| Inbound delivery history | 30 days |
+
+`429 RATE_LIMITED` carries a `Retry-After` header (seconds) — wait at least that
+long. `503 SERVICE_UNAVAILABLE` means the platform could not safely admit the
+request (nothing was written): retry with exponential backoff and jitter, and
+reuse the same `Idempotency-Key`.
+
+## Errors
+
+Every error has the same shape; branch on `code`, log `requestId` and quote it
+to support.
+
+```json
+{ "statusCode": 422, "code": "UNPROCESSABLE_ENTITY", "message": "...", "path": "/api/v1/...", "timestamp": "...", "requestId": "..." }
+```
+
+| HTTP | `code` | Meaning / what to do |
+|---|---|---|
+| 400 | `VALIDATION_ERROR` | Bad or missing field; `message` / `context.fields` say which. Do not retry unchanged. |
+| 401 | `UNAUTHORIZED` | Key missing, invalid, expired or revoked. |
+| 403 | `FORBIDDEN` | The key lacks the scope for this endpoint, or the clinic account is suspended. |
+| 404 | `NOT_FOUND` | Unknown id, or it belongs to another clinic. |
+| 409 | `CONFLICT` | Same `Idempotency-Key` still in flight — retry shortly. |
+| 413 | `VALIDATION_ERROR` | Body larger than 100 KB. |
+| 422 | `UNPROCESSABLE_ENTITY` | Well-formed but refused: protected field, idempotency-key reuse with a different body, missing dependency, forbidden lifecycle transition, inactive connection. |
+| 429 | `RATE_LIMITED` | Slow down; honour `Retry-After`. |
+| 503 | `SERVICE_UNAVAILABLE` | Temporary; retry with backoff (nothing was written). |
+
+Treat 5xx, 429 and network failures as retryable; 4xx (except 409 / 429) as
+permanent until you change the request.
+
+## Inbound webhooks — your system pushes events to Ziyarati
+
+`POST https://<api-host>/api/v1/integrations/inbound/{connectionId}` — no API key;
+the request is authenticated by an HMAC signature made with the endpoint's
+**signing secret** (shown once when the endpoint is created).
+
+Headers (all required under the default scheme):
+
+| Header | Value |
+|---|---|
+| `x-ziyarati-signature` | `sha256=<hex HMAC-SHA256>` |
+| `x-ziyarati-timestamp` | Unix time in **seconds**; must be within ±300 s of our clock (endpoint-configurable, max 900 s) |
+| `x-ziyarati-event-id` | Unique id of this event (your id; the replay guard) |
+| `x-ziyarati-event` | One of: `customer.upserted`, `service.upserted`, `staff.upserted`, `appointment.created`, `appointment.rescheduled`, `appointment.cancelled` (and enabled on the endpoint) |
+
+Body: `{ "externalId": "...", "data": { ...writable fields... } }`. If the body
+also carries `eventId` / `event`, they must equal the headers.
+
+**Signing string (scheme `hmac_sha256_timestamped_v2`, the default).** Join four
+parts with a newline character (LF, a real newline — HTTP headers cannot contain
+one, so the parts cannot be re-split): `timestamp\neventId\neventType\nrawBody`. Sign
+the **exact bytes you send** as the body.
+
+```js
+const crypto = require("crypto");
+const body = JSON.stringify({ externalId: "PMS-1042", data: { full_name: "Amal Khan", phone: "+966500000001" } });
+const ts = String(Math.floor(Date.now() / 1000));
+const eventId = crypto.randomUUID();
+const eventType = "customer.upserted";
+const mac = crypto.createHmac("sha256", SIGNING_SECRET)
+  .update(ts + "\n" + eventId + "\n" + eventType + "\n" + body).digest("hex");
+// send: X-Ziyarati-Signature: sha256=<mac>, X-Ziyarati-Timestamp: ts,
+//       X-Ziyarati-Event-Id: eventId, X-Ziyarati-Event: eventType
+```
+
+Older endpoints may use the legacy schemes `hmac_sha256_timestamped`
+(`timestamp.rawBody`) or `hmac_sha256_body` (body only). They still work but do
+**not** sign the event id/type, so a captured request can be replayed under a new
+id — move to the default scheme.
+
+**Responses**
+
+| HTTP | Meaning |
+|---|---|
+| 202 | Accepted and queued: `{ received, eventId, status: "accepted" }`. Processing is asynchronous. |
+| 200 | Duplicate of an event id we already have — a safe acknowledgement, do not resend. |
+| 403 | Signature, timestamp or replay check failed (`context.reason`, e.g. `invalid_signature`, `stale_timestamp`, `missing_event_id`). |
+| 422 | Authenticated but refused; `context.reason` is one of `event_not_allowed`, `unsupported_event`, `missing_external_id`, `protected_fields`, `malformed`, `header_body_mismatch`, `connection_inactive`. |
+
+A rejected event **keeps its event id**. After fixing the cause, send it again
+under a **new** event id — re-sending the same id is answered `200` (duplicate).
+Delivery history and rejection reasons are visible to the clinic in the dashboard.
+`POST .../inbound/{connectionId}/ping` only checks reachability, not configuration.
+
+## Outbound webhooks — Ziyarati notifies your system
+
+Register an HTTPS receiver in the dashboard (private, loopback and cloud-metadata
+addresses are refused; redirects are never followed). Subscribe to any of:
+`appointment.created`, `appointment.confirmed`, `appointment.cancelled`, `appointment.completed`, `appointment.rescheduled`, `appointment.no_show`, `payment.succeeded`, `payment.refunded`, `payment.failed`. Payloads contain ids and
+scalar values only (fetch details with the read API). The event name is in the
+`X-Webhook-Event` header; the body is the event data itself.
+
+Every delivery carries: `X-Webhook-Id` (stable across retries),
+`X-Webhook-Event`, `X-Webhook-Timestamp` (Unix seconds) and
+`X-Webhook-Signature` = `sha256=` + hex HMAC-SHA256 of
+`timestamp + "." + rawBody` using the endpoint's secret (`whsec_...`).
+
+```js
+function verify(rawBody, headers, secret) {
+  const ts = headers["x-webhook-timestamp"];
+  if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false; // reject stale
+  const expected = "sha256=" + require("crypto").createHmac("sha256", secret)
+    .update(ts + "." + rawBody).digest("hex");
+  const a = Buffer.from(expected), b = Buffer.from(headers["x-webhook-signature"] || "");
+  return a.length === b.length && require("crypto").timingSafeEqual(a, b);
+}
+```
+
+- Verify against the **raw** body bytes, in constant time.
+- Answer with a **2xx quickly** (10 s timeout) and do the work afterwards.
+- Delivery is **at-least-once**: **deduplicate on `X-Webhook-Id`**.
+  There is **no ordering guarantee** — use the timestamps / re-read the record.
+- `408`, `425`, `429`, `5xx`, timeouts and network errors are retried (up to 6
+  attempts, exponential backoff from 5 s). Any other `4xx`, and any `3xx`, is
+  permanent. Failed deliveries can be replayed from the dashboard.
+- "Send test event" delivers a synthetic `webhook.test` to verify your receiver
+  (5 per minute per endpoint). It is never a subscribable event.
+- Rotating the secret takes effect immediately; update your receiver first.
+
+## Production checklist
+
+Keep keys and secrets in a secrets manager (never in source control, chat or logs);
+one key per system; least-privilege scopes; set an expiry and rotate when staff
+leave; alert on sustained 401/403/429; deduplicate webhooks; monitor your receiver.
+
+## Not supported (do not build against these)
+
+Bulk import through an API key, lookup by `externalId`, customer / service change
+events, hard deletes, IP allow-lists, OAuth client-credentials for partners, a
+sandbox clinic, key-rotation grace periods, ordered event delivery, and
+one-key-per-connection binding (a key with a write scope may write through any
+active connection of its clinic).

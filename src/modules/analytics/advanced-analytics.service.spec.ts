@@ -188,6 +188,8 @@ describe('AdvancedAnalyticsService — metric conformance against raw tables (T1
       ds.getRepository(Service).create({
         tenant: { id: tenantId } as Tenant,
         name: 'Consultation',
+        // services.public_slug is NOT NULL (marketplace BE-4); ServiceService.create() assigns it in production
+        public_slug: `conformance-${suffix}`,
         duration_minutes: 30,
       }),
     );
@@ -205,6 +207,8 @@ describe('AdvancedAnalyticsService — metric conformance against raw tables (T1
       ds.getRepository(StaffProfile).create({
         user: { id: staffUser.id } as User,
         tenant: { id: tenantId } as Tenant,
+        // staff_profiles.public_slug is NOT NULL and globally unique (UQ_staff_profiles_public_slug)
+        public_slug: `conformance-staff-${suffix}`,
       }),
     );
     staffId = staff.id;
