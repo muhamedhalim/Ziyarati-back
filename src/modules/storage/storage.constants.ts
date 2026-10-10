@@ -130,49 +130,6 @@ export const AI_TRAINING_UPLOAD_POLICY: UploadPolicy = {
   requireExtensionMatch: true,
 };
 
-/**
- * Files an ANONYMOUS visitor may attach to a public AI chat.
- *
- * This is the strictest population the bucket has, because it is the only one
- * an unauthenticated stranger can write to. It is a deliberate SUBSET of
- * `DOCUMENT_UPLOAD_POLICY` with identical enforcement (`requireMagicBytes` and
- * `requireExtensionMatch` both true) rather than a reuse of it, so that
- * loosening tenant document rules later can never silently loosen this one.
- *
- * Every accepted format has a magic-byte signature implemented in
- * `matchesSignature`, so `requireMagicBytes: true` is genuinely enforceable
- * here — a renamed `.exe`, a script, an archive or an Office document is
- * rejected on its bytes, not on the client's word about them.
- */
-export const GUEST_CHAT_ATTACHMENT_UPLOAD_POLICY: UploadPolicy = {
-  name: 'chat attachment',
-  allowedTypes: [
-    { mime: 'application/pdf', extensions: ['pdf'] },
-    { mime: 'image/png', extensions: ['png'] },
-    { mime: 'image/jpeg', extensions: ['jpg', 'jpeg'] },
-    { mime: 'image/webp', extensions: ['webp'] },
-  ],
-  requireMagicBytes: true,
-  requireExtensionMatch: true,
-};
-
-/**
- * Per-file cap for guest chat attachments (5 MB), independent of
- * `UPLOAD_MAX_BYTES` (10 MB) which governs authenticated tenant documents.
- * Anonymous writes get the tighter number; override with
- * `GUEST_ATTACHMENT_MAX_BYTES`.
- */
-export const DEFAULT_GUEST_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
-
-export function resolveGuestAttachmentMaxBytes(): number {
-  const raw = Number(process.env.GUEST_ATTACHMENT_MAX_BYTES);
-  return Number.isFinite(raw) && raw > 0
-    ? raw
-    : DEFAULT_GUEST_ATTACHMENT_MAX_BYTES;
-}
-
-export const GUEST_ATTACHMENT_MAX_BYTES = resolveGuestAttachmentMaxBytes();
-
 /** Media types WhatsApp can deliver inbound. Executables/archives are absent by design. */
 export const WHATSAPP_MEDIA_UPLOAD_TYPES: readonly AllowedUploadType[] = [
   { mime: 'image/jpeg', extensions: ['jpg', 'jpeg'] },

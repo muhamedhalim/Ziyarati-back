@@ -1,7 +1,7 @@
 /**
  * Spec 014 (Clinic Platform Completion) — T025 (FR-C016). Per-IP throttle
  * ceilings for the `@Public()` patient action-link routes, following
- * `GUEST_ATTACHMENT_THROTTLE`'s shape exactly. The platform-wide 300/min
+ * `PUBLIC_AVAILABILITY_THROTTLE`'s shape exactly. The platform-wide 300/min
  * default (`app.module.ts`) is explicitly insufficient here: these routes
  * are reachable by anyone with (or guessing at) a link, with no auth at all,
  * so each gets its own, much tighter ceiling.

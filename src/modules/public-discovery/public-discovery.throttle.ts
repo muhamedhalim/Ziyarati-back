@@ -1,7 +1,7 @@
 /**
  * Spec 014 (Clinic Platform Completion) — T069 (FR-P014). Per-IP throttle
  * ceilings for `PublicDiscoveryController`'s `@Public()` routes, following
- * `GUEST_ATTACHMENT_THROTTLE`'s and `public-booking.throttle.ts`'s shape. The
+ * `PUBLIC_AVAILABILITY_THROTTLE`'s and `public-booking.throttle.ts`'s shape. The
  * platform-wide 300/min default (`app.module.ts`) is explicitly insufficient
  * here: this is the enumeration surface for the entire public clinic
  * directory — a scraper needs no auth and no prior relationship to any

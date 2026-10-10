@@ -89,14 +89,6 @@ describe('MinimizationSession — outbound', () => {
     ).toBe(content);
   });
 
-  it('never alters image parts', () => {
-    const imageParts = ['data:image/png;base64,AAAA'];
-    const s = new MinimizationSession([
-      { role: 'user', content: 'x', imageParts },
-    ]);
-    expect(s.messages[0].imageParts).toBe(imageParts);
-  });
-
   it('does not mutate its input', () => {
     const input: AiChatMessage[] = [{ role: 'user', content: `call ${PHONE}` }];
     const snapshot = JSON.stringify(input);

@@ -7,7 +7,7 @@
  * — not because of a setup/compile error.
  *
  * Rate-limit note: like every other `@Throttle()`-gated route in this
- * codebase (see `GUEST_ATTACHMENT_THROTTLE`'s own precedent), the ceiling is
+ * codebase (see `PUBLIC_AVAILABILITY_THROTTLE`'s own precedent), the ceiling is
  * relaxed to a no-op under `NODE_ENV=test` so the suite's own request volume
  * never trips it — genuinely reproducing a 429 here isn't practical (would
  * mean sending >1,000,000 requests). The NUMERIC ceilings themselves

@@ -17,7 +17,7 @@ describe('public-booking.throttle (T025, FR-P014)', () => {
     expect(PUBLIC_BOOKING_CONFIRM_LIMIT).toBeLessThan(GLOBAL_DEFAULT_LIMIT);
   });
 
-  it('both throttle configs use a 60s window, following GUEST_ATTACHMENT_THROTTLE\'s shape', () => {
+  it('both throttle configs use a 60s window, following PUBLIC_AVAILABILITY_THROTTLE\'s shape', () => {
     expect(PUBLIC_AVAILABILITY_THROTTLE.default.ttl).toBe(60_000);
     expect(PUBLIC_BOOKING_CONFIRM_THROTTLE.default.ttl).toBe(60_000);
   });

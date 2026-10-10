@@ -1,7 +1,7 @@
 /**
  * Spec 014 (Clinic Platform Completion) — T025 (FR-P014). Per-IP throttle
- * ceilings for the `@Public()` public booking routes, following
- * `GUEST_ATTACHMENT_THROTTLE`'s shape exactly. The platform-wide 300/min
+ * ceilings for the `@Public()` public booking routes, as
+ * `{ default: { limit, ttl } }` named-throttler overrides. The platform-wide 300/min
  * default (`app.module.ts`) is explicitly insufficient here: an anonymous
  * visitor reaches these with no auth and no prior relationship to the
  * clinic at all.

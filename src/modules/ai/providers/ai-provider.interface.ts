@@ -18,20 +18,6 @@ export interface AiChatMessage {
   tool_call_id?: string;
   /** Tool name (on a `tool` role message). */
   name?: string;
-  /**
-   * Images to send alongside `content` on a `user` turn, as `data:` URLs.
-   *
-   * Additive and optional: `content` keeps its `string | null` shape, so every
-   * existing caller, adapter and token estimate is untouched. An adapter whose
-   * model has no vision path is free to ignore this field — the text still
-   * carries the turn.
-   *
-   * Used by exactly one caller today: the guest-attachment extractor's
-   * single, non-streaming pass that turns an uploaded image into text. Chat
-   * turns never carry images, so an attachment is paid for once at upload
-   * rather than re-uploaded on every subsequent turn about it.
-   */
-  imageParts?: string[];
 }
 
 /** An OpenAI-style function/tool definition (JSON-schema parameters). */

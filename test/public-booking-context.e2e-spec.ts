@@ -334,7 +334,7 @@ describe('PublicBookingContextService — real Postgres (Phase 2)', () => {
    * existed, on both the discovery routes and the booking routes.
    *
    * Rate-limit note: like every other `@Throttle()`-gated route in this codebase (see
-   * `GUEST_ATTACHMENT_THROTTLE`'s own precedent and `patient-cancellation.e2e-spec.ts`),
+   * `PUBLIC_AVAILABILITY_THROTTLE`'s own precedent and `patient-cancellation.e2e-spec.ts`),
    * the ceiling is relaxed to a no-op under `NODE_ENV=test`. The NUMERIC ceilings are
    * proven in `public-booking.throttle.spec.ts` / `public-discovery.throttle.spec.ts`
    * (T025/T069); this suite instead proves the routes survive a burst without crashing.

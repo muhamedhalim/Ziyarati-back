@@ -150,7 +150,6 @@ describe('every AI execution path resolves to a permitted model', () => {
     ['knowledge-base embedding', 'kb_embedding', 'ai.kb.embed'],
     ['background report job', 'report', 'ai.report.generate'],
     ['scheduled evaluation job', 'evaluation', 'ai.evaluation.run'],
-    ['guest attachment vision pass', 'attachment_extraction', 'ai.attachment.extract'],
     ['billing upgrade estimate', 'billing_upgrade_estimate', 'billing.upgrade.estimate'],
   ];
 
@@ -189,7 +188,7 @@ describe('every AI execution path resolves to a permitted model', () => {
   it('has no AI completion call site that picks its own model', () => {
     // Structural, and deliberately so: the regression is a NEW call site that
     // reaches AiProviderFactory directly with a model of its own — exactly what
-    // the guest attachment vision pass used to do. A behavioural test can only
+    // the (since removed) guest attachment vision pass used to do. A behavioural test can only
     // cover the call sites it already knows about.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fs = require('node:fs');

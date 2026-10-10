@@ -24,7 +24,7 @@ describe('public-discovery.throttle (T069, FR-P014)', () => {
     );
   });
 
-  it("every throttle config uses a 60s window, following GUEST_ATTACHMENT_THROTTLE's shape", () => {
+  it("every throttle config uses a 60s window, following PUBLIC_AVAILABILITY_THROTTLE's shape", () => {
     expect(PUBLIC_DISCOVERY_CITIES_THROTTLE.default.ttl).toBe(60_000);
     expect(PUBLIC_DISCOVERY_CLINICS_THROTTLE.default.ttl).toBe(60_000);
     expect(PUBLIC_DISCOVERY_CLINIC_DETAIL_THROTTLE.default.ttl).toBe(60_000);

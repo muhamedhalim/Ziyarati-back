@@ -1,4 +1,4 @@
-import { forwardRef, Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -9,15 +9,8 @@ import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 import { AiMemoryModule } from '../ai-memory/ai-memory.module';
 
-import { AiModule } from '../ai/ai.module';
-import { AiAttachmentModule } from '../ai-attachment/ai-attachment.module';
-import { StorageModule } from '../storage/storage.module';
-
 import { GuestSessionService } from './guest-session.service';
 import { GuestChatController } from './guest-chat.controller';
-import { GuestAttachmentController } from './attachments/guest-attachment.controller';
-import { GuestAttachmentService } from './attachments/guest-attachment.service';
-import { GuestAttachmentExtractionService } from './attachments/guest-attachment-extraction.service';
 
 /**
  * Guest (anonymous) AI chat (Feature 1). Reuses `FreeAccessOverrideService`
@@ -30,14 +23,6 @@ import { GuestAttachmentExtractionService } from './attachments/guest-attachment
     TypeOrmModule.forFeature([Tenant, AiConversation, AuditLog]),
     SubscriptionBillingModule,
     AiMemoryModule,
-    // Chat attachments: the R2 gateway (StorageModule), the Redis staging the
-    // redeeming turn reads from (AiAttachmentModule), and AiProviderFactory
-    // for the single vision pass that turns an uploaded image into text.
-    // AiModule does NOT import this module — the staging service was hoisted
-    // into its own module precisely so it would not have to.
-    StorageModule,
-    AiAttachmentModule,
-    forwardRef(() => AiModule),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -46,12 +31,8 @@ import { GuestAttachmentExtractionService } from './attachments/guest-attachment
       }),
     }),
   ],
-  controllers: [GuestChatController, GuestAttachmentController],
-  providers: [
-    GuestSessionService,
-    GuestAttachmentService,
-    GuestAttachmentExtractionService,
-  ],
+  controllers: [GuestChatController],
+  providers: [GuestSessionService],
   exports: [GuestSessionService],
 })
 export class GuestChatModule {}

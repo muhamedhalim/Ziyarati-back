@@ -51,8 +51,6 @@ describe('AiExecutionService — availableTools() / defaultSystemPrompt() channe
       { get: jest.fn().mockReturnValue(10) } as any, // config — constructor reads AI_MAX_TOOL_CALLS_PER_ITERATION eagerly
       unused, // platformSettings
       unused, // bookingContext
-      unused, // attachmentStaging
-      unused, // sessions
     );
   });
 
@@ -216,8 +214,6 @@ describe('AiExecutionService — buildBookingContext() per transport (F-28)', ()
       { get: jest.fn().mockReturnValue(10) } as any, // config
       unused, // platformSettings
       { describeSelection } as any, // bookingContext
-      unused, // attachmentStaging
-      unused, // sessions
     );
     const build = (channel?: string) =>
       (service as any).buildBookingContext('tenant-1', 'conv-1', channel) as Promise<

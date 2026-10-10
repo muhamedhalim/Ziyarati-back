@@ -938,7 +938,7 @@ export const validate = (config: Record<string, unknown>) => {
     // behaviour change:
     //
     //   1. NO `.default()` anywhere in it. Several of these keys are read at
-    //      MODULE LOAD (e.g. `GUEST_ATTACHMENT_MAX_BYTES` in
+    //      MODULE LOAD (e.g. `UPLOAD_MAX_BYTES` in
     //      storage.constants.ts), which happens BEFORE ConfigModule validates
     //      and writes defaults back into `process.env` — a default here would
     //      therefore be silently ignored at exactly those call sites while
@@ -1033,9 +1033,6 @@ export const validate = (config: Record<string, unknown>) => {
     // Staff invitation lifetime, minutes (auth.service.ts).
     STAFF_INVITATION_TTL_MIN: Joi.number().integer().min(5),
 
-    // Guest-chat attachment cap, bytes (storage.constants.ts — module-load).
-    GUEST_ATTACHMENT_MAX_BYTES: Joi.number().integer().min(1),
-
     // Direct WhatsApp send provider (meta-whatsapp.provider.ts). Same version
     // pattern as META_GRAPH_API_VERSION above.
     WHATSAPP_API_VERSION: Joi.string().pattern(/^v\d+\.\d+$/),
@@ -1060,17 +1057,11 @@ export const validate = (config: Record<string, unknown>) => {
     INTEGRATION_ALLOW_PRIVATE_BASE_URL: Joi.string().valid('true', 'false'),
     INTEGRATION_OAUTH_TEST_PROVIDER: Joi.string().valid('true', 'false'),
 
-    // The two prompt sub-budgets that were added after the AI block above was
-    // written.
-    //
-    // `AI_ATTACHMENT_VISION_MODEL` used to sit here. It was read at exactly one
-    // call site (`GuestAttachmentExtractionService.extractImage`), which now
-    // routes through `AiModelRouterService` like every other AI call, so the
-    // variable has no reader left and is deliberately not carried forward as a
-    // dead knob that looks like it still selects a model. `allowUnknown: true`
-    // means a stale value left in an operator's `.env` is ignored rather than
-    // failing boot.
-    AI_PROMPT_ATTACHMENT_TOKENS: Joi.number().integer().min(0),
+    // The prompt sub-budget that was added after the AI block above was
+    // written. (`AI_PROMPT_ATTACHMENT_TOKENS`, `GUEST_ATTACHMENT_MAX_BYTES` and
+    // `AI_ATTACHMENT_VISION_MODEL` went with the chat file-upload feature;
+    // `allowUnknown: true` means a stale value in an operator's `.env` is
+    // ignored rather than failing boot.)
     AI_PROMPT_BOOKING_CONTEXT_TOKENS: Joi.number().integer().min(0),
 
     // Presence-only: the platform AI-monitoring screen reports whether these

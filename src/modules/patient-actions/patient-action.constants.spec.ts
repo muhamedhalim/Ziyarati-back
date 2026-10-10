@@ -18,7 +18,7 @@ describe('patient-action.constants throttles (T025, FR-C016)', () => {
     expect(PATIENT_ACTION_LINK_CONFIRM_LIMIT).toBeLessThan(GLOBAL_DEFAULT_LIMIT);
   });
 
-  it('both throttle configs use a 60s window, following GUEST_ATTACHMENT_THROTTLE\'s shape', () => {
+  it('both throttle configs use a 60s window, following PUBLIC_AVAILABILITY_THROTTLE\'s shape', () => {
     expect(PATIENT_ACTION_LINK_RESOLVE_THROTTLE.default.ttl).toBe(60_000);
     expect(PATIENT_ACTION_LINK_CONFIRM_THROTTLE.default.ttl).toBe(60_000);
   });

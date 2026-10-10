@@ -299,26 +299,6 @@ export class OpenAiChatProvider implements AiCompletionProvider {
           })),
         };
       }
-      // Vision: a user turn carrying images becomes OpenAI's multi-part
-      // content array. Only this branch differs from the plain-text mapping —
-      // a message with no `imageParts` (every chat turn) takes exactly the
-      // same path it always did.
-      if (m.role === 'user' && m.imageParts?.length) {
-        return {
-          role: 'user',
-          content: [
-            ...(m.content ? [{ type: 'text' as const, text: m.content }] : []),
-            ...m.imageParts.map((url) => ({
-              type: 'image_url' as const,
-              // `low` detail is deliberate: the extractor asks for the text on
-              // a report, not a fine-grained visual analysis, and detail
-              // `high` multiplies the image's token cost several-fold on an
-              // endpoint an anonymous visitor can reach.
-              image_url: { url, detail: 'low' as const },
-            })),
-          ],
-        } satisfies OpenAI.Chat.ChatCompletionMessageParam;
-      }
       return { role: m.role, content: m.content ?? '' } as OpenAI.Chat.ChatCompletionMessageParam;
     });
   }

@@ -42,11 +42,6 @@ import {
   PUBLIC_DISCOVERY_TOOL_NAMES,
 } from './tools/ai-public-booking-tools.constants';
 import { PublicBookingContextService } from '../public-booking/public-booking-context.service';
-import { AiAttachmentStagingService } from '../ai-attachment/ai-attachment-staging.service';
-import { ConversationSessionService } from '../ai-orchestrator/conversation-session.service';
-import type { ConversationAttachment } from '../ai-orchestrator/ai-channel.constants';
-import { MAX_ATTACHMENTS_PER_CONVERSATION } from '../ai-attachment/ai-attachment.constants';
-import type { AttachmentPromptInput } from './prompt/ai-prompt-budget.service';
 import {
   AI_ADMIN_TOOLS,
   AI_ADMIN_TOOL_PERMISSION,
@@ -242,15 +237,6 @@ export class AiExecutionService {
      * what finally shows them to the model.
      */
     private readonly bookingContext: PublicBookingContextService,
-    /**
-     * Redeems files the visitor uploaded before this turn. Read-only custody:
-     * nothing here ever WRITES a staged attachment — that is the guest upload
-     * endpoint's job — so a turn can only ever consume something the uploader
-     * already put there under their own subject.
-     */
-    private readonly attachmentStaging: AiAttachmentStagingService,
-    /** Persists the redeemed descriptors onto the conversation's session jsonb. */
-    private readonly sessions: ConversationSessionService,
     /** Fleet-level counters. Optional: a missing counter must never cost a turn. */
     @Optional() private readonly platformMetrics?: MetricsService,
   ) {
@@ -446,7 +432,10 @@ export class AiExecutionService {
           fallback: boolean;
           lastTool?: { name: string; result: Record<string, unknown> };
         }>(tenantId, requestKey);
-        if (replay) return replay;
+        if (replay) {
+          this.assertReplayBelongsTo(replay, aiConversationId);
+          return replay;
+        }
       }
       if (claim !== 'CLAIMED') {
         throw new AppError(ErrorCode.CONFLICT, {
@@ -652,22 +641,11 @@ export class AiExecutionService {
         channel,
       );
 
-      // Files the visitor attached, claimed for this conversation. Runs
-      // before the prompt is assembled and after the booking context, so a
-      // turn that both selects a clinic and attaches a report carries both.
-      const attachments = await this.resolveAttachments(
-        tenantId,
-        aiConversationId,
-        aiConv.session,
-        dto,
-      );
-
       const built = this.budgets.build({
         systemPrompt: corePrompt,
         agentInstructions: clinicInstructions,
         bookingContext,
         ragChunks: chunks,
-        attachments,
         memories,
         history: recent
           .reverse()
@@ -1509,6 +1487,7 @@ export class AiExecutionService {
           mirroredMessageId?: string | null;
         }>(tenantId, requestKey);
         if (replay) {
+          this.assertReplayBelongsTo(replay, aiConversationId);
           // AI-009 (SD-1 §Paths not needing the buffer): this content was
           // already checked by the disclosure gate at WRITE time (the
           // original streaming turn that produced `replay.message.content`
@@ -1691,22 +1670,11 @@ export class AiExecutionService {
         channel,
       );
 
-      // Files the visitor attached, claimed for this conversation. Runs
-      // before the prompt is assembled and after the booking context, so a
-      // turn that both selects a clinic and attaches a report carries both.
-      const attachments = await this.resolveAttachments(
-        tenantId,
-        aiConversationId,
-        aiConv.session,
-        dto,
-      );
-
       const built = this.budgets.build({
         systemPrompt: corePrompt,
         agentInstructions: clinicInstructions,
         bookingContext,
         ragChunks: chunks,
-        attachments,
         memories,
         history: recent
           .reverse()
@@ -2946,91 +2914,28 @@ export class AiExecutionService {
   }
 
   /**
-   * Resolves the files this turn should be able to talk about, and binds any
-   * newly claimed ones to the conversation.
+   * A stored idempotent response may only be replayed into the conversation
+   * that produced it.
    *
-   * Three properties matter here and each is enforced by construction rather
-   * than by a check someone could forget:
-   *
-   *  - **Ownership.** Redemption is keyed by the ACTING principal's subject,
-   *    taken from `TenantContextService` (WS: the verified handshake token),
-   *    never from the request. An id belonging to another visitor resolves to
-   *    a staging key that does not exist, so it is simply reported missing —
-   *    the same answer an expired id gets, which is also why this is not an
-   *    existence oracle over other people's uploads.
-   *  - **Single use.** `redeem` does a `GETDEL`, so one upload can never be
-   *    bound to two conversations and a captured id cannot be replayed.
-   *  - **Server-only content.** The descriptor that lands in the session was
-   *    written by the upload endpoint: sanitized filename, server-extracted
-   *    text. Nothing the client sent in `attachmentIds` reaches the prompt.
-   *
-   * Files already bound to this conversation are ALWAYS returned, not just on
-   * the turn that attached them — otherwise "and what about the second page?"
-   * would be answered with no document in context.
+   * The request ledger is keyed by `(tenant, idempotencyKey)` and the key is
+   * client-supplied. The conversation this call names has already been proven
+   * to be the caller's, but nothing tied the KEY to it — so a caller who
+   * presented a key belonging to a different conversation in the same tenant
+   * was handed that conversation's stored reply, including its last tool
+   * result (a booking confirmation carries the appointment id and payment
+   * link). Every anonymous visitor shares one tenant, which makes that a
+   * visitor-to-visitor boundary rather than a same-clinic one. Refused with the
+   * same CONFLICT an in-flight duplicate gets, so the answer says nothing about
+   * whose key it was.
    */
-  private async resolveAttachments(
-    tenantId: string,
+  private assertReplayBelongsTo(
+    replay: { message?: { ai_conversation_id?: string } | null },
     aiConversationId: string,
-    session: Record<string, unknown> | null | undefined,
-    dto: SendMessageDto,
-  ): Promise<AttachmentPromptInput | undefined> {
-    const bound = ((
-      session as { attachments?: ConversationAttachment[] } | null
-    )?.attachments ?? []) as ConversationAttachment[];
-    const requested = dto.attachmentIds ?? [];
-
-    let all = bound;
-    let missingCount = 0;
-
-    if (requested.length > 0) {
-      const subject = this.ctx.getUser()?.id;
-      if (!subject) {
-        // No verified principal ⇒ nothing can be proven to belong to anyone.
-        missingCount = requested.length;
-      } else {
-        const { attachments, missing } = await this.attachmentStaging.redeem(
-          subject,
-          requested,
-          bound.map((a) => a.id),
-        );
-        missingCount = missing.length;
-        if (attachments.length > 0) {
-          if (
-            bound.length + attachments.length >
-            MAX_ATTACHMENTS_PER_CONVERSATION
-          ) {
-            // Refuse the turn rather than silently dropping the overflow: the
-            // visitor asked about a file, and answering while quietly ignoring
-            // it is the failure mode this whole feature is built to avoid. The
-            // client enforces the same cap, so reaching here means the cap was
-            // bypassed.
-            throw new AppError(ErrorCode.ATTACHMENT_LIMIT_REACHED, {
-              message: `A conversation may hold at most ${MAX_ATTACHMENTS_PER_CONVERSATION} files`,
-            });
-          }
-          all = [...bound, ...attachments];
-          // Server-owned write: `patch` (not `patchFromClient`) because
-          // `attachments` is deliberately absent from
-          // SESSION_CLIENT_PATCHABLE_KEYS. Re-loads the row, so a selection
-          // written by a tool earlier in this turn is not clobbered.
-          await this.sessions.patch(tenantId, aiConversationId, {
-            attachments: all,
-          });
-        }
-      }
-    }
-
-    if (all.length === 0 && missingCount === 0) return undefined;
-    return {
-      files: all.map((a) => ({
-        // `promptName`, never the visitor's raw filename — see
-        // `sanitizePromptFilename` for what that channel used to allow.
-        name: a.promptName,
-        text: a.text,
-        status: a.status,
-      })),
-      missingCount,
-    };
+  ): void {
+    if (replay.message?.ai_conversation_id === aiConversationId) return;
+    throw new AppError(ErrorCode.CONFLICT, {
+      message: 'This idempotency key was already used for a different request.',
+    });
   }
 
   private totalTruncated(t: PromptBudgetTelemetry): number {
@@ -3040,8 +2945,7 @@ export class AiExecutionService {
       t.truncatedRagTokens +
       t.truncatedMemoryTokens +
       t.truncatedToolTokens +
-      t.truncatedToolSchemaTokens +
-      t.truncatedAttachmentTokens
+      t.truncatedToolSchemaTokens
     );
   }
 
