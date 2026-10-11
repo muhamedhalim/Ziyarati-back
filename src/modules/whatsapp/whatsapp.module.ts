@@ -35,6 +35,10 @@ import { WorkingHour } from '../../entities/Staff/WorkingHour';
 import { ContactTurnLockService } from './contact-turn-lock.service';
 import { AiBotActorModule } from '../ai-bot-actor/ai-bot-actor.module';
 import { WhatsappAnalyticsService } from './whatsapp-analytics.service';
+import { WhatsappNotificationAnalyticsService } from './whatsapp-notification-analytics.service';
+// READ-ONLY: the notification analytics tab aggregates the outbox's delivery
+// lifecycle (`WhatsappNotificationAnalyticsService`); nothing here writes it.
+import { ScheduledNotification } from '../../entities/Notifications/ScheduledNotification';
 
 import { WhatsappAccountController } from './whatsapp-account.controller';
 import { WhatsappTemplateController } from './whatsapp-template.controller';
@@ -121,6 +125,7 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
       WhatsappWebhook,
       WhatsappContact,
       NotificationLog,
+      ScheduledNotification,
       Branch,
       Customer,
       User,
@@ -197,6 +202,7 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
     // importing AiRealtimeModule here would be a cycle (it imports this module).
     AiWsRateLimitService,
     WhatsappAnalyticsService,
+    WhatsappNotificationAnalyticsService,
     WhatsappProviderFactory,
     NoopWhatsappProvider,
     MetaWhatsappProvider,

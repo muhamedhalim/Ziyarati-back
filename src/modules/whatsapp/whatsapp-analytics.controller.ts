@@ -10,6 +10,9 @@ import {
 
 import { WhatsappAnalyticsService } from './whatsapp-analytics.service';
 import { WhatsappAnalyticsFilterDto } from './dto/whatsapp-analytics-filter.dto';
+import { WhatsappNotificationSummaryQueryDto } from './dto/whatsapp-notification-summary-query.dto';
+import { WhatsappNotificationAnalyticsService } from './whatsapp-notification-analytics.service';
+import { DEFAULT_ANALYTICS_RANGE } from './whatsapp-notification-analytics.calc';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -60,12 +63,38 @@ const S_OVERVIEW = {
 export class WhatsappAnalyticsController {
   constructor(
     private readonly analytics: WhatsappAnalyticsService,
+    private readonly notificationAnalytics: WhatsappNotificationAnalyticsService,
     private readonly ctx: TenantContextService,
   ) {}
 
   @ApiOperation({
+    summary: 'Notification delivery summary',
+    description: `**Protected — requires \`whatsapp.analytics.read\`. Clinic must be active.** Delivery analytics for the clinic's automatic WhatsApp notifications over a trailing window (\`7d\`/\`30d\`/\`90d\`): outcome counts, success/failure/delivery/read rates (each with its denominator, \`null\` when undefined), comparison with the equal-length previous window, a daily trend, per-template breakdown, failure categories and alerts. Computed from \`scheduled_notifications\`, scoped to the caller's tenant.`,
+  })
+  @ApiOkResponse({ description: 'Notification delivery summary.' })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @Get('summary')
+  @RequirePermissions(PERMISSION.WHATSAPP_ANALYTICS_READ)
+  async summary(@Query() query: WhatsappNotificationSummaryQueryDto) {
+    const tenant = this.ctx.getTenant();
+    const summary = await this.notificationAnalytics.summary(
+      this.ctx.requireTenantId(),
+      query.range ?? DEFAULT_ANALYTICS_RANGE,
+      tenant?.default_timezone,
+    );
+    return { clinicName: tenant?.name ?? null, ...summary };
+  }
+
+  @ApiOperation({
     summary: 'Messaging overview',
-    description: `**Protected — requires \`whatsapp.analytics.read\`. Clinic must be active.** Totals + delivery/read/failure rates for the tenant's WhatsApp messages, optional date/template filters.`,
+    description: `**Protected — requires \`whatsapp.analytics.read\`. Clinic must be active.** Totals + delivery/read/failure rates over \`notification_logs\` (channel = WHATSAPP), optional date/template filters. NOTE: \`notification_logs.status\` is the send outcome only — provider delivered/read receipts are recorded on \`scheduled_notifications\`, so \`deliveredCount\`/\`readCount\` here do not reflect receipts. Use \`GET /whatsapp/analytics/summary\` for delivery metrics.`,
   })
   @ApiOkResponse({ description: 'Messaging overview.', schema: S_OVERVIEW })
   @ApiUnauthorizedResponse({
