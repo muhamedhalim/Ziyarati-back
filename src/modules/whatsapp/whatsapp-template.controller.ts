@@ -9,6 +9,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -31,6 +32,8 @@ import {
 
 import { WhatsappTemplateService } from './whatsapp-template.service';
 import { WhatsappExecutionService } from './whatsapp-execution.service';
+import { ValidateWhatsappTemplateDto } from './dto/validate-whatsapp-template.dto';
+import { UpdateTemplateVariableMappingDto } from './dto/update-template-variable-mapping.dto';
 import { CreateWhatsappTemplateDto } from './dto/create-whatsapp-template.dto';
 import { UpdateWhatsappTemplateDto } from './dto/update-whatsapp-template.dto';
 import { WhatsappTemplateFilterDto } from './dto/whatsapp-template-filter.dto';
@@ -44,7 +47,10 @@ import { FeatureKey } from '../subscription-billing/feature-registry';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
-import { WHATSAPP_TEMPLATE_STATUSES } from './whatsapp.constants';
+import {
+  WHATSAPP_TEMPLATE_STATUSES,
+  WHATSAPP_TEMPLATE_VARIABLE_SOURCES,
+} from './whatsapp.constants';
 
 const S_ERROR = {
   type: 'object',
@@ -66,7 +72,7 @@ const S_TEMPLATE = {
     category: { type: 'string', nullable: true, example: 'UTILITY' },
     status: {
       type: 'string',
-      enum: ['draft', 'pending_review', 'approved', 'rejected', 'disabled'],
+      enum: ['draft', 'pending_review', 'approved', 'rejected', 'paused', 'disabled'],
       example: 'approved',
     },
     components: { type: 'object', nullable: true, additionalProperties: true },
@@ -77,7 +83,23 @@ const S_TEMPLATE = {
       example: '1234567890123456',
     },
     waba_id: { type: 'string', nullable: true, example: '102290129340398' },
+    rejected_reason: {
+      type: 'string',
+      nullable: true,
+      description: "Meta's reason, when the template was rejected/paused/disabled.",
+    },
+    variable_mapping: {
+      type: 'object',
+      nullable: true,
+      additionalProperties: { type: 'string' },
+      description: 'Placeholder to trusted data source, used by the notification pipeline.',
+    },
     last_synced_at: { type: 'string', format: 'date-time', nullable: true },
+    needs_refresh: {
+      type: 'boolean',
+      description:
+        'True when the status is older than the freshness window (or never reconciled): show "needs refresh", not the status as current.',
+    },
     created_at: { type: 'string', format: 'date-time' },
   },
 };
@@ -185,8 +207,45 @@ Unique per (tenant, name, language) — a duplicate returns 409.
   })
   @Post()
   @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_MANAGE)
-  create(@Body() dto: CreateWhatsappTemplateDto) {
-    return this.templates.create(this.ctx.requireTenantId(), dto);
+  async create(@Body() dto: CreateWhatsappTemplateDto) {
+    const tenantId = this.ctx.requireTenantId();
+    const created = await this.templates.create(tenantId, dto);
+    return this.templates.findOneView(tenantId, created.id);
+  }
+
+  @ApiOperation({
+    summary: 'Validate a template draft (dry run)',
+    description: `
+**Protected, requires \`whatsapp.templates.manage\`.**
+
+Runs the same pre-submission checks as create (placeholder numbering, start/end
+position, adjacency, sample values, length limits, variable density) and
+returns every issue with a stable \`code\`, the \`field\` it belongs to and a
+suggested fix. **Nothing is sent to Meta and nothing is stored.**
+
+\`valid: true\` means no structural error was found; it is **not** a promise of
+approval. Meta's own review (policy, category, an unpublished variable-density
+rule) still decides. Density is reported as a \`warning\`, never an error.
+    `.trim(),
+  })
+  @ApiOkResponse({ description: 'Validation result.' })
+  @Post('validate')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_MANAGE)
+  validate(@Body() dto: ValidateWhatsappTemplateDto) {
+    return this.templates.validate(dto);
+  }
+
+  @ApiOperation({
+    summary: 'Data sources a placeholder can be bound to',
+    description:
+      '**Protected, `whatsapp.templates.read`.** The closed set of trusted values (patient name, appointment date, ...) the notification pipeline can fill a placeholder with.',
+  })
+  @ApiOkResponse({ description: 'Source identifiers.' })
+  @Get('variable-sources')
+  @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_READ)
+  variableSources() {
+    return { sources: WHATSAPP_TEMPLATE_VARIABLE_SOURCES };
   }
 
   @ApiOperation({
@@ -234,7 +293,55 @@ Unique per (tenant, name, language) — a duplicate returns 409.
   @Get(':id')
   @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_READ)
   findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.templates.findOne(this.ctx.requireTenantId(), id);
+    return this.templates.findOneView(this.ctx.requireTenantId(), id);
+  }
+
+  @ApiOperation({
+    summary: "Refresh one template's status from Meta",
+    description: `
+**Protected, requires \`whatsapp.templates.manage\`.**
+
+Re-reads this template's verdict from Meta (a read-only \`GET\`) and mirrors it.
+Safe to repeat: it cannot create or alter anything on Meta. If Meta cannot be
+reached the call fails and the **last known status is left untouched**: the
+response is an error, never an invented status. If Meta no longer has the
+template it is removed from the list (404).
+    `.trim(),
+  })
+  @ApiParam({ name: 'id', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'The template with its freshly reconciled status.', schema: S_TEMPLATE })
+  @ApiNotFoundResponse({ description: 'Template not found, or gone from Meta.', schema: S_ERROR })
+  @ApiUnprocessableEntityResponse({
+    description: 'Never submitted to Meta, account unusable, or Meta unreachable (see `context.meta`).',
+    schema: S_ERROR,
+  })
+  @Post(':id/refresh')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_MANAGE)
+  refresh(@Param('id', ParseUUIDPipe) id: string) {
+    return this.templates.refresh(this.ctx.requireTenantId(), id);
+  }
+
+  @ApiOperation({
+    summary: 'Bind placeholders to data sources',
+    description: `
+**Protected, requires \`whatsapp.templates.manage\`.**
+
+Chooses which trusted value fills each placeholder when this template is sent by
+a notification rule (\`{{1}}\` is the patient name, \`{{2}}\` the appointment
+date, ...). Values are resolved on the server from the appointment, clinic and
+customer, never from the request. An empty \`mapping\` clears the binding.
+    `.trim(),
+  })
+  @ApiParam({ name: 'id', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'Template with the new binding.', schema: S_TEMPLATE })
+  @Put(':id/variable-mapping')
+  @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_MANAGE)
+  setVariableMapping(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateTemplateVariableMappingDto,
+  ) {
+    return this.templates.setVariableMapping(this.ctx.requireTenantId(), id, dto.mapping);
   }
 
   @ApiOperation({

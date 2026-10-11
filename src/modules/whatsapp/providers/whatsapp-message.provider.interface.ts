@@ -21,6 +21,15 @@ export interface WhatsappSendPayload {
   language: string;
   /** Template variable substitutions (no secrets). */
   variables?: Record<string, unknown>;
+  /**
+   * The template's own placeholder names, in the order the provider must
+   * supply them. When present, parameters are built FROM THIS LIST (and only
+   * from it) — `variables` is a keyed map whose iteration order and extra keys
+   * must never decide what Meta receives. Absent only for legacy callers.
+   */
+  templateParameters?: string[];
+  /** `NAMED` templates are filled by parameter name; `POSITIONAL` by position. */
+  parameterFormat?: 'POSITIONAL' | 'NAMED';
 }
 
 export interface WhatsappSendResult {
@@ -28,6 +37,8 @@ export interface WhatsappSendResult {
   /** Opaque provider message id (e.g. WhatsApp `wamid`). */
   providerMessageId?: string;
   error?: string;
+  /** Provider error code (Meta's `error.code`) when the send was refused. */
+  errorCode?: number;
 }
 
 /** A tappable reply button (interactive `button` message, max 3 per message). */

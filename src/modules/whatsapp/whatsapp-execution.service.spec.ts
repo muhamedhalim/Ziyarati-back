@@ -44,6 +44,7 @@ const ACCOUNT = {
   id: 'acc-1',
   mode: 'REAL',
   phoneNumberId: 'pid-1',
+  wabaId: 'waba-1',
   source: 'TENANT' as const,
 };
 const TEMPLATE = { id: 'tpl-1', name: 'welcome', language: 'en' };
@@ -54,7 +55,7 @@ describe('WhatsappExecutionService', () => {
   let contacts: MockRepository;
   let customers: MockRepository;
   let router: { resolveForSend: jest.Mock };
-  let templates: { getSendableTemplate: jest.Mock };
+  let templates: { getSendableTemplate: jest.Mock; refresh: jest.Mock };
   let messaging: { send: jest.Mock };
   let queue: { enqueueWhatsappSend: jest.Mock };
   let subscriptions: { assertBillableActionAllowed: jest.Mock };
@@ -73,7 +74,10 @@ describe('WhatsappExecutionService', () => {
     logs.save.mockImplementation(async (v: object) => ({ id: 'log-1', ...v }));
 
     router = { resolveForSend: jest.fn().mockResolvedValue(ACCOUNT) };
-    templates = { getSendableTemplate: jest.fn().mockResolvedValue(TEMPLATE) };
+    templates = {
+      getSendableTemplate: jest.fn().mockResolvedValue(TEMPLATE),
+      refresh: jest.fn().mockResolvedValue(undefined),
+    };
     messaging = {
       send: jest
         .fn()
@@ -465,6 +469,64 @@ describe('WhatsappExecutionService', () => {
         expect(res).toMatchObject({ status: WHATSAPP_DELIVERY_STATUS.SENT });
       });
 
+      it('sends parameters in the TEMPLATE order, not the caller map order, and drops extras', async () => {
+        templates.getSendableTemplate.mockResolvedValueOnce(TEMPLATE_WITH_VARS);
+
+        await service.sendTemplateMessage(TENANT, 'tpl-2', {
+          toWaId: '966500000000',
+          // Built in the "wrong" order with an unrelated key.
+          variables: { '2': '2026-06-15 10:00', cancelUrl: 'https://x', '1': 'Sara' },
+        } as any);
+
+        expect(messaging.send).toHaveBeenCalledWith(
+          expect.objectContaining({
+            templateParameters: ['1', '2'],
+            parameterFormat: 'POSITIONAL',
+          }),
+        );
+      });
+
+      it('asks the template service to check the template against the SENDER\'s WABA', async () => {
+        templates.getSendableTemplate.mockResolvedValueOnce(TEMPLATE_WITH_VARS);
+        await service.sendTemplateMessage(TENANT, 'tpl-2', {
+          toWaId: '966500000000',
+          variables: { '1': 'Sara', '2': 'x' },
+        } as any);
+        expect(templates.getSendableTemplate).toHaveBeenCalledWith(TENANT, 'tpl-2', 'waba-1');
+      });
+
+      it('does not send when the template is not sendable (pending / rejected / paused)', async () => {
+        templates.getSendableTemplate.mockRejectedValueOnce(
+          Object.assign(new Error('Only approved templates can be sent'), {
+            code: ErrorCode.UNPROCESSABLE_ENTITY,
+          }),
+        );
+        await expect(
+          service.sendTemplateMessage(TENANT, 'tpl-2', { toWaId: '966500000000' } as any),
+        ).rejects.toThrow(/approved/);
+        expect(messaging.send).not.toHaveBeenCalled();
+      });
+
+      it.each([132015, 132016, 132001])(
+        'refreshes the template from Meta when Meta refuses with template-state error %s',
+        async (errorCode) => {
+          messaging.send.mockResolvedValueOnce({ success: false, error: '400: paused', errorCode });
+
+          const res = await service.sendTemplateMessage(TENANT, 'tpl-1', {
+            toWaId: '966500000000',
+          } as any);
+
+          expect(res.status).toBe(WHATSAPP_DELIVERY_STATUS.FAILED);
+          expect(templates.refresh).toHaveBeenCalledWith(TENANT, 'tpl-1');
+        },
+      );
+
+      it('does NOT refresh on an unrelated provider failure (e.g. recipient not on WhatsApp)', async () => {
+        messaging.send.mockResolvedValueOnce({ success: false, error: '400: nope', errorCode: 131026 });
+        await service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any);
+        expect(templates.refresh).not.toHaveBeenCalled();
+      });
+
       it('a template with no recorded components imposes no variable requirement (regression guard — pre-existing/not-yet-synced templates)', async () => {
         // TEMPLATE (the default fixture) has no `components` at all.
         const res = await service.sendTemplateMessage(TENANT, 'tpl-1', {
@@ -725,6 +787,7 @@ describe('WhatsappExecutionService', () => {
       expect(templates.getSendableTemplate).toHaveBeenCalledWith(
         TENANT,
         'tpl-1',
+        'waba-1',
       );
       expect(queue.enqueueWhatsappSend).toHaveBeenCalledWith(
         expect.objectContaining({ tenantId: TENANT, templateId: 'tpl-1' }),

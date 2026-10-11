@@ -3,6 +3,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsIn,
+  IsObject,
   IsOptional,
   IsString,
   IsUUID,
@@ -182,4 +183,15 @@ export class CreateWhatsappTemplateDto {
   @IsOptional()
   @IsUUID()
   accountId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Which trusted data source fills each BODY placeholder when a notification rule sends this template: `{ "1": "patient_name", "2": "appointment_date" }`. Optional — it can also be set later. Keys must be placeholders the body declares; values must be one of the closed set returned by `GET /whatsapp/templates/variable-sources`.',
+    type: 'object',
+    additionalProperties: { type: 'string' },
+    example: { '1': 'patient_name', '2': 'appointment_date' },
+  })
+  @IsOptional()
+  @IsObject()
+  variableMapping?: Record<string, string>;
 }

@@ -7,6 +7,12 @@ export const WHATSAPP_TEMPLATE_STATUS = {
   PENDING_REVIEW: 'pending_review',
   APPROVED: 'approved',
   REJECTED: 'rejected',
+  /**
+   * Meta paused the template (quality / rate-limiting). Temporary — Meta lifts
+   * it by itself — but NOT sendable meanwhile. Kept distinct from `disabled`
+   * because the user's action differs: wait versus edit-and-resubmit.
+   */
+  PAUSED: 'paused',
   DISABLED: 'disabled',
 } as const;
 
@@ -15,6 +21,38 @@ export type WhatsappTemplateStatus =
 
 export const WHATSAPP_TEMPLATE_STATUSES: WhatsappTemplateStatus[] =
   Object.values(WHATSAPP_TEMPLATE_STATUS);
+
+/**
+ * How old a mirror row's last Meta reconciliation may be before the UI must
+ * call its status "needs refresh" rather than present it as current. Webhooks
+ * are the fast path; this bounds how long a missed/delayed webhook can leave a
+ * wrong status looking authoritative.
+ */
+export const WHATSAPP_TEMPLATE_STALE_AFTER_MS = 6 * 60 * 60_000;
+
+/**
+ * The trusted data a template placeholder may be bound to. Values are resolved
+ * SERVER-SIDE from the appointment / clinic / customer rows at send time — never
+ * taken from a request — and the catalogue is deliberately small: nothing here
+ * is clinical (no diagnosis, no service/specialty, no price), so a template
+ * cannot be wired to leak more than a reminder needs.
+ */
+export const WHATSAPP_TEMPLATE_VARIABLE_SOURCE = {
+  PATIENT_NAME: 'patient_name',
+  CLINIC_NAME: 'clinic_name',
+  BRANCH_NAME: 'branch_name',
+  DOCTOR_NAME: 'doctor_name',
+  APPOINTMENT_DATE: 'appointment_date',
+  APPOINTMENT_TIME: 'appointment_time',
+  CANCEL_URL: 'cancel_url',
+  RESCHEDULE_URL: 'reschedule_url',
+} as const;
+
+export type WhatsappTemplateVariableSource =
+  (typeof WHATSAPP_TEMPLATE_VARIABLE_SOURCE)[keyof typeof WHATSAPP_TEMPLATE_VARIABLE_SOURCE];
+
+export const WHATSAPP_TEMPLATE_VARIABLE_SOURCES: WhatsappTemplateVariableSource[] =
+  Object.values(WHATSAPP_TEMPLATE_VARIABLE_SOURCE);
 
 /**
  * Message delivery lifecycle. There is no WhatsApp *message* table in the

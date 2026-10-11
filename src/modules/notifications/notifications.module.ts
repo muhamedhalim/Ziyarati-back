@@ -8,6 +8,8 @@ import { NotificationLog } from '../../entities/Notifications/NotificationLog';
 import { InAppNotification } from '../../entities/Notifications/InAppNotification';
 import { NotificationPreference } from '../../entities/Notifications/NotificationPreference';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { NotificationVariableResolver } from './notification-variable-resolver.service';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 import { User } from '../../entities/Auth&RBAC/User';
 import { Customer } from '../../entities/CRM/Customer';
@@ -91,6 +93,9 @@ import { EmailChannelProvider } from './channels/email-channel.provider';
       User,
       Customer,
       TenantSetting,
+      // READ-ONLY: the clinic's display name, a template variable source
+      // (`NotificationVariableResolver`).
+      Tenant,
     ]),
     forwardRef(() => WhatsappModule),
     PatientActionsModule,
@@ -108,6 +113,7 @@ import { EmailChannelProvider } from './channels/email-channel.provider';
     NotificationSchedulerService,
     NotificationLogService,
     NotificationDispatchService,
+    NotificationVariableResolver,
     NotificationDeliveryService,
     NotificationEventListener,
     NotificationAuditService,

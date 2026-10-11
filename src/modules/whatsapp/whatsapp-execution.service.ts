@@ -24,7 +24,11 @@ import {
   WHATSAPP_RECIPIENT_TYPE,
   WHATSAPP_SENDING_STALE_MS,
 } from './whatsapp.constants';
-import { missingVariables } from './template-variables.util';
+import {
+  missingVariables,
+  orderedBodyParameters,
+  templateParameterFormat,
+} from './template-variables.util';
 import {
   assessTemplateContent,
   describeViolations,
@@ -46,6 +50,13 @@ interface ResolvedRecipient {
 }
 
 const PG_UNIQUE_VIOLATION = '23505';
+
+/**
+ * Cloud API error codes that mean the TEMPLATE is the problem (not the
+ * recipient): 132001 does not exist in this language, 132015 paused,
+ * 132016 disabled.
+ */
+const TEMPLATE_STATE_ERROR_CODES = new Set([132001, 132015, 132016]);
 
 /**
  * Orchestrates WhatsApp sends: validates the account (active) + template
@@ -149,7 +160,13 @@ export class WhatsappExecutionService {
       accountId: dto.accountId,
       branchId: dto.branchId,
     });
-    const template = await this.templates.getSendableTemplate(tenantId, templateId);
+    // The sender's WABA is passed so a template can never go out through a
+    // number on a different WhatsApp Business Account than the one it lives on.
+    const template = await this.templates.getSendableTemplate(
+      tenantId,
+      templateId,
+      account.wabaId,
+    );
     const recipient = await this.resolveRecipient(tenantId, dto);
 
     if (claim && priorProviderRef) {
@@ -291,6 +308,10 @@ export class WhatsappExecutionService {
         templateName: template.name,
         language: template.language,
         variables: dto.variables,
+        // Parameters are built from the TEMPLATE's own placeholder list, in
+        // Meta's order — never from the caller's map iteration order.
+        templateParameters: orderedBodyParameters(template.components),
+        parameterFormat: templateParameterFormat(template.components),
       });
     } catch (err) {
       // cid lets this be traced back to the originating HTTP request or queue
@@ -306,6 +327,19 @@ export class WhatsappExecutionService {
     const status = result.success
       ? WHATSAPP_DELIVERY_STATUS.SENT
       : WHATSAPP_DELIVERY_STATUS.FAILED;
+
+    // Meta refused because of the TEMPLATE's own state (paused / disabled /
+    // not found in that language). Our mirror is evidently behind — a webhook
+    // was late or missed. Re-read the real verdict so the next attempt (and the
+    // UI) stop treating it as sendable. Best effort and read-only: it can only
+    // pull our state toward Meta's, never invent one.
+    if (!result.success && result.errorCode && TEMPLATE_STATE_ERROR_CODES.has(result.errorCode)) {
+      void this.templates.refresh(tenantId, template.id).catch((err: unknown) => {
+        this.logger.warn(
+          `Template ${template.id} refresh after Meta error ${result.errorCode} failed: ${(err as Error)?.message}`,
+        );
+      });
+    }
 
     // Only successful sends actually cost quota (unchanged, pre-existing
     // behavior) — a failure releases the reservation taken above.
@@ -449,11 +483,11 @@ export class WhatsappExecutionService {
     }
     // Validate routing + template + recipient up front so scheduling fails fast
     // (the actual account is re-resolved by the worker at send time).
-    await this.router.resolveForSend(tenantId, {
+    const scheduledAccount = await this.router.resolveForSend(tenantId, {
       accountId: dto.accountId,
       branchId: dto.branchId,
     });
-    await this.templates.getSendableTemplate(tenantId, templateId);
+    await this.templates.getSendableTemplate(tenantId, templateId, scheduledAccount.wabaId);
     const recipient = await this.resolveRecipient(tenantId, dto);
 
     const log = await this.recordLog(

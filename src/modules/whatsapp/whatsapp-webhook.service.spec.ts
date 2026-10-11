@@ -6,6 +6,7 @@ import { WhatsappWebhookService } from './whatsapp-webhook.service';
 import { WebhookSignatureVerifier } from './webhooks/webhook-signature.verifier';
 import { WhatsappInboundAiService } from './whatsapp-inbound-ai.service';
 import { WhatsappCoexistenceEchoService } from './meta/whatsapp-coexistence-echo.service';
+import { WhatsappTemplateSyncService } from './meta/whatsapp-template-sync.service';
 import { MetaConfig } from './meta/meta.config';
 import { WhatsappWebhook } from '../../entities/WhatsApp/WhatsappWebhook';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
@@ -118,8 +119,34 @@ const syncConfirmationBody = (
   ],
 });
 
+/** Meta's `message_template_status_update` — `entry.time`, no message timestamp. */
+const templateStatusBody = (
+  over: { time?: number; event?: string; reason?: string; templateId?: number | string; waba?: string } = {},
+) => ({
+  object: 'whatsapp_business_account',
+  entry: [
+    {
+      id: over.waba ?? 'waba-1',
+      time: over.time ?? Math.floor(Date.now() / 1000),
+      changes: [
+        {
+          field: 'message_template_status_update',
+          value: {
+            event: over.event ?? 'APPROVED',
+            message_template_id: over.templateId ?? 1689556908129832,
+            message_template_name: 'appointment_reminder',
+            message_template_language: 'en-US',
+            reason: over.reason ?? 'NONE',
+          },
+        },
+      ],
+    },
+  ],
+});
+
 describe('WhatsappWebhookService', () => {
   let service: WhatsappWebhookService;
+  let templateSync: { tenantsForTemplate: jest.Mock; applyWebhookEvent: jest.Mock };
   let webhooks: MockRepository;
   let accounts: MockRepository;
   let metrics: { recordWhatsappInboundEvent: jest.Mock };
@@ -160,6 +187,10 @@ describe('WhatsappWebhookService', () => {
         .mockResolvedValue({ updated: false, reason: 'recipient-not-found' }),
     };
     queue = { enqueueWhatsappWebhook: jest.fn().mockResolvedValue(undefined) };
+    templateSync = {
+      tenantsForTemplate: jest.fn().mockResolvedValue([TENANT]),
+      applyWebhookEvent: jest.fn().mockResolvedValue({ applied: true, rows: 1 }),
+    };
     messages = createMockRepository();
     messages.findOne.mockResolvedValue(null); // default: no matching conversation message
     messageStatus = {
@@ -183,6 +214,7 @@ describe('WhatsappWebhookService', () => {
         { provide: QueueService, useValue: queue },
         { provide: TenantContextService, useValue: new TenantContextService() },
         { provide: MetricsService, useValue: metrics },
+        { provide: WhatsappTemplateSyncService, useValue: templateSync },
         {
           provide: MetaConfig,
           useValue: new MetaConfig(
@@ -1046,6 +1078,174 @@ describe('WhatsappWebhookService', () => {
         processed: true,
       });
       expect(accounts.update).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─────────────────── template lifecycle webhooks (Meta) ───────────────────
+
+  describe('template status webhooks', () => {
+    it('accepts a template event whose only timestamp is entry.time (not 401 as "no verifiable timestamp")', async () => {
+      const res = await service.ingest(templateStatusBody(), RAW, 'sha256=ok');
+      expect(res).toMatchObject({ accepted: true });
+      expect(webhooks.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event_type: 'message_template_status_update',
+          processed: false,
+        }),
+      );
+      expect(queue.enqueueWhatsappWebhook).toHaveBeenCalled();
+    });
+
+    it('attributes the event to the tenant that owns that (waba, template) — not to a phone number', async () => {
+      await service.ingest(templateStatusBody({ waba: 'waba-9', templateId: 4242 }), RAW, 'sha256=ok');
+      expect(templateSync.tenantsForTemplate).toHaveBeenCalledWith('waba-9', '4242');
+      expect(accounts.findOne).not.toHaveBeenCalled();
+      expect(webhooks.create).toHaveBeenCalledWith(
+        expect.objectContaining({ tenant: { id: TENANT } }),
+      );
+    });
+
+    it('stores an event for a template nobody owns WITHOUT a tenant (never guessed)', async () => {
+      templateSync.tenantsForTemplate.mockResolvedValueOnce([]);
+      await service.ingest(templateStatusBody(), RAW, 'sha256=ok');
+      expect(webhooks.create).toHaveBeenCalledWith(expect.objectContaining({ tenant: undefined }));
+    });
+
+    it('keys idempotency on field + template + event + time, so a redelivery dedupes', async () => {
+      const body = templateStatusBody({ time: 1_760_000_000, templateId: 77, event: 'REJECTED' });
+      body.entry[0].time = Math.floor(Date.now() / 1000);
+      const time = body.entry[0].time;
+      await service.ingest(body, RAW, 'sha256=ok');
+      expect(webhooks.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          idempotency_key: `tpl:message_template_status_update:77:REJECTED:${time}`,
+        }),
+      );
+
+      webhooks.findOne.mockResolvedValueOnce({ id: 'existing' });
+      const again = await service.ingest(body, RAW, 'sha256=ok');
+      expect(again).toMatchObject({ deduplicated: true, id: 'existing' });
+      expect(queue.enqueueWhatsappWebhook).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT collapse a template that returns to an earlier state later (time is in the key)', async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await service.ingest(templateStatusBody({ time: now - 120, event: 'PAUSED' }), RAW, 'sha256=ok');
+      await service.ingest(templateStatusBody({ time: now - 10, event: 'PAUSED' }), RAW, 'sha256=ok');
+      const keys = webhooks.create.mock.calls.map((c: any[]) => c[0].idempotency_key);
+      expect(new Set(keys).size).toBe(2);
+    });
+
+    it('refuses an invalid signature before resolving anything', async () => {
+      verifier.verify.mockReturnValueOnce(false);
+      await expect(service.ingest(templateStatusBody(), RAW, 'sha256=bad')).rejects.toMatchObject({
+        code: ErrorCode.UNAUTHORIZED,
+      });
+      expect(templateSync.tenantsForTemplate).not.toHaveBeenCalled();
+      expect(webhooks.save).not.toHaveBeenCalled();
+    });
+
+    it('refuses a replay older than the freshness window', async () => {
+      const old = Math.floor(Date.now() / 1000) - 8 * 24 * 60 * 60;
+      await expect(service.ingest(templateStatusBody({ time: old }), RAW, 'sha256=ok')).rejects.toMatchObject({
+        code: ErrorCode.UNAUTHORIZED,
+      });
+      expect(webhooks.save).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when a template event carries no time at all', async () => {
+      const body = templateStatusBody();
+      delete (body.entry[0] as { time?: number }).time;
+      await expect(service.ingest(body, RAW, 'sha256=ok')).rejects.toMatchObject({
+        code: ErrorCode.UNAUTHORIZED,
+      });
+    });
+
+    describe('processing (worker)', () => {
+      const stored = (payload: unknown, over: Record<string, unknown> = {}) => ({
+        id: 'evt-1',
+        processed: false,
+        event_type: 'message_template_status_update',
+        tenant: { id: TENANT },
+        payload,
+        ...over,
+      });
+
+      it('applies the verdict, normalising the integer template id to the stored string form', async () => {
+        const time = 1_760_000_000;
+        webhooks.findOne.mockResolvedValueOnce(
+          stored(templateStatusBody({ time, event: 'REJECTED', reason: 'INVALID_FORMAT', templateId: 1689556908129832 })),
+        );
+
+        const out = await service.processEvent('evt-1');
+
+        expect(out).toEqual({ processed: true });
+        expect(templateSync.applyWebhookEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            field: 'message_template_status_update',
+            wabaId: 'waba-1',
+            templateId: '1689556908129832',
+            eventTime: time,
+            event: 'REJECTED',
+            reason: 'INVALID_FORMAT',
+          }),
+        );
+      });
+
+      it('passes a completed category change through as a category update', async () => {
+        const payload = {
+          entry: [
+            {
+              id: 'waba-1',
+              time: 1_760_000_000,
+              changes: [
+                {
+                  field: 'template_category_update',
+                  value: {
+                    message_template_id: 5,
+                    previous_category: 'UTILITY',
+                    new_category: 'MARKETING',
+                  },
+                },
+              ],
+            },
+          ],
+        };
+        webhooks.findOne.mockResolvedValueOnce(
+          stored(payload, { event_type: 'template_category_update' }),
+        );
+        await service.processEvent('evt-1');
+        expect(templateSync.applyWebhookEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            field: 'template_category_update',
+            category: 'MARKETING',
+            impendingCategoryChange: false,
+          }),
+        );
+      });
+
+      it('does not re-apply an already-processed event (webhook retry)', async () => {
+        webhooks.findOne.mockResolvedValueOnce(stored(templateStatusBody(), { processed: true }));
+        await expect(service.processEvent('evt-1')).resolves.toMatchObject({
+          processed: false,
+          reason: 'already-processed',
+        });
+        expect(templateSync.applyWebhookEvent).not.toHaveBeenCalled();
+      });
+
+      it('leaves a tenant-less (unknown-template) event unapplied', async () => {
+        webhooks.findOne.mockResolvedValueOnce(stored(templateStatusBody(), { tenant: undefined }));
+        await expect(service.processEvent('evt-1')).resolves.toMatchObject({ reason: 'no-tenant' });
+        expect(templateSync.applyWebhookEvent).not.toHaveBeenCalled();
+      });
+
+      it('ignores a payload missing the template id rather than guessing', async () => {
+        const body = templateStatusBody();
+        delete (body.entry[0].changes[0].value as { message_template_id?: unknown }).message_template_id;
+        webhooks.findOne.mockResolvedValueOnce(stored(body));
+        await service.processEvent('evt-1');
+        expect(templateSync.applyWebhookEvent).not.toHaveBeenCalled();
+      });
     });
   });
 });

@@ -87,6 +87,18 @@ export interface MetaWebhookChangeValue {
    * see `coexistence-webhook.adapter.ts`, which isolates that uncertainty.
    */
   event?: unknown;
+  /**
+   * `message_template_status_update` / `template_category_update` fields.
+   * Left loose: only `WhatsappWebhookService.templateEventFromBody` reads
+   * them, and it validates each one's type itself.
+   */
+  message_template_id?: number | string;
+  message_template_name?: string;
+  message_template_language?: string;
+  reason?: string | null;
+  new_category?: string;
+  previous_category?: string;
+  correct_category?: string;
 }
 
 export interface MetaWebhookChange {
@@ -96,6 +108,8 @@ export interface MetaWebhookChange {
 
 export interface MetaWebhookEntry {
   id?: string; // WABA id
+  /** Unix seconds the webhook was triggered — present on template events. */
+  time?: number;
   changes?: MetaWebhookChange[];
 }
 

@@ -40,7 +40,11 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
       template: {
         name: payload.templateName,
         language: { code: payload.language || 'ar' },
-        components: this.buildComponents(payload.variables),
+        components: this.buildComponents(
+          payload.variables,
+          payload.templateParameters,
+          payload.parameterFormat,
+        ),
       },
     });
   }
@@ -164,7 +168,11 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
       }
       const errMsg = json.error?.message ?? `Meta API HTTP ${res.status}`;
       this.logger.warn(`Meta send failed (${res.status}): ${errMsg}`);
-      return { success: false, error: `${res.status}: ${errMsg}` };
+      return {
+        success: false,
+        error: `${res.status}: ${errMsg}`,
+        errorCode: json.error?.code,
+      };
     } catch (err) {
       const message = (err as Error)?.name === 'AbortError' ? 'Meta API timeout' : (err as Error)?.message;
       return { success: false, error: message ?? 'network error' };
@@ -173,8 +181,38 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
     }
   }
 
-  /** Map ordered variables → a single template body component. */
-  private buildComponents(variables?: Record<string, unknown>) {
+  /**
+   * Template BODY parameters.
+   *
+   * Meta fills `{{1}}…{{n}}` BY POSITION, so the order and the COUNT must come
+   * from the template, not from the caller's variable map: `Object.values`
+   * follows insertion order (a map built `{ date, name }` for a `{{1}}=name`
+   * template swaps them) and forwards every extra key (Meta then refuses the
+   * whole message for a parameter-count mismatch). When the template's own
+   * parameter list is supplied, exactly those parameters are sent, in that
+   * order, and a missing value fails loudly instead of shifting its neighbours.
+   *
+   * The legacy `Object.values` path remains only for callers that do not pass
+   * the list.
+   */
+  private buildComponents(
+    variables?: Record<string, unknown>,
+    parameterNames?: string[],
+    format: 'POSITIONAL' | 'NAMED' = 'POSITIONAL',
+  ) {
+    if (parameterNames) {
+      if (parameterNames.length === 0) return undefined;
+      return [
+        {
+          type: 'body',
+          parameters: parameterNames.map((name) => ({
+            type: 'text',
+            ...(format === 'NAMED' ? { parameter_name: name } : {}),
+            text: String(variables?.[name] ?? ''),
+          })),
+        },
+      ];
+    }
     if (!variables || Object.keys(variables).length === 0) return undefined;
     return [
       {

@@ -8,7 +8,12 @@ import { WhatsappTemplate } from '../../../entities/WhatsApp/WhatsappTemplate';
 import { WhatsappAccount } from '../../../entities/WhatsApp/WhatsappAccount';
 import { ErrorCode } from '../../../common/errors';
 import { WHATSAPP_TEMPLATE_STATUS } from '../whatsapp.constants';
-import { createMockRepository, MockRepository } from '../../../../test/utils/mock-factories';
+import {
+  createMockQueryBuilder,
+  createMockRepository,
+  MockQueryBuilder,
+  MockRepository,
+} from '../../../../test/utils/mock-factories';
 
 const TENANT = 't1';
 
@@ -24,6 +29,7 @@ describe('WhatsappTemplateSyncService', () => {
   let service: WhatsappTemplateSyncService;
   let templates: MockRepository;
   let accounts: MockRepository;
+  let qb: MockQueryBuilder;
   let graph: { listTemplates: jest.Mock };
   let resolver: { byId: jest.Mock; forTenant: jest.Mock };
 
@@ -32,6 +38,9 @@ describe('WhatsappTemplateSyncService', () => {
     accounts = createMockRepository();
     templates.create.mockImplementation((v: object) => ({ ...v }));
     templates.save.mockImplementation(async (v: object) => v);
+    qb = createMockQueryBuilder();
+    qb.execute.mockResolvedValue({ affected: 1 });
+    templates.createQueryBuilder.mockReturnValue(qb);
     graph = { listTemplates: jest.fn().mockResolvedValue([]) };
     resolver = {
       byId: jest.fn().mockResolvedValue(RESOLVED),
@@ -138,7 +147,8 @@ describe('WhatsappTemplateSyncService', () => {
     it.each([
       ['APPROVED', WHATSAPP_TEMPLATE_STATUS.APPROVED],
       ['REJECTED', WHATSAPP_TEMPLATE_STATUS.REJECTED],
-      ['PAUSED', WHATSAPP_TEMPLATE_STATUS.DISABLED],
+      ['PAUSED', WHATSAPP_TEMPLATE_STATUS.PAUSED],
+      ['LIMIT_EXCEEDED', WHATSAPP_TEMPLATE_STATUS.PAUSED],
       ['DISABLED', WHATSAPP_TEMPLATE_STATUS.DISABLED],
       ['PENDING', WHATSAPP_TEMPLATE_STATUS.PENDING_REVIEW],
       ['IN_APPEAL', WHATSAPP_TEMPLATE_STATUS.PENDING_REVIEW],
@@ -207,6 +217,250 @@ describe('WhatsappTemplateSyncService', () => {
 
       // The clinic IS connected; templates can be re-synced from the UI.
       await expect(service.syncAfterOnboarding(TENANT, 'acc-1')).resolves.toBeUndefined();
+    });
+  });
+
+  // ─────────────────────── reconciliation hardening ───────────────────────
+
+  describe('reconciliation hardening', () => {
+    it('clears a stale rejection reason when Meta approves ("NONE" is not a reason)', async () => {
+      graph.listTemplates.mockResolvedValueOnce([remote({ status: 'APPROVED', rejectedReason: 'NONE' })]);
+      templates.findOne.mockResolvedValueOnce({ id: 'local-1', rejected_reason: 'OLD' });
+
+      await service.syncAccount(TENANT);
+
+      expect(templates.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'approved', rejected_reason: null }),
+      );
+    });
+
+    it('keeps the parameter format so the send path can fill NAMED templates by name', async () => {
+      graph.listTemplates.mockResolvedValueOnce([
+        remote({ components: [{ type: 'BODY', text: 'Hi {{name}}' }], parameterFormat: 'named' }),
+      ]);
+      templates.findOne.mockResolvedValue(null);
+
+      await service.syncAccount(TENANT);
+
+      expect(templates.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          components: { components: [{ type: 'BODY', text: 'Hi {{name}}' }], parameter_format: 'NAMED' },
+        }),
+      );
+    });
+
+    it('revives a soft-deleted row (looked up withDeleted) instead of hitting the unique key', async () => {
+      graph.listTemplates.mockResolvedValueOnce([remote()]);
+      templates.findOne.mockResolvedValueOnce({ id: 'tomb', deleted_at: new Date() });
+
+      await service.syncAccount(TENANT);
+
+      expect(templates.findOne.mock.calls[0][0]).toMatchObject({ withDeleted: true });
+      expect(templates.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'tomb', deleted_at: null }),
+      );
+    });
+
+    it('does not let one bad template abort the rest, and never prunes after a partial write', async () => {
+      graph.listTemplates.mockResolvedValueOnce([remote({ id: 'a' }), remote({ id: 'b', name: 'other' })]);
+      templates.findOne.mockResolvedValue(null);
+      templates.save.mockRejectedValueOnce(new Error('bad row')).mockImplementation(async (v: object) => v);
+
+      const result = await service.syncAccount(TENANT);
+
+      expect(result).toMatchObject({ fetched: 2, created: 1, failed: 1, removed: 0 });
+      expect(templates.find).not.toHaveBeenCalled(); // no prune query at all
+    });
+
+    it('removes mirror rows Meta no longer lists (scoped to this tenant + WABA)', async () => {
+      graph.listTemplates.mockResolvedValueOnce([remote({ id: 'kept' })]);
+      templates.findOne.mockResolvedValue(null);
+      const old = new Date(Date.now() - 3_600_000);
+      templates.find.mockResolvedValueOnce([
+        { id: 'gone-1', provider_template_id: 'deleted-on-meta', last_synced_at: old },
+      ]);
+
+      const result = await service.syncAccount(TENANT);
+
+      expect(result.removed).toBe(1);
+      expect(templates.softRemove).toHaveBeenCalledWith(expect.objectContaining({ id: 'gone-1' }));
+      const where = templates.find.mock.calls[0][0].where;
+      expect(where).toMatchObject({ tenant: { id: TENANT }, waba_id: 'waba-1' });
+    });
+
+    it('does not overwrite a row a webhook updated AFTER the pull began', async () => {
+      graph.listTemplates.mockResolvedValueOnce([remote({ status: 'PENDING' })]);
+      templates.findOne.mockResolvedValueOnce({
+        id: 'local-1',
+        status: 'approved',
+        last_synced_at: new Date(Date.now() + 60_000),
+      });
+
+      const result = await service.syncAccount(TENANT);
+
+      expect(templates.save).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ created: 0, updated: 0 });
+    });
+  });
+
+  // ─────────────────────────── webhook application ───────────────────────────
+
+  describe('applyWebhookEvent', () => {
+    const T = 1_760_000_000; // seconds
+    const row = (over: Record<string, unknown> = {}) => ({
+      id: 'local-1',
+      waba_id: 'waba-1',
+      provider_template_id: 'meta-tpl-1',
+      status: 'pending_review',
+      last_synced_at: new Date((T - 600) * 1000),
+      ...over,
+    });
+    const ev = (over: Record<string, unknown> = {}) => ({
+      field: 'message_template_status_update' as const,
+      wabaId: 'waba-1',
+      templateId: 'meta-tpl-1',
+      eventTime: T,
+      event: 'APPROVED',
+      ...over,
+    });
+
+    it('Pending to Approved: writes the verdict and moves last_synced_at to the event time', async () => {
+      templates.find.mockResolvedValueOnce([row()]);
+
+      const out = await service.applyWebhookEvent(ev());
+
+      expect(out).toEqual({ applied: true, rows: 1 });
+      expect(qb.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'approved',
+          rejected_reason: null,
+          last_synced_at: new Date(T * 1000),
+        }),
+      );
+    });
+
+    it('Rejected: stores the reason, with Meta recommendation for INVALID_FORMAT', async () => {
+      templates.find.mockResolvedValueOnce([row()]);
+
+      await service.applyWebhookEvent(
+        ev({ event: 'REJECTED', reason: 'INVALID_FORMAT', rejectionRecommendation: 'Remove the trailing variable' }),
+      );
+
+      expect(qb.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'rejected',
+          rejected_reason: 'INVALID_FORMAT: Remove the trailing variable',
+        }),
+      );
+    });
+
+    it.each([
+      ['PAUSED', 'paused'],
+      ['DISABLED', 'disabled'],
+    ])('%s becomes %s (not sendable)', async (event, status) => {
+      templates.find.mockResolvedValueOnce([row({ status: 'approved' })]);
+      await service.applyWebhookEvent(ev({ event, reason: 'NONE' }));
+      expect(qb.set).toHaveBeenCalledWith(expect.objectContaining({ status, rejected_reason: null }));
+    });
+
+    it('ignores an event for a template this platform does not mirror', async () => {
+      templates.find.mockResolvedValueOnce([]);
+      await expect(service.applyWebhookEvent(ev())).resolves.toEqual({
+        applied: false,
+        reason: 'unknown-template',
+      });
+      expect(qb.execute).not.toHaveBeenCalled();
+    });
+
+    it('looks the row up by BOTH waba and template id (an event cannot reach another WABA)', async () => {
+      templates.find.mockResolvedValueOnce([]);
+      await service.applyWebhookEvent(ev({ wabaId: 'waba-OTHER' }));
+      expect(templates.find.mock.calls[0][0].where).toMatchObject({
+        waba_id: 'waba-OTHER',
+        provider_template_id: 'meta-tpl-1',
+      });
+    });
+
+    it('out-of-order: an OLDER event is rejected by the guarded UPDATE (nothing changes)', async () => {
+      templates.find.mockResolvedValueOnce([row({ status: 'approved', last_synced_at: new Date(T * 1000) })]);
+      qb.execute.mockResolvedValueOnce({ affected: 0 });
+
+      const out = await service.applyWebhookEvent(ev({ event: 'PENDING', eventTime: T - 300 }));
+
+      expect(out).toEqual({ applied: false, reason: 'stale' });
+      // The ordering guard is in the statement itself, not a read-then-write.
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining('last_synced_at'),
+        expect.objectContaining({ bound: new Date((T - 300 + 1) * 1000) }),
+      );
+    });
+
+    it('duplicate delivery is idempotent: the same verdict is simply written again', async () => {
+      templates.find.mockResolvedValue([row()]);
+      await service.applyWebhookEvent(ev());
+      await service.applyWebhookEvent(ev());
+      const patches = qb.set.mock.calls.map((c: any[]) => c[0]);
+      expect(patches[0]).toEqual(patches[1]);
+    });
+
+    it('FLAGGED is a quality warning on a still-approved template: status untouched', async () => {
+      templates.find.mockResolvedValueOnce([row({ status: 'approved' })]);
+      await expect(service.applyWebhookEvent(ev({ event: 'FLAGGED' }))).resolves.toEqual({
+        applied: false,
+        reason: 'no-status-change',
+      });
+      expect(qb.execute).not.toHaveBeenCalled();
+    });
+
+    it('an unknown event name is treated as pending, never as approved', async () => {
+      templates.find.mockResolvedValueOnce([row()]);
+      await service.applyWebhookEvent(ev({ event: 'SOMETHING_NEW' }));
+      expect(qb.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'pending_review' }));
+    });
+
+    it('DELETED removes the mirror row', async () => {
+      templates.find.mockResolvedValueOnce([row()]);
+      const out = await service.applyWebhookEvent(ev({ event: 'DELETED', reason: null }));
+      expect(out).toEqual({ applied: true, rows: 1 });
+      expect(templates.softRemove).toHaveBeenCalled();
+    });
+
+    it('a COMPLETED category change updates the category (marketing consent depends on it)', async () => {
+      templates.find.mockResolvedValueOnce([row({ status: 'approved' })]);
+      await service.applyWebhookEvent({
+        field: 'template_category_update',
+        wabaId: 'waba-1',
+        templateId: 'meta-tpl-1',
+        eventTime: T,
+        category: 'MARKETING',
+      });
+      expect(qb.set).toHaveBeenCalledWith(expect.objectContaining({ category: 'MARKETING' }));
+    });
+
+    it('an IMPENDING category change is informational only', async () => {
+      templates.find.mockResolvedValueOnce([row()]);
+      await expect(
+        service.applyWebhookEvent({
+          field: 'template_category_update',
+          wabaId: 'waba-1',
+          templateId: 'meta-tpl-1',
+          eventTime: T,
+          category: 'UTILITY',
+          impendingCategoryChange: true,
+        }),
+      ).resolves.toEqual({ applied: false, reason: 'ignored' });
+      expect(qb.execute).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('tenantsForTemplate', () => {
+    it('attributes an event only to tenants that own that exact (waba, template) row', async () => {
+      templates.find.mockResolvedValueOnce([{ tenant: { id: 't1' } }, { tenant: { id: 't1' } }]);
+      await expect(service.tenantsForTemplate('waba-1', 'meta-tpl-1')).resolves.toEqual(['t1']);
+      expect(templates.find.mock.calls[0][0].where).toMatchObject({
+        waba_id: 'waba-1',
+        provider_template_id: 'meta-tpl-1',
+      });
     });
   });
 });

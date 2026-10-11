@@ -8,6 +8,11 @@ import { ScheduledNotification } from '../../entities/Notifications/ScheduledNot
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 import { WhatsappTemplateService } from '../whatsapp/whatsapp-template.service';
+import {
+  orderedBodyParameters,
+  unsupportedTemplateShape,
+} from '../whatsapp/template-variables.util';
+import { WHATSAPP_TEMPLATE_STATUS } from '../whatsapp/whatsapp.constants';
 
 import { CreateNotificationTemplateDto } from './dto/create-notification-template.dto';
 import { UpdateNotificationTemplateDto } from './dto/update-notification-template.dto';
@@ -71,6 +76,8 @@ export class NotificationTemplateService {
     tenantId: string,
     id: string,
     expectLanguagePrefix?: string,
+    /** Already linked and unchanged: not re-judged (an unrelated edit must not fail on today's status). */
+    alreadyLinked = false,
   ): Promise<string> {
     const template = await this.whatsappTemplates.findOne(tenantId, id);
     if (
@@ -81,7 +88,51 @@ export class NotificationTemplateService {
         message: `WhatsApp template "${template.name}" is not a "${expectLanguagePrefix}" language variant (its language is "${template.language}")`,
       });
     }
+    if (!alreadyLinked) this.assertReadyToLink(template);
     return id;
+  }
+
+  /**
+   * A notification may only point at a template it can actually send — the
+   * link is the clinic's explicit decision that "this event uses this
+   * template", so it must be a real one:
+   *   - APPROVED by Meta (a pending/rejected/paused template fails every send);
+   *   - sendable by this platform (no header/button parameters we cannot fill);
+   *   - every placeholder bound to a trusted data source — otherwise the
+   *     pipeline has nothing to put in `{{n}}` and every send would fall back
+   *     to email with no one having chosen that.
+   */
+  private assertReadyToLink(template: {
+    name: string;
+    status: string;
+    components?: unknown;
+    variable_mapping?: Record<string, string> | null;
+  }): void {
+    if (template.status !== WHATSAPP_TEMPLATE_STATUS.APPROVED) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `WhatsApp template "${template.name}" cannot be used yet: it is "${template.status}", not approved by Meta.`,
+        publicContext: { reason: 'TEMPLATE_NOT_APPROVED', templateStatus: template.status },
+      });
+    }
+    const unsupported = unsupportedTemplateShape(template.components);
+    if (unsupported) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `WhatsApp template "${template.name}" ${unsupported}.`,
+        publicContext: { reason: 'UNSUPPORTED_TEMPLATE_SHAPE' },
+      });
+    }
+    const unbound = orderedBodyParameters(template.components).filter(
+      (name) => !template.variable_mapping?.[name],
+    );
+    if (unbound.length > 0) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message:
+          `WhatsApp template "${template.name}" has placeholder(s) ` +
+          `${unbound.map((n) => `{{${n}}}`).join(', ')} with no data source. ` +
+          'Choose what fills each one on the Templates tab first.',
+        publicContext: { reason: 'UNBOUND_PLACEHOLDERS', placeholders: unbound },
+      });
+    }
   }
 
   async findAll(tenantId: string, filter: NotificationTemplateFilterDto) {
@@ -126,12 +177,22 @@ export class NotificationTemplateService {
     if (dto.isActive !== undefined) template.is_active = dto.isActive;
     if (dto.providerTemplateId !== undefined) {
       template.provider_template_id = dto.providerTemplateId
-        ? await this.assertWhatsappTemplate(tenantId, dto.providerTemplateId)
+        ? await this.assertWhatsappTemplate(
+            tenantId,
+            dto.providerTemplateId,
+            undefined,
+            dto.providerTemplateId === template.provider_template_id,
+          )
         : undefined;
     }
     if (dto.providerTemplateIdAr !== undefined) {
       template.provider_template_id_ar = dto.providerTemplateIdAr
-        ? await this.assertWhatsappTemplate(tenantId, dto.providerTemplateIdAr, 'ar')
+        ? await this.assertWhatsappTemplate(
+            tenantId,
+            dto.providerTemplateIdAr,
+            'ar',
+            dto.providerTemplateIdAr === template.provider_template_id_ar,
+          )
         : undefined;
     }
     return this.templates.save(template);

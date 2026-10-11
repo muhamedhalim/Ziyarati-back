@@ -1,4 +1,4 @@
-import { mapMetaTemplateStatus } from './template-status.util';
+import { mapMetaTemplateStatus, normalizeRejectionReason } from './template-status.util';
 import { WHATSAPP_TEMPLATE_STATUS } from './whatsapp.constants';
 
 /**
@@ -11,7 +11,11 @@ describe('mapMetaTemplateStatus', () => {
   it.each([
     ['APPROVED', WHATSAPP_TEMPLATE_STATUS.APPROVED],
     ['REJECTED', WHATSAPP_TEMPLATE_STATUS.REJECTED],
-    ['PAUSED', WHATSAPP_TEMPLATE_STATUS.DISABLED],
+    ['PAUSED', WHATSAPP_TEMPLATE_STATUS.PAUSED],
+    ['LIMIT_EXCEEDED', WHATSAPP_TEMPLATE_STATUS.PAUSED],
+    ['LOCKED', WHATSAPP_TEMPLATE_STATUS.PAUSED],
+    ['REINSTATED', WHATSAPP_TEMPLATE_STATUS.APPROVED],
+    ['ARCHIVED', WHATSAPP_TEMPLATE_STATUS.DISABLED],
     ['DISABLED', WHATSAPP_TEMPLATE_STATUS.DISABLED],
     ['PENDING', WHATSAPP_TEMPLATE_STATUS.PENDING_REVIEW],
     ['IN_APPEAL', WHATSAPP_TEMPLATE_STATUS.PENDING_REVIEW],
@@ -26,13 +30,26 @@ describe('mapMetaTemplateStatus', () => {
 
   it('never treats an unknown status as sendable, and reports it', () => {
     const onUnknown = jest.fn();
-    expect(mapMetaTemplateStatus('LIMIT_EXCEEDED', onUnknown)).toBe(
+    expect(mapMetaTemplateStatus('SOMETHING_NEW', onUnknown)).toBe(
       WHATSAPP_TEMPLATE_STATUS.PENDING_REVIEW,
     );
-    expect(onUnknown).toHaveBeenCalledWith('LIMIT_EXCEEDED');
+    expect(onUnknown).toHaveBeenCalledWith('SOMETHING_NEW');
   });
 
   it('treats a missing status as pending rather than approved', () => {
     expect(mapMetaTemplateStatus(undefined)).toBe(WHATSAPP_TEMPLATE_STATUS.PENDING_REVIEW);
+  });
+});
+
+describe('normalizeRejectionReason', () => {
+  it.each([[undefined], [null], [''], ['  '], ['NONE'], ['none']])(
+    'treats %j as "no reason"',
+    (raw) => {
+      expect(normalizeRejectionReason(raw as string | null | undefined)).toBeUndefined();
+    },
+  );
+
+  it('keeps a real reason', () => {
+    expect(normalizeRejectionReason(' INVALID_FORMAT ')).toBe('INVALID_FORMAT');
   });
 });

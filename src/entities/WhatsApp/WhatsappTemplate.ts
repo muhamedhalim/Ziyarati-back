@@ -72,6 +72,20 @@ export class WhatsappTemplate {
   @Column({ type: 'text', nullable: true })
   rejected_reason?: string;
 
+  /**
+   * Which trusted piece of data fills each placeholder when this template is
+   * sent by the notification pipeline: `{ "1": "patient_name", "2": "appointment_date" }`.
+   * Keys are the template's own placeholder names; values come from the closed
+   * `WHATSAPP_TEMPLATE_VARIABLE_SOURCES` set and are resolved server-side from
+   * the appointment / clinic / customer rows at send time.
+   *
+   * NULL means "no automation binding" — such a template can still be sent
+   * manually (the sender types the values) but cannot be wired to a
+   * notification rule while it declares placeholders.
+   */
+  @Column({ type: 'jsonb', nullable: true })
+  variable_mapping?: Record<string, string> | null;
+
   /** Last time this row was reconciled with Meta. */
   @Column({ type: 'timestamptz', nullable: true })
   last_synced_at?: Date;

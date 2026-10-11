@@ -41,6 +41,10 @@ import type {
 } from './webhooks/whatsapp-webhook.types';
 import { contentHashKey } from './webhooks/coexistence-webhook.adapter';
 import { WhatsappCoexistenceEchoService } from './meta/whatsapp-coexistence-echo.service';
+import {
+  WhatsappTemplateSyncService,
+  TemplateWebhookEvent,
+} from './meta/whatsapp-template-sync.service';
 import { CreateWhatsappWebhookDto } from './dto/create-whatsapp-webhook.dto';
 import { UpdateWhatsappWebhookDto } from './dto/update-whatsapp-webhook.dto';
 import { WhatsappWebhookFilterDto } from './dto/whatsapp-webhook-filter.dto';
@@ -49,6 +53,17 @@ import { WEBHOOK_SIGNATURE_SCHEME } from '../integration-platform/integration-pl
 import { COEXISTENCE_SYNC_STATUS } from './whatsapp.constants';
 
 const PG_UNIQUE_VIOLATION = '23505';
+
+/**
+ * Change fields that describe a TEMPLATE rather than a message. Their payload
+ * has no `metadata.phone_number_id` and no message/status `timestamp`; they are
+ * identified by the WABA (`entry.id`) and the template id, and dated by
+ * `entry.time` (Unix seconds, inside the signed body).
+ */
+const TEMPLATE_WEBHOOK_FIELDS = new Set([
+  'message_template_status_update',
+  'template_category_update',
+]);
 
 /**
  * ZT-H02 — Meta webhook replay-freshness tolerance.
@@ -103,6 +118,9 @@ export class WhatsappWebhookService {
     private readonly ctx: TenantContextService,
     // Optional: a missing counter must never cost an inbound event.
     @Optional() private readonly metrics?: MetricsService,
+    // Optional + last so existing direct constructions keep working; Nest
+    // always injects it (same module).
+    @Optional() private readonly templateSync?: WhatsappTemplateSyncService,
   ) {}
 
   /** GET verification handshake — returns the challenge to echo, or null. */
@@ -523,6 +541,10 @@ export class WhatsappWebhookService {
         if (value) await this.coexistenceEcho.handleEchoes(tenantId, value);
         break;
       }
+      case 'message_template_status_update':
+      case 'template_category_update':
+        await this.applyTemplateEvent(body);
+        break;
       case 'smb_app_state_sync':
         await this.confirmCoexistenceSync(
           tenantId,
@@ -625,6 +647,19 @@ export class WhatsappWebhookService {
   private async resolveTenantFromPayload(
     payload: Record<string, unknown> | undefined,
   ): Promise<string | undefined> {
+    // Template events carry a WABA + template id instead of a phone number.
+    // The tenant is whoever already OWNS that exact (waba_id, template id)
+    // row — an event can attribute itself only to an existing template, never
+    // introduce one.
+    const templateEvent = this.templateEventFromBody(payload as WhatsappWebhookBody);
+    if (templateEvent) {
+      const tenants = await this.templateSync?.tenantsForTemplate(
+        templateEvent.wabaId,
+        templateEvent.templateId,
+      );
+      return tenants && tenants.length > 0 ? tenants[0] : undefined;
+    }
+
     const phoneNumberId = this.extractPhoneNumberId(payload);
     if (!phoneNumberId) return undefined;
     const account = await this.accounts.findOne({
@@ -638,6 +673,68 @@ export class WhatsappWebhookService {
       return undefined;
     }
     return account.tenant?.id;
+  }
+
+  /**
+   * The template-lifecycle facts of a webhook body, or `undefined` when the
+   * change is not a template event / lacks the identifying fields. Meta sends
+   * `message_template_id` as a JSON integer; it is normalised to a string
+   * because that is how `provider_template_id` is stored.
+   */
+  private templateEventFromBody(
+    body: WhatsappWebhookBody | undefined,
+  ): TemplateWebhookEvent | undefined {
+    const entries =
+      body?.entry ?? (body?.payload as { entry?: MetaWebhookEntry[] } | undefined)?.entry;
+    const entry = entries?.[0];
+    const change = entry?.changes?.[0];
+    const field = change?.field;
+    if (!field || !TEMPLATE_WEBHOOK_FIELDS.has(field)) return undefined;
+
+    const value = (change?.value ?? {}) as Record<string, unknown>;
+    const rawId = value.message_template_id;
+    const templateId =
+      typeof rawId === 'number' || typeof rawId === 'string' ? String(rawId) : undefined;
+    const wabaId = entry?.id !== undefined ? String(entry.id) : undefined;
+    const eventTime = Number(entry?.time);
+    if (!templateId || !wabaId || !Number.isFinite(eventTime)) return undefined;
+
+    const rejection = value.rejection_info as
+      | { recommendation?: string }
+      | undefined;
+    const isCategory = field === 'template_category_update';
+    return {
+      field: field as TemplateWebhookEvent['field'],
+      wabaId,
+      templateId,
+      eventTime,
+      event: typeof value.event === 'string' ? value.event : undefined,
+      reason: typeof value.reason === 'string' ? value.reason : null,
+      rejectionRecommendation:
+        typeof rejection?.recommendation === 'string' ? rejection.recommendation : undefined,
+      category: isCategory
+        ? typeof value.new_category === 'string'
+          ? value.new_category
+          : undefined
+        : typeof value.message_template_category === 'string'
+          ? value.message_template_category
+          : undefined,
+      impendingCategoryChange: isCategory && value.correct_category !== undefined,
+    };
+  }
+
+  private async applyTemplateEvent(body: WhatsappWebhookBody): Promise<void> {
+    const event = this.templateEventFromBody(body);
+    if (!event || !this.templateSync) return;
+    const outcome = await this.templateSync.applyWebhookEvent(event);
+    // Counts only — never the payload. A stale/unknown outcome is normal
+    // (redelivery, a template this platform does not mirror), not an error.
+    this.logger.debug(
+      `[cid=${this.ctx.getCorrelationId() ?? '-'}] template webhook ${event.field} ` +
+        `${event.event ?? event.category ?? ''} → ${
+          outcome.applied ? `applied(${outcome.rows})` : outcome.reason
+        }`,
+    );
   }
 
   private extractPhoneNumberId(
@@ -678,6 +775,14 @@ export class WhatsappWebhookService {
     // (same fields, including `timestamp`), so the same extraction applies.
     const echoTimestamp = value?.message_echoes?.[0]?.timestamp;
     if (echoTimestamp) return echoTimestamp;
+
+    // Template events have no message/status object: their authenticated
+    // timestamp is the entry's own `time`, inside the same HMAC-covered body.
+    const field = body?.entry?.[0]?.changes?.[0]?.field;
+    if (field && TEMPLATE_WEBHOOK_FIELDS.has(field)) {
+      const time = body?.entry?.[0]?.time;
+      if (time !== undefined && time !== null) return String(time);
+    }
     return undefined;
   }
 
@@ -797,6 +902,21 @@ export class WhatsappWebhookService {
     // ordinary message, so the same natural key applies.
     const echoId = value.message_echoes?.[0]?.id;
     if (echoId) return `echo:${echoId}`;
+
+    // Template events: Meta redelivers the identical payload, so the same
+    // (field, template, event, time) is the same delivery. `time` is in the
+    // key so a template that legitimately returns to a prior state later
+    // (PAUSED → APPROVED → PAUSED) is not collapsed into its first occurrence.
+    const templateEvent = this.templateEventFromBody(body);
+    if (templateEvent) {
+      return [
+        'tpl',
+        templateEvent.field,
+        templateEvent.templateId,
+        templateEvent.event ?? templateEvent.category ?? '-',
+        templateEvent.eventTime,
+      ].join(':');
+    }
 
     // Coexistence — `history`/`smb_app_state_sync` have no asserted schema
     // (see coexistence-webhook.adapter.ts), so a content hash of the whole

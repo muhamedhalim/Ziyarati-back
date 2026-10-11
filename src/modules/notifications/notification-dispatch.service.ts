@@ -1,4 +1,4 @@
-import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
@@ -24,6 +24,9 @@ import { TenantRateLimiterService } from '../../queue/tenant-rate-limiter.servic
 import { WhatsappExecutionService } from '../whatsapp/whatsapp-execution.service';
 import { SendTemplateMessageDto } from '../whatsapp/dto/send-template-message.dto';
 import { NotificationChannelFactory } from './channels/notification-channel.factory';
+import { WhatsappTemplateService } from '../whatsapp/whatsapp-template.service';
+import { NotificationVariableResolver } from './notification-variable-resolver.service';
+import { AppError as AppErr, ErrorCode } from '../../common/errors';
 
 export type DispatchOutcome =
   | { status: 'sent'; providerRef: string }
@@ -67,6 +70,12 @@ export class NotificationDispatchService {
     private readonly whatsapp: WhatsappExecutionService,
     private readonly config: ConfigService,
     private readonly channelFactory: NotificationChannelFactory,
+    // Optional + last: a dispatcher built without them (older direct
+    // constructions) simply skips template-variable binding.
+    @Optional()
+    @Inject(forwardRef(() => WhatsappTemplateService))
+    private readonly whatsappTemplates?: WhatsappTemplateService,
+    @Optional() private readonly variableResolver?: NotificationVariableResolver,
   ) {}
 
   async processScheduled(tenantId: string, id: string): Promise<DispatchOutcome> {
@@ -192,12 +201,37 @@ export class NotificationDispatchService {
     originalChannel: string,
     providerTemplateId: string,
   ): Promise<DispatchOutcome> {
-    const sendDto: SendTemplateMessageDto = {
-      customerId: notification.recipient_id,
-      variables: { ...(notification.template?.variables ?? {}), ...(notification.variables ?? {}) },
-    };
     let res;
     try {
+      // Placeholder values come from the template's own binding, resolved
+      // against trusted rows — see NotificationVariableResolver. An approved
+      // template with `{{1}}`/`{{2}}` and no value for one of them is refused
+      // HERE, with the placeholder named, instead of reaching Meta.
+      let variables: Record<string, unknown> = {
+        ...(notification.template?.variables ?? {}),
+        ...(notification.variables ?? {}),
+      };
+      if (this.whatsappTemplates && this.variableResolver) {
+        const waTemplate = await this.whatsappTemplates.findOne(tenantId, providerTemplateId);
+        const resolved = await this.variableResolver.resolve(tenantId, waTemplate, {
+          customer,
+          appointmentId: notification.appointment?.id,
+          supplied: variables,
+        });
+        if (resolved.unresolved.length > 0) {
+          const names = resolved.unresolved
+            .map((u) => `{{${u.placeholder}}}${u.source ? ` (${u.source})` : ''}`)
+            .join(', ');
+          throw new AppErr(ErrorCode.UNPROCESSABLE_ENTITY, {
+            message: `Template variable(s) could not be resolved: ${names}`,
+          });
+        }
+        variables = resolved.variables;
+      }
+      const sendDto: SendTemplateMessageDto = {
+        customerId: notification.recipient_id,
+        variables,
+      };
       res = await this.whatsapp.sendTemplateMessage(tenantId, providerTemplateId, sendDto);
     } catch (err) {
       // Scrubbed once, here: `reason` is stored on the notification, written to the

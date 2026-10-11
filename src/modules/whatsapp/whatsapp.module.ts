@@ -4,6 +4,9 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { WhatsappTemplate } from '../../entities/WhatsApp/WhatsappTemplate';
+// READ-ONLY: `WhatsappTemplateService.remove` refuses to delete a template a
+// notification template still points at.
+import { NotificationTemplate } from '../../entities/Notifications/NotificationTemplate';
 import { WhatsappWebhook } from '../../entities/WhatsApp/WhatsappWebhook';
 import { WhatsappContact } from '../../entities/WhatsApp/WhatsappContact';
 import { NotificationLog } from '../../entities/Notifications/NotificationLog';
@@ -114,6 +117,7 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
     TypeOrmModule.forFeature([
       WhatsappAccount,
       WhatsappTemplate,
+      NotificationTemplate,
       WhatsappWebhook,
       WhatsappContact,
       NotificationLog,

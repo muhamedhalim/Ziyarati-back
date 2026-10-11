@@ -11,6 +11,17 @@ import { createMockRepository, MockRepository } from '../../../test/utils/mock-f
 
 const TENANT = 't1';
 
+/** A WhatsApp template exactly as the mirror stores it once Meta approved it. */
+const approvedTemplate = (over: Record<string, unknown> = {}) => ({
+  id: 'wa-x',
+  name: 'appointment_reminder',
+  language: 'en',
+  status: 'approved',
+  components: { components: [{ type: 'BODY', text: 'Hello {{1}}, see you on {{2}} at the clinic.' }] },
+  variable_mapping: { '1': 'patient_name', '2': 'appointment_date' },
+  ...over,
+});
+
 describe('NotificationTemplateService', () => {
   let service: NotificationTemplateService;
   let templates: MockRepository;
@@ -77,7 +88,7 @@ describe('NotificationTemplateService', () => {
   // new Arabic-variant link that makes locale-based selection possible.
   describe('[T157] provider_template_id / provider_template_id_ar', () => {
     it('validates and persists providerTemplateId (tenant-owned WhatsApp template)', async () => {
-      whatsappTemplates.findOne.mockResolvedValueOnce({ id: 'wa-1', language: 'en' });
+      whatsappTemplates.findOne.mockResolvedValueOnce(approvedTemplate({ id: 'wa-1', language: 'en' }));
       templates.save.mockImplementationOnce(async (t: any) => t);
       const res = await service.create(TENANT, {
         name: 'Reminder',
@@ -89,7 +100,7 @@ describe('NotificationTemplateService', () => {
     });
 
     it('validates and persists providerTemplateIdAr when its WhatsApp template is Arabic', async () => {
-      whatsappTemplates.findOne.mockResolvedValueOnce({ id: 'wa-2', language: 'ar' });
+      whatsappTemplates.findOne.mockResolvedValueOnce(approvedTemplate({ id: 'wa-2', language: 'ar' }));
       templates.save.mockImplementationOnce(async (t: any) => t);
       const res = await service.create(TENANT, {
         name: 'Reminder',
@@ -126,8 +137,8 @@ describe('NotificationTemplateService', () => {
     it('updates providerTemplateId/providerTemplateIdAr on an existing template', async () => {
       templates.findOne.mockResolvedValueOnce({ id: 'tpl1' });
       whatsappTemplates.findOne
-        .mockResolvedValueOnce({ id: 'wa-1', language: 'en' })
-        .mockResolvedValueOnce({ id: 'wa-2', language: 'ar' });
+        .mockResolvedValueOnce(approvedTemplate({ id: 'wa-1', language: 'en' }))
+        .mockResolvedValueOnce(approvedTemplate({ id: 'wa-2', language: 'ar' }));
       templates.save.mockImplementationOnce(async (t: any) => t);
       const res = await service.update(TENANT, 'tpl1', {
         providerTemplateId: 'wa-1',
@@ -136,6 +147,85 @@ describe('NotificationTemplateService', () => {
       expect(res).toEqual(
         expect.objectContaining({ provider_template_id: 'wa-1', provider_template_id_ar: 'wa-2' }),
       );
+    });
+
+    // ── Readiness: the link is the clinic's explicit "this event uses this
+    // template", so it must point at something that can actually be sent.
+    describe('readiness at link time', () => {
+      it.each(['pending_review', 'rejected', 'paused', 'disabled', 'draft'])(
+        'refuses a %s template',
+        async (status) => {
+          whatsappTemplates.findOne.mockResolvedValueOnce(approvedTemplate({ status }));
+          await expect(
+            service.create(TENANT, { name: 'R', channel: 'WHATSAPP', providerTemplateId: 'wa-x' } as any),
+          ).rejects.toMatchObject({
+            code: ErrorCode.UNPROCESSABLE_ENTITY,
+            publicContext: { reason: 'TEMPLATE_NOT_APPROVED' },
+          });
+          expect(templates.save).not.toHaveBeenCalled();
+        },
+      );
+
+      it('refuses an approved template whose placeholders have no data source', async () => {
+        whatsappTemplates.findOne.mockResolvedValueOnce(
+          approvedTemplate({ variable_mapping: { '1': 'patient_name' } }),
+        );
+        await expect(
+          service.create(TENANT, { name: 'R', channel: 'WHATSAPP', providerTemplateId: 'wa-x' } as any),
+        ).rejects.toMatchObject({
+          publicContext: { reason: 'UNBOUND_PLACEHOLDERS', placeholders: ['2'] },
+        });
+      });
+
+      it('accepts an approved template with no placeholders and no mapping', async () => {
+        whatsappTemplates.findOne.mockResolvedValueOnce(
+          approvedTemplate({
+            components: { components: [{ type: 'BODY', text: 'Your appointment is confirmed.' }] },
+            variable_mapping: null,
+          }),
+        );
+        templates.save.mockImplementationOnce(async (t: any) => t);
+        await expect(
+          service.create(TENANT, { name: 'R', channel: 'WHATSAPP', providerTemplateId: 'wa-x' } as any),
+        ).resolves.toMatchObject({ provider_template_id: 'wa-x' });
+      });
+
+      it('refuses a template shape the platform cannot fill', async () => {
+        whatsappTemplates.findOne.mockResolvedValueOnce(
+          approvedTemplate({
+            components: {
+              components: [
+                { type: 'HEADER', format: 'IMAGE' },
+                { type: 'BODY', text: 'Hi there, your appointment is confirmed.' },
+              ],
+            },
+            variable_mapping: null,
+          }),
+        );
+        await expect(
+          service.create(TENANT, { name: 'R', channel: 'WHATSAPP', providerTemplateId: 'wa-x' } as any),
+        ).rejects.toMatchObject({ publicContext: { reason: 'UNSUPPORTED_TEMPLATE_SHAPE' } });
+      });
+
+      it('does not re-judge an UNCHANGED link on an unrelated edit (a later pause must not block renaming)', async () => {
+        templates.findOne.mockResolvedValueOnce({ id: 'tpl1', provider_template_id: 'wa-x' });
+        whatsappTemplates.findOne.mockResolvedValueOnce(approvedTemplate({ status: 'paused' }));
+        templates.save.mockImplementationOnce(async (t: any) => t);
+
+        const res = await service.update(TENANT, 'tpl1', {
+          name: 'Renamed',
+          providerTemplateId: 'wa-x',
+        } as any);
+        expect(res).toMatchObject({ name: 'Renamed', provider_template_id: 'wa-x' });
+      });
+
+      it('DOES judge a link that changes to a different template', async () => {
+        templates.findOne.mockResolvedValueOnce({ id: 'tpl1', provider_template_id: 'wa-old' });
+        whatsappTemplates.findOne.mockResolvedValueOnce(approvedTemplate({ status: 'rejected' }));
+        await expect(
+          service.update(TENANT, 'tpl1', { providerTemplateId: 'wa-x' } as any),
+        ).rejects.toMatchObject({ publicContext: { reason: 'TEMPLATE_NOT_APPROVED' } });
+      });
     });
   });
 });

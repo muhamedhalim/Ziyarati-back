@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 
 import { MetaConfig } from './meta.config';
 import { AppError, ErrorCode } from '../../../common/errors';
+import { scrubFailureReason } from '../../../common/utils/log-scrubber.util';
 
 // ─── Graph API response shapes (only the fields we actually consume) ─────────
 
@@ -44,6 +45,8 @@ export interface MetaTemplate {
   category?: string;
   components?: unknown;
   rejectedReason?: string;
+  /** `POSITIONAL` (`{{1}}`) or `NAMED` (`{{first_name}}`). Absent on older responses. */
+  parameterFormat?: string;
 }
 
 export interface MetaMediaMetadata {
@@ -87,6 +90,58 @@ export interface MetaTemplateCreateResult {
   id: string;
   status?: string;
   category?: string;
+  rejectedReason?: string;
+}
+
+/** A template exactly as Graph returns it (snake_case). */
+interface RawMetaTemplate {
+  id: string;
+  name: string;
+  language: string;
+  status: string;
+  category?: string;
+  components?: unknown;
+  rejected_reason?: string;
+  parameter_format?: string;
+}
+
+/**
+ * Why a Graph call failed, coarse enough for a caller to decide what to do.
+ *
+ *   timeout / network — the request MAY have reached Meta. A write must be
+ *                       reconciled (looked up) before it is ever repeated.
+ *   rate_limited      — Meta throttled us; retry later.
+ *   unavailable       — Meta 5xx; retry later.
+ *   rejected          — Meta understood and refused (4xx). Retrying the same
+ *                       input cannot help.
+ */
+export type MetaFailureKind =
+  | 'timeout'
+  | 'network'
+  | 'rate_limited'
+  | 'unavailable'
+  | 'rejected';
+
+/**
+ * Graph error codes that mean "throttled". 4 = app-level, 17 = user-level,
+ * 32 = page-level, 613 = custom rate limit, 80008 = WhatsApp Business
+ * Management API rate limit, 130429 = Cloud API throughput.
+ */
+const RATE_LIMIT_CODES = new Set([4, 17, 32, 613, 80008, 130429]);
+
+/** Public, client-safe projection of what Meta said — never a token or URL. */
+export interface MetaErrorPublicContext {
+  kind: MetaFailureKind;
+  retriable: boolean;
+  httpStatus?: number;
+  metaCode?: number;
+  metaSubcode?: number;
+  /** Meta's own `error.message`, verbatim. */
+  metaMessage?: string;
+  /** Meta's `error_user_title` — often the human-readable heading. */
+  metaTitle?: string;
+  /** Meta's `error_user_msg` / `error_data.details` — the actual reason. */
+  metaDetail?: string;
 }
 
 interface GraphErrorBody {
@@ -372,47 +427,161 @@ export class MetaGraphClient {
     );
   }
 
-  /** All message templates on a WABA (paginated by Meta; follows `next`). */
-  async listTemplates(wabaId: string, token: string): Promise<MetaTemplate[]> {
-    const collected: MetaTemplate[] = [];
-    let path: string | null =
-      `${encodeURIComponent(wabaId)}/message_templates?limit=100`;
+  /**
+   * Fields requested on every template read. `rejected_reason` is NOT in
+   * Meta's default response — without naming it the rejection reason is never
+   * returned, which is why a rejected template used to show no reason at all.
+   */
+  private static readonly TEMPLATE_FIELDS =
+    'id,name,language,status,category,components,rejected_reason,parameter_format';
 
-    // Bounded: templates per WABA are in the hundreds, and an unbounded loop on
-    // a third party's paging cursor is a hang waiting to happen.
-    for (let page = 0; page < 20 && path; page++) {
-      const json: {
-        data?: Array<{
-          id: string;
-          name: string;
-          language: string;
-          status: string;
-          category?: string;
-          components?: unknown;
-          rejected_reason?: string;
-        }>;
-        paging?: { next?: string; cursors?: { after?: string } };
-      } = await this.get(path, token);
+  /** Same minus the newest/least-certain field, used if Meta rejects the list above. */
+  private static readonly TEMPLATE_FIELDS_BASE =
+    'id,name,language,status,category,components,rejected_reason';
 
-      for (const t of json.data ?? []) {
-        collected.push({
-          id: t.id,
-          name: t.name,
-          language: t.language,
-          status: t.status,
-          category: t.category,
-          components: t.components,
-          rejectedReason: t.rejected_reason,
-        });
+  private static mapTemplate(t: RawMetaTemplate): MetaTemplate {
+    return {
+      id: t.id,
+      name: t.name,
+      language: t.language,
+      status: t.status,
+      category: t.category,
+      components: t.components,
+      rejectedReason: t.rejected_reason,
+      parameterFormat: t.parameter_format,
+    };
+  }
+
+  /**
+   * Runs a template read with the full field list, stepping down to a smaller
+   * one ONLY when Meta says a requested field is invalid (code 100). Any other
+   * failure (timeout, 401, rate limit…) propagates untouched — retrying those
+   * with fewer fields would just fail again and hide the real cause.
+   */
+  private async withTemplateFields<T>(
+    run: (fields: string | undefined) => Promise<T>,
+  ): Promise<T> {
+    const ladder: Array<string | undefined> = [
+      MetaGraphClient.TEMPLATE_FIELDS,
+      MetaGraphClient.TEMPLATE_FIELDS_BASE,
+      undefined,
+    ];
+    let lastError: unknown;
+    for (const fields of ladder) {
+      try {
+        return await run(fields);
+      } catch (err) {
+        lastError = err;
+        const code = (err as AppError)?.internalContext?.metaCode;
+        const subcode = (err as AppError)?.internalContext?.metaSubcode;
+        // 100/33 is "object does not exist", not "bad field" — never retry it.
+        if (code !== 100 || subcode === 33) throw err;
+        this.logger.warn(
+          `Meta rejected template field list "${fields ?? '(default)'}" (code 100) — retrying with a smaller list`,
+        );
       }
-
-      const after = json.paging?.cursors?.after;
-      path =
-        json.paging?.next && after
-          ? `${encodeURIComponent(wabaId)}/message_templates?limit=100&after=${encodeURIComponent(after)}`
-          : null;
     }
-    return collected;
+    throw lastError;
+  }
+
+  /**
+   * All message templates on a WABA (paginated by Meta; follows `paging.next`).
+   *
+   * Throws rather than returning a partial list when the page cap is hit: the
+   * caller (`WhatsappTemplateSyncService`) treats the result as COMPLETE — it
+   * prunes mirror rows that are absent from it — so a silently truncated list
+   * would delete real templates from the mirror.
+   */
+  async listTemplates(wabaId: string, token: string): Promise<MetaTemplate[]> {
+    return this.withTemplateFields(async (fields) => {
+      const collected: MetaTemplate[] = [];
+      const base = `${encodeURIComponent(wabaId)}/message_templates`;
+      const qs = (after?: string) =>
+        `?limit=100${fields ? `&fields=${fields}` : ''}${
+          after ? `&after=${encodeURIComponent(after)}` : ''
+        }`;
+      let path: string | null = `${base}${qs()}`;
+
+      // Bounded: templates per WABA are in the hundreds, and an unbounded loop
+      // on a third party's paging cursor is a hang waiting to happen.
+      const MAX_PAGES = 20;
+      for (let page = 0; path; page++) {
+        if (page >= MAX_PAGES) {
+          throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+            message:
+              'This WhatsApp Business Account has more templates than can be synchronised in one run.',
+          });
+        }
+        const json: {
+          data?: RawMetaTemplate[];
+          paging?: { next?: string; cursors?: { after?: string } };
+        } = await this.get(path, token);
+
+        for (const t of json.data ?? []) {
+          collected.push(MetaGraphClient.mapTemplate(t));
+        }
+
+        const after = json.paging?.cursors?.after;
+        path = json.paging?.next && after ? `${base}${qs(after)}` : null;
+      }
+      return collected;
+    });
+  }
+
+  /**
+   * One template by its Meta id — the cheap, side-effect-free read behind the
+   * per-template "Refresh status". Returns `null` when Meta no longer has it
+   * (code 100 / subcode 33, or HTTP 404), which is DIFFERENT from a failed
+   * call and must not be conflated with it: only a definite "gone" may change
+   * what we believe about a template.
+   */
+  async getTemplate(templateId: string, token: string): Promise<MetaTemplate | null> {
+    try {
+      return await this.withTemplateFields(async (fields) => {
+        const json = await this.get<RawMetaTemplate>(
+          `${encodeURIComponent(templateId)}${fields ? `?fields=${fields}` : ''}`,
+          token,
+        );
+        if (!json.id) {
+          throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+            message: 'Meta returned no template for this id.',
+          });
+        }
+        return MetaGraphClient.mapTemplate(json);
+      });
+    } catch (err) {
+      const ctx = (err as AppError)?.internalContext;
+      if (ctx?.httpStatus === 404 || (ctx?.metaCode === 100 && ctx?.metaSubcode === 33)) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Looks a template up by name on the WABA. Used ONLY to reconcile an
+   * ambiguous create (timeout / network error): Meta may have accepted the
+   * template even though we never saw the response, and re-POSTing blindly
+   * would either duplicate the work or hit "already exists" with no id to
+   * adopt. The name is matched exactly here (Meta's `name` filter is a
+   * contains-search); the caller checks the language.
+   */
+  async findTemplatesByName(
+    wabaId: string,
+    token: string,
+    name: string,
+  ): Promise<MetaTemplate[]> {
+    return this.withTemplateFields(async (fields) => {
+      const json = await this.get<{ data?: RawMetaTemplate[] }>(
+        `${encodeURIComponent(wabaId)}/message_templates?limit=100&name=${encodeURIComponent(name)}${
+          fields ? `&fields=${fields}` : ''
+        }`,
+        token,
+      );
+      return (json.data ?? [])
+        .filter((t) => t.name === name)
+        .map((t) => MetaGraphClient.mapTemplate(t));
+    });
   }
 
   /**
@@ -444,6 +613,32 @@ export class MetaGraphClient {
       });
     }
     return { id: json.id, status: json.status, category: json.category };
+  }
+
+  /**
+   * Delete ONE template (`DELETE /{waba}/message_templates?hsm_id=…&name=…`).
+   *
+   * `hsm_id` is what scopes the delete to a single language variant — `name`
+   * alone deletes EVERY language of that name. Both are sent: Meta requires
+   * `name`, and `hsm_id` narrows it. Irreversible, and the name cannot be
+   * reused for a period, so callers confirm with the user first.
+   */
+  async deleteTemplate(
+    wabaId: string,
+    token: string,
+    templateId: string,
+    name: string,
+  ): Promise<void> {
+    const json = await this.request<{ success?: boolean }>(
+      'DELETE',
+      `${encodeURIComponent(wabaId)}/message_templates?hsm_id=${encodeURIComponent(templateId)}&name=${encodeURIComponent(name)}`,
+      token,
+    );
+    if (json.success === false) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'Meta did not confirm the template deletion.',
+      });
+    }
   }
 
   /**
@@ -534,7 +729,7 @@ export class MetaGraphClient {
   }
 
   private async request<T>(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'DELETE',
     path: string,
     token?: string,
     body?: unknown,
@@ -562,12 +757,33 @@ export class MetaGraphClient {
           `code=${err?.code ?? '-'} subcode=${err?.error_subcode ?? '-'}` +
           (detail ? ` detail=${detail}` : ''),
       );
+
+      const rateLimited =
+        res.status === 429 || (err?.code !== undefined && RATE_LIMIT_CODES.has(err.code));
+      const kind: MetaFailureKind = rateLimited
+        ? 'rate_limited'
+        : res.status >= 500
+          ? 'unavailable'
+          : 'rejected';
+      const pub: MetaErrorPublicContext = {
+        kind,
+        retriable: kind !== 'rejected',
+        httpStatus: res.status,
+        metaCode: err?.code,
+        metaSubcode: err?.error_subcode,
+        metaMessage: this.safeText(err?.message),
+        metaTitle: this.safeText(err?.error_user_title),
+        metaDetail: this.safeText(detail),
+      };
+
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: err?.message
           ? `Meta rejected the request: ${err.message}${detail ? ` — ${detail}` : ''}`
           : `Meta API error (HTTP ${res.status}).`,
+        publicContext: { meta: pub },
         // Meta's own error code/subcode — provider-response detail, logs only.
         internalContext: {
+          httpStatus: res.status,
           metaCode: err?.code,
           metaSubcode: err?.error_subcode,
           metaDetail: detail,
@@ -590,15 +806,31 @@ export class MetaGraphClient {
       return await fetch(url, { ...init, signal: controller.signal });
     } catch (err) {
       const timedOut = (err as Error)?.name === 'AbortError';
+      const pub: MetaErrorPublicContext = {
+        kind: timedOut ? 'timeout' : 'network',
+        retriable: true,
+      };
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: timedOut
           ? 'Meta did not respond in time. Please try again.'
           : 'Could not reach Meta. Please try again.',
+        publicContext: { meta: pub },
         cause: err,
       });
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * Meta's error strings describe the caller's OWN request, so showing them is
+   * the point — but they pass through the value-shape scrubber (tokens, emails,
+   * long digit runs) first and are length-capped, because this is a
+   * third-party string being forwarded into a client response.
+   */
+  private safeText(text: string | undefined): string | undefined {
+    if (!text) return undefined;
+    return scrubFailureReason(String(text), 500);
   }
 
   /** Strips query strings before logging — they can carry tokens/secrets. */
