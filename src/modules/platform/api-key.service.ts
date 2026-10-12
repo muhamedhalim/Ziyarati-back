@@ -282,7 +282,7 @@ export class ApiKeyService {
     // WHICH key was refused (SEC-06) without a second lookup.
     if (!plaintext || typeof plaintext !== 'string') {
       throw new AppError(ErrorCode.UNAUTHORIZED, {
-        message: 'API key required',
+        message: 'Invalid or inactive API key',
         internalContext: { reason: 'missing' },
       });
     }
@@ -318,7 +318,9 @@ export class ApiKeyService {
     }
     if (key.expires_at && key.expires_at.getTime() <= Date.now()) {
       throw new AppError(ErrorCode.UNAUTHORIZED, {
-        message: 'API key has expired',
+        // Same PUBLIC text as unknown/revoked — the guide promises one uniform
+        // 401. The precise reason stays in internalContext (metrics, api_logs).
+        message: 'Invalid or inactive API key',
         internalContext: { reason: 'expired', keyId: key.id, tenantId },
       });
     }

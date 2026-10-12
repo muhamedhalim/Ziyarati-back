@@ -387,6 +387,13 @@ export const ADMISSION_OP = {
   SYNC_START: 'sync.start',
   SYNC_RETRY: 'sync.retry',
   INBOUND_WEBHOOK: 'inbound.webhook',
+  /**
+   * Deliveries that FAILED authentication (missing/invalid signature, stale
+   * timestamp). Charged to their own per-source-IP and per-connection buckets so
+   * unauthenticated noise can never consume the budget reserved for signed
+   * events (the connection id in the URL is not a secret).
+   */
+  INBOUND_WEBHOOK_UNSIGNED: 'inbound.webhook.unsigned',
   HEALTH_PROBE: 'health.probe',
   /** Test-connection probe against an UNSAVED draft config — real outbound I/O. */
   CONNECTION_TEST: 'connection.test',
@@ -399,7 +406,7 @@ export type AdmissionOp = (typeof ADMISSION_OP)[keyof typeof ADMISSION_OP];
  */
 export const ADMISSION_LIMITS: Record<
   AdmissionOp,
-  { perKeyPerMin?: number; perTenantPerMin: number; perConnectionPerMin?: number }
+  { perKeyPerMin?: number; perIpPerMin?: number; perTenantPerMin: number; perConnectionPerMin?: number }
 > = {
   [ADMISSION_OP.WRITE]: { perKeyPerMin: 300, perTenantPerMin: 600, perConnectionPerMin: 300 },
   [ADMISSION_OP.IMPORT_CREATE]: { perTenantPerMin: 10, perConnectionPerMin: 5 },
@@ -407,6 +414,7 @@ export const ADMISSION_LIMITS: Record<
   [ADMISSION_OP.SYNC_START]: { perTenantPerMin: 20, perConnectionPerMin: 10 },
   [ADMISSION_OP.SYNC_RETRY]: { perTenantPerMin: 20, perConnectionPerMin: 10 },
   [ADMISSION_OP.INBOUND_WEBHOOK]: { perTenantPerMin: 1200, perConnectionPerMin: 600 },
+  [ADMISSION_OP.INBOUND_WEBHOOK_UNSIGNED]: { perIpPerMin: 60, perTenantPerMin: 1200, perConnectionPerMin: 300 },
   [ADMISSION_OP.HEALTH_PROBE]: { perTenantPerMin: 60, perConnectionPerMin: 12 },
   [ADMISSION_OP.CONNECTION_TEST]: { perTenantPerMin: 30, perConnectionPerMin: 10 },
 };
@@ -466,6 +474,18 @@ export const INBOUND_EVENT_MAP: Record<
     action: 'cancel',
   },
 };
+
+/**
+ * Explicit lifecycle a write is allowed to perform on an appointment. Derived
+ * ONLY from an authorised event type (inbound webhooks) — never from a payload
+ * field — and handed to the write pipeline, which treats it as authoritative.
+ */
+export const UPSERT_LIFECYCLE = {
+  CREATE: 'create',
+  RESCHEDULE: 'reschedule',
+  CANCEL: 'cancel',
+} as const;
+export type UpsertLifecycle = (typeof UPSERT_LIFECYCLE)[keyof typeof UPSERT_LIFECYCLE];
 
 /** Lifecycle of one received inbound event. */
 export const INBOUND_STATUS = {

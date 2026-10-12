@@ -133,7 +133,15 @@ import { validate } from './config/env.validation';
           {
             name: 'default',
             ttl: 60_000,
-            limit: process.env.NODE_ENV === 'test' ? 1_000_000 : 300,
+            // Test env: effectively unlimited, unless a spec lowers it on purpose
+            // via E2E_THROTTLE_LIMIT (read ONLY when NODE_ENV=test — it can never
+            // change the production ceiling).
+            limit:
+              process.env.NODE_ENV === 'test'
+                ? Number(process.env.E2E_THROTTLE_LIMIT) > 0
+                  ? Number(process.env.E2E_THROTTLE_LIMIT)
+                  : 1_000_000
+                : 300,
           },
         ],
         storage: new FailsafeThrottlerStorage(

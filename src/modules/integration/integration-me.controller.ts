@@ -14,6 +14,7 @@ import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.in
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { AppError, ErrorCode } from '../../common/errors';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { ApiIntegrationMeErrors } from './integration-api-docs';
 import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /** `ApiKeyAuthGuard` builds the principal id as `apikey:<keyId>`. */
@@ -35,6 +36,7 @@ const API_KEY_PRINCIPAL_PREFIX = 'apikey:';
 @ApiTags('Integration API')
 @ApiSecurity('ApiKey-auth')
 @RequireFeature(FeatureKey.INTEGRATIONS)
+@ApiIntegrationMeErrors()
 @Controller('integrations/me')
 export class IntegrationMeController {
   constructor(

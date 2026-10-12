@@ -12,6 +12,7 @@ import compression from 'compression';
 import { RedisIoAdapter } from './modules/ai-realtime/redis-io.adapter';
 import { runClustered } from './cluster-bootstrap';
 import { mountApiDocs } from './config/api-docs';
+import { getAppRevision } from './common/utils/app-revision.util';
 import { registerSecurityHeaders } from './config/security-headers';
 import { buildCorsOptions, parseAllowedOrigins } from './config/cors-origins';
 import { applyTrustProxy } from './config/trust-proxy';
@@ -146,6 +147,9 @@ async function bootstrap() {
     res.status(200).json({
       status: 'ok',
       timestamp: new Date().toISOString(),
+      // Commit id of the running build (validated SHA or "unknown") so a
+      // deployment can be tied to the revision that was tested.
+      revision: getAppRevision(),
     });
   });
 

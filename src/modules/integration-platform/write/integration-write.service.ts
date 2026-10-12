@@ -1,16 +1,36 @@
 import { Injectable } from '@nestjs/common';
 
+import { AppError, ErrorCode } from '../../../common/errors';
+
 import { TenantContextService } from '../../../core/tenant-context/tenant-context.service';
 import {
   ADMISSION_OP,
   IntegrationResource,
+  CONFLICT_REASON,
   MAX_UPSERT_PAYLOAD_BYTES,
+  UPSERT_OUTCOME,
 } from '../integration-platform.constants';
 import { IntegrationConnectionService } from '../connections/integration-connection.service';
-import { IntegrationIdempotencyService } from '../idempotency/integration-idempotency.service';
+import {
+  IntegrationIdempotencyService,
+  assertValidIdempotencyKey,
+} from '../idempotency/integration-idempotency.service';
 import { IntegrationAdmissionService } from '../admission/integration-admission.service';
 import { IntegrationServiceAccountService } from './integration-service-account.service';
 import { IntegrationUpsertService, UpsertActor } from './integration-upsert.service';
+
+function conflictMessage(reason: string | undefined): string {
+  switch (reason) {
+    case CONFLICT_REASON.STAFF_REQUIRES_ACCOUNT:
+      return 'No matching staff member exists and an integration cannot create one — the record was queued for the clinic to review';
+    case CONFLICT_REASON.LIFECYCLE_NOT_ALLOWED:
+      return 'The requested lifecycle change is not allowed for this record — it was not applied';
+    case CONFLICT_REASON.MISSING_DEPENDENCY:
+      return 'A referenced record could not be resolved — nothing was applied and the record was queued for the clinic to review';
+    default:
+      return 'The platform record has changed since this integration last wrote it — the update was not applied and was queued for the clinic to review';
+  }
+}
 
 export interface ApiUpsertResponse {
   status: number;
@@ -49,6 +69,10 @@ export class IntegrationWriteService {
     idempotencyKey: string | undefined,
     actor: UpsertActor,
   ): Promise<ApiUpsertResponse> {
+    // A malformed key is refused before any work (it used to reach the
+    // varchar(255) column and surface as a 500).
+    assertValidIdempotencyKey(idempotencyKey);
+
     // Admission BEFORE any persistence/enqueue: an oversized or over-budget
     // request is rejected without side effects. Write admission FAILS CLOSED if
     // the limiter is unreachable — it never inherits the read API's fail-open.
@@ -93,6 +117,23 @@ export class IntegrationWriteService {
         attributedActor,
         { safe: false },
       );
+      // A record the platform did NOT apply must never look like success: it is
+      // an explicit 409 carrying the conflict details (the conflict itself is
+      // already queued for the clinic to review). Thrown inside this try so the
+      // idempotency key is released — a retry after the clinic resolves it is
+      // re-evaluated rather than replaying a stale refusal.
+      if (result.outcome === UPSERT_OUTCOME.CONFLICTED) {
+        throw new AppError(ErrorCode.CONFLICT, {
+          message: conflictMessage(result.reason),
+          publicContext: {
+            outcome: UPSERT_OUTCOME.CONFLICTED,
+            reason: result.reason ?? CONFLICT_REASON.FIELD_DIVERGENCE,
+            externalId: result.externalId,
+            internalId: result.internalId,
+            changedFields: result.changedFields ?? [],
+          },
+        });
+      }
       response = {
         status: 200,
         body: {

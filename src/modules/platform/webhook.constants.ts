@@ -74,11 +74,41 @@ export function webhookSecretPrefix(plaintext: string): string {
 
 /** Response headers sent with every outbound delivery. */
 export const WEBHOOK_HEADER = {
+  /** Identifies ONE delivery (stable across automatic retries; a manual replay gets a new one). */
   ID: 'X-Webhook-Id',
   EVENT: 'X-Webhook-Event',
   TIMESTAMP: 'X-Webhook-Timestamp',
+  /** v1: HMAC over `{timestamp}.{body}` — does not cover the id/event headers. */
   SIGNATURE: 'X-Webhook-Signature',
+  /** v2: HMAC over `{timestamp}\n{id}\n{event}\n{body}` — authenticates the id and event type too. */
+  SIGNATURE_V2: 'X-Webhook-Signature-V2',
+  /**
+   * Stable identity of the EVENT: the id of the first delivery of it. Equal on
+   * automatic retries AND on every manual replay, so a partner that must not
+   * process the same event twice de-duplicates on this header.
+   */
+  ORIGINAL_ID: 'X-Webhook-Original-Id',
 } as const;
+
+/**
+ * v2 outbound signature: HMAC-SHA256 over
+ * `"{timestampSeconds}\n{deliveryId}\n{eventType}\n{rawBody}"`, emitted as
+ * `sha256=<hex>`. Newline-separated for the same reason as the inbound v2
+ * scheme (a header value cannot contain one, so the parts cannot be re-split).
+ * Additive: the v1 header keeps its exact meaning for existing receivers.
+ */
+export function computeWebhookSignatureV2(
+  secret: string,
+  timestampSeconds: number,
+  deliveryId: string,
+  eventType: string,
+  rawBody: string,
+): string {
+  const digest = createHmac('sha256', secret)
+    .update(`${timestampSeconds}\n${deliveryId}\n${eventType}\n${rawBody}`)
+    .digest('hex');
+  return `sha256=${digest}`;
+}
 
 /**
  * Computes the outbound signature: HMAC-SHA256 over `"{timestampSeconds}.{rawBody}"`,

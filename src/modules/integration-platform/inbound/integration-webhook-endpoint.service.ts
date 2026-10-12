@@ -12,8 +12,10 @@ import { EncryptionService } from '../../../common/crypto/encryption.service';
 import {
   DEFAULT_WEBHOOK_SIGNATURE_SCHEME,
   INBOUND_EVENTS,
+  LEGACY_WEBHOOK_SIGNATURE_SCHEMES,
   WEBHOOK_ENDPOINT_STATUS,
   WEBHOOK_MAX_TOLERANCE_SECONDS,
+  WEBHOOK_SIGNATURE_SCHEME,
   WEBHOOK_SIGNATURE_SCHEMES,
   WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS,
 } from '../integration-platform.constants';
@@ -118,7 +120,25 @@ export class IntegrationWebhookEndpointService {
   async update(tenantId: string, id: string, dto: UpdateWebhookEndpointDto, actor: Actor) {
     const e = await this.findOrThrow(tenantId, id);
     if (dto.allowedEvents !== undefined) e.allowed_events = this.assertEvents(dto.allowedEvents);
-    if (dto.signatureScheme !== undefined) e.signature_scheme = this.assertScheme(dto.signatureScheme);
+    if (dto.signatureScheme !== undefined) {
+      const next = this.assertScheme(dto.signatureScheme);
+      // One-way ratchet: an endpoint on v2 (event id + type bound into the MAC)
+      // can never be moved back to a scheme that does not sign them — that would
+      // reopen the replay / event-swap window (SEC-01). Moving a legacy endpoint
+      // UP to v2 is always allowed; leaving v2 requires a NEW endpoint (delete +
+      // create), which is an auditable, deliberate act.
+      if (
+        e.signature_scheme === WEBHOOK_SIGNATURE_SCHEME.HMAC_SHA256_TIMESTAMPED_V2 &&
+        next !== WEBHOOK_SIGNATURE_SCHEME.HMAC_SHA256_TIMESTAMPED_V2
+      ) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, {
+          message:
+            'This endpoint already uses hmac_sha256_timestamped_v2; downgrading to a legacy signature scheme is not allowed',
+          publicContext: { reason: 'signature_scheme_downgrade' },
+        });
+      }
+      e.signature_scheme = next;
+    }
     if (dto.toleranceSeconds !== undefined) e.tolerance_seconds = this.assertTolerance(dto.toleranceSeconds);
     if (dto.active !== undefined) {
       e.status = dto.active ? WEBHOOK_ENDPOINT_STATUS.ACTIVE : WEBHOOK_ENDPOINT_STATUS.INACTIVE;
@@ -273,6 +293,8 @@ export class IntegrationWebhookEndpointService {
       /** Relative path the external system posts to (no host — env-dependent). */
       path: `/integrations/inbound/${e.connection?.id ?? ''}`,
       signatureScheme: e.signature_scheme,
+      /** True for schemes that do not sign the event id/type — migrate to v2. */
+      signatureSchemeDeprecated: LEGACY_WEBHOOK_SIGNATURE_SCHEMES.includes(e.signature_scheme as never),
       allowedEvents: e.allowed_events ?? [],
       toleranceSeconds: e.tolerance_seconds,
       secretPrefix: e.secret_prefix,

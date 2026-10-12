@@ -2,6 +2,7 @@ import { Service } from '../../entities/Services/Service';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { Customer } from '../../entities/CRM/Customer';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
+import { Branch } from '../../entities/SaaS-Core/Branch';
 
 /**
  * Response projections for the external integration API.
@@ -50,6 +51,18 @@ export function toIntegrationService(s: Service): IntegrationService {
     createdAt: s.created_at.toISOString(),
     updatedAt: s.updated_at?.toISOString() ?? null,
   };
+}
+
+export interface IntegrationBranch {
+  id: string;
+  name: string;
+  timezone: string;
+  isActive: boolean;
+}
+
+/** Strict allowlist: no address, phone, WhatsApp number or city linkage. */
+export function toIntegrationBranch(b: Branch): IntegrationBranch {
+  return { id: b.id, name: b.name, timezone: b.timezone, isActive: b.is_active };
 }
 
 export interface IntegrationStaff {

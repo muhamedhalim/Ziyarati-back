@@ -41,9 +41,10 @@ export class CreateWebhookEndpointDto {
   allowedEvents!: string[];
 
   @ApiPropertyOptional({
-    description: 'Compiled signature scheme to verify with.',
+    description:
+      'Compiled signature scheme to verify with. Defaults to hmac_sha256_timestamped_v2 (signs timestamp, event id, event type and body). The two legacy schemes remain selectable for existing partners but are deprecated.',
     enum: WEBHOOK_SIGNATURE_SCHEMES,
-    default: 'hmac_sha256_timestamped',
+    default: 'hmac_sha256_timestamped_v2',
   })
   @IsOptional()
   @IsString()
@@ -75,7 +76,11 @@ export class UpdateWebhookEndpointDto {
   @IsIn(INBOUND_EVENTS, { each: true })
   allowedEvents?: string[];
 
-  @ApiPropertyOptional({ enum: WEBHOOK_SIGNATURE_SCHEMES })
+  @ApiPropertyOptional({
+    enum: WEBHOOK_SIGNATURE_SCHEMES,
+    description:
+      'Moving a legacy endpoint to hmac_sha256_timestamped_v2 is allowed; moving a v2 endpoint back to a legacy scheme is refused (400).',
+  })
   @IsOptional()
   @IsString()
   @IsIn(WEBHOOK_SIGNATURE_SCHEMES)

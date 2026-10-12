@@ -76,6 +76,19 @@ export class IntegrationIdMap {
   @Column({ type: 'uuid', nullable: true })
   replaced_connection_id?: string | null;
 
+  /**
+   * SHA-256 fingerprint of the platform record's comparable view as of the last
+   * write THIS integration applied (or observed equal). Lets the default
+   * `reject_and_report` policy distinguish "unchanged since we wrote it" (safe
+   * to update) from "the clinic edited it" (a genuine conflict). NULL = no
+   * baseline known → treated conservatively as possibly edited.
+   */
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  last_synced_hash?: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  last_synced_at?: Date | null;
+
   @CreateDateColumn()
   created_at!: Date;
 

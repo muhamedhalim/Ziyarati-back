@@ -3,7 +3,7 @@ import { Reflector } from '@nestjs/core';
 
 import type { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { AppError, ErrorCode } from '../../../common/errors';
-import { REQUIRE_SCOPES_KEY } from '../decorators/require-scopes.decorator';
+import { REQUIRE_ANY_SCOPE_KEY, REQUIRE_SCOPES_KEY } from '../decorators/require-scopes.decorator';
 import type { IntegrationScope } from '../integration-scopes.constants';
 
 /**
@@ -26,7 +26,13 @@ export class IntegrationScopeGuard implements CanActivate {
       REQUIRE_SCOPES_KEY,
       [context.getHandler(), context.getClass()],
     );
-    if (!required || required.length === 0) {
+    const anyOf = this.reflector.getAllAndOverride<IntegrationScope[]>(
+      REQUIRE_ANY_SCOPE_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+    const noAll = !required || required.length === 0;
+    const hasAny = !!anyOf && anyOf.length > 0;
+    if (noAll && !hasAny) {
       return true;
     }
 
@@ -37,8 +43,9 @@ export class IntegrationScopeGuard implements CanActivate {
       throw new AppError(ErrorCode.UNAUTHORIZED);
     }
 
-    const hasAll = required.every((scope) => user.permissions.includes(scope));
-    if (!hasAll) {
+    const allOk = (required ?? []).every((scope) => user.permissions.includes(scope));
+    const anyOk = !hasAny || (anyOf as IntegrationScope[]).some((scope) => user.permissions.includes(scope));
+    if (!allOk || !anyOk) {
       throw new AppError(ErrorCode.FORBIDDEN, {
         message: 'This API key is missing a required scope for this endpoint',
       });

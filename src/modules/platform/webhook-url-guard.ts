@@ -7,12 +7,10 @@ import { AppError, ErrorCode } from '../../common/errors';
  * SSRF guard for tenant-supplied outbound webhook endpoint URLs.
  *
  * Deliberately independent from `modules/ai/execution/deployment-validation
- * .ts`'s `assertSafeDeploymentBaseUrl` rather than reusing it: that validator
- * is https-only (a stricter policy appropriate for AI provider deployments),
- * while webhook endpoints must allow plain http too (many self-hosted clinic
- * systems have no TLS) — extracting a shared core for two callers that want
- * different protocol policies would be more coupling than the duplicated
- * IP-range logic is worth.
+ * .ts`'s `assertSafeDeploymentBaseUrl`. Protocol policy: https only in
+ * production (`allowInsecureWebhookScheme`); http is additionally allowed in
+ * dev/test. The check runs again before EVERY delivery attempt, so an endpoint
+ * stored with `http://` before this rule existed is refused at delivery too.
  *
  * TWO LAYERS, used at different times:
  *
@@ -111,6 +109,21 @@ export function isBlockedIpv6Bytes(bytes: Uint8Array): boolean {
   if (bytes[0] === 0xff) return true; // ff00::/8 multicast
   if (bytes[0] === 0x20 && bytes[1] === 0x01 && bytes[2] === 0x0d && bytes[3] === 0xb8) return true; // 2001:db8::/32 documentation
 
+  // Transition mechanisms that EMBED an IPv4 address. A translator/relay on the
+  // path would deliver to that IPv4 host, so the embedded address is judged by
+  // the IPv4 rules (a NAT64 or 6to4 form of 127.0.0.1 / 169.254.169.254 must
+  // not slip through as "just another public IPv6").
+  const embeddedV4 = (o: number) => `${bytes[o]}.${bytes[o + 1]}.${bytes[o + 2]}.${bytes[o + 3]}`;
+  const isNat64Prefix = bytes[0] === 0x00 && bytes[1] === 0x64 && bytes[2] === 0xff && bytes[3] === 0x9b;
+  // 64:ff9b::/96 — NAT64 well-known prefix (RFC 6052): v4 in the last 32 bits.
+  if (isNat64Prefix && isZero(4, 12)) return isBlockedIpv4(embeddedV4(12));
+  // 64:ff9b:1::/48 — local-use NAT64 (RFC 8215): operator-local, never a public target.
+  if (isNat64Prefix && bytes[4] === 0x00 && bytes[5] === 0x01) return true;
+  // 2002::/16 — 6to4 (RFC 3056): v4 in bytes 2..5.
+  if (bytes[0] === 0x20 && bytes[1] === 0x02) return isBlockedIpv4(embeddedV4(2));
+  // 2001:0::/32 — Teredo (RFC 4380): tunnels via a client-chosen relay; no legitimate receiver.
+  if (bytes[0] === 0x20 && bytes[1] === 0x01 && bytes[2] === 0x00 && bytes[3] === 0x00) return true;
+
   // ::ffff:a.b.c.d/96 (IPv4-mapped) and ::a.b.c.d/96 (IPv4-compatible, legacy) — recurse into the embedded IPv4.
   const isMapped = isZero(0, 10) && bytes[10] === 0xff && bytes[11] === 0xff;
   const isCompatible = isZero(0, 12) && !isZero(12, 16);
@@ -128,6 +141,23 @@ export const DANGEROUS_PORTS = new Set([
   11211, 27017,
 ]);
 
+/**
+ * Plain `http://` receivers are refused in production: signed deliveries carry
+ * appointment/customer identifiers, and a MAC gives integrity, not
+ * confidentiality. Relaxed outside production so local mocks work.
+ *
+ * `WEBHOOK_ALLOW_INSECURE_HTTP` is a BACKEND env override, never a request
+ * field: `true` allows http even in production (operator-reviewed on-prem
+ * deployments); `false` enforces https in non-production too (staging, tests);
+ * unset follows NODE_ENV.
+ */
+export function allowInsecureWebhookScheme(): boolean {
+  const flag = process.env.WEBHOOK_ALLOW_INSECURE_HTTP;
+  if (flag === 'true') return true;
+  if (flag === 'false') return false;
+  return process.env.NODE_ENV !== 'production';
+}
+
 /** Literal, synchronous checks — scheme/credentials/port/literal-host. See file docstring for the two-layer model. */
 export function assertSafeWebhookUrl(raw: string): void {
   let url: URL;
@@ -140,6 +170,12 @@ export function assertSafeWebhookUrl(raw: string): void {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new AppError(ErrorCode.VALIDATION_ERROR, {
       message: 'Webhook URL must use http or https',
+    });
+  }
+  if (url.protocol === 'http:' && !allowInsecureWebhookScheme()) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, {
+      message: 'Webhook URL must use https',
+      publicContext: { reason: 'https_required' },
     });
   }
   if (url.username || url.password) {

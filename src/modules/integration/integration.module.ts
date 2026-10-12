@@ -6,6 +6,7 @@ import { StaffModule } from '../staff/staff.module';
 import { CrmModule } from '../crm/crm.module';
 import { AppointmentModule } from '../appointment/appointment.module';
 import { SchedulingModule } from '../scheduling/scheduling.module';
+import { TenantModule } from '../tenant/tenant.module';
 import { IntegrationPlatformModule } from '../integration-platform/integration-platform.module';
 
 import { IntegrationMeController } from './integration-me.controller';
@@ -14,6 +15,7 @@ import { IntegrationStaffController } from './integration-staff.controller';
 import { IntegrationCustomersController } from './integration-customers.controller';
 import { IntegrationAppointmentsController } from './integration-appointments.controller';
 import { IntegrationAvailabilityController } from './integration-availability.controller';
+import { IntegrationBranchesController } from './integration-branches.controller';
 import { IntegrationWriteCustomersController } from './integration-write-customers.controller';
 import { IntegrationWriteServicesController } from './integration-write-services.controller';
 import { IntegrationWriteStaffController } from './integration-write-staff.controller';
@@ -48,6 +50,8 @@ import { IntegrationWriteAppointmentsController } from './integration-write-appo
     CrmModule,
     AppointmentModule,
     SchedulingModule,
+    // Read-only branch discovery (BranchService).
+    TenantModule,
     // Phase 3 — provides IntegrationWriteService for the M2M write controllers.
     IntegrationPlatformModule,
   ],
@@ -59,6 +63,7 @@ import { IntegrationWriteAppointmentsController } from './integration-write-appo
     IntegrationCustomersController,
     IntegrationAppointmentsController,
     IntegrationAvailabilityController,
+    IntegrationBranchesController,
     // Phase 3 — external (M2M) write/upsert endpoints.
     IntegrationWriteCustomersController,
     IntegrationWriteServicesController,

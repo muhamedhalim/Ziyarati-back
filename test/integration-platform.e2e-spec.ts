@@ -357,9 +357,13 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
           externalId,
           data: { title: 'Hygienist', matchEmail: `newstaff-${randomUUID().slice(0, 6)}@example.test`, fullName: 'New Staff' },
         })
-        .expect(200);
+        // Audit remediation F01: a record that was NOT applied is an explicit 409,
+        // never an ambiguous 200 (previously asserted 200 + outcome "conflicted").
+        .expect(409);
 
-      expect(res.body.outcome).toBe('conflicted');
+      expect(res.body.code).toBe('CONFLICT');
+      expect(res.body.context).toMatchObject({ outcome: 'conflicted', reason: 'staff_requires_account', internalId: null });
+      expect(res.body.message).toMatch(/queued for the clinic to review/);
 
       // A durable conflict WITH its reason code…
       const conflict = await e2e.dataSource.getRepository(IntegrationConflict).findOne({
@@ -1306,19 +1310,41 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
       const externalId = `CF-${randomUUID().slice(0, 8)}`;
       const phone = `+9665${(Date.now() + 29) % 100000000}`;
       const conflictEmail = `conflict-${randomUUID().slice(0, 8)}@example.test`;
-      await request(server())
+      const created = await request(server())
         .post(`${API}/integrations/customers/upsert`)
         .set('X-API-Key', apiKey)
         .send({ connectionId: strict.body.id, externalId, data: { full_name: 'Original Name', phone, email: conflictEmail } })
         .expect(200);
+      expect(created.body.outcome).toBe('created');
 
-      // A diverging value under reject_and_report → conflicted, not applied.
+      // Audit remediation F01: while nobody at the clinic has touched the record, the
+      // DEFAULT policy applies the partner's own update (it used to answer a silent
+      // 200 "conflicted" and change nothing).
+      const own = await request(server())
+        .post(`${API}/integrations/customers/upsert`)
+        .set('X-API-Key', apiKey)
+        .send({ connectionId: strict.body.id, externalId, data: { full_name: 'Partner Update', phone, email: conflictEmail } })
+        .expect(200);
+      expect(own.body.outcome).toBe('updated');
+
+      // The clinic edits the record in the dashboard…
+      await e2e.dataSource.query(`UPDATE customers SET full_name = $1 WHERE id = $2`, ['Clinic Edit', created.body.internalId]);
+
+      // …so a diverging value is now a genuine conflict: 409, not applied, queued for review.
       const diverge = await request(server())
         .post(`${API}/integrations/customers/upsert`)
         .set('X-API-Key', apiKey)
         .send({ connectionId: strict.body.id, externalId, data: { full_name: 'Changed Externally', phone, email: conflictEmail } })
-        .expect(200);
-      expect(diverge.body.outcome).toBe('conflicted');
+        .expect(409);
+      expect(diverge.body.code).toBe('CONFLICT');
+      expect(diverge.body.context).toMatchObject({
+        outcome: 'conflicted',
+        reason: 'field_divergence',
+        changedFields: ['full_name'],
+        internalId: created.body.internalId,
+      });
+      const row = await e2e.dataSource.query(`SELECT full_name FROM customers WHERE id = $1`, [created.body.internalId]);
+      expect(row[0].full_name).toBe('Clinic Edit');
 
       const list = await request(server())
         .get(`${API}/platform/integrations/conflicts?connectionId=${strict.body.id}`)

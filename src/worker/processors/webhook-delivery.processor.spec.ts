@@ -11,6 +11,10 @@ import { WorkerAuthorizationService } from '../../queue/worker-authorization.ser
 import { WebhookDeliverJob } from '../../queue/job-data.interface';
 import { createMockConfigService } from '../../../test/utils/mock-factories';
 import { deliverWebhookRequest } from '../../modules/platform/webhook-http-client';
+import {
+  computeWebhookSignature,
+  computeWebhookSignatureV2,
+} from '../../modules/platform/webhook.constants';
 
 jest.mock('../../modules/platform/webhook-http-client');
 
@@ -41,6 +45,7 @@ describe('WebhookDeliveryProcessor', () => {
     markFailedPermanent: jest.Mock;
     recordTransientFailure: jest.Mock;
     markDeadLettered: jest.Mock;
+    rootDeliveryId: jest.Mock;
   };
   let endpoints: { findActiveWithSecret: jest.Mock };
   let queue: { enqueueWebhookDlq: jest.Mock };
@@ -62,6 +67,7 @@ describe('WebhookDeliveryProcessor', () => {
       markFailedPermanent: jest.fn().mockResolvedValue(undefined),
       recordTransientFailure: jest.fn().mockResolvedValue(undefined),
       markDeadLettered: jest.fn().mockResolvedValue(true),
+      rootDeliveryId: jest.fn().mockImplementation(async (d: { id: string }) => d.id),
     };
     endpoints = {
       findActiveWithSecret: jest.fn().mockResolvedValue({
@@ -141,6 +147,79 @@ describe('WebhookDeliveryProcessor', () => {
     expect(headers['X-Webhook-Timestamp']).toMatch(/^\d+$/);
     expect(headers['X-Webhook-Signature']).toMatch(/^sha256=[0-9a-f]{64}$/);
     expect(timeoutMs).toBe(200);
+  });
+
+  describe('audit remediation (observations 6, 7, 8)', () => {
+    const ok = { ok: true, transient: false, httpStatus: 200, bodyPreview: '' };
+
+    it('adds a v2 signature that also authenticates the delivery id and event type', async () => {
+      mockDeliverWebhookRequest.mockResolvedValueOnce(ok);
+      await processor.process(makeJob({ tenantId: 't1', webhookDeliveryId: 'd1' }));
+      const [, body, headers] = mockDeliverWebhookRequest.mock.calls[0];
+      const expected = computeWebhookSignatureV2(
+        'whsec_test',
+        Number(headers['X-Webhook-Timestamp']),
+        'd1',
+        'appointment.created',
+        body,
+      );
+      expect(headers['X-Webhook-Signature-V2']).toBe(expected);
+      // …and the v1 header keeps its exact historical meaning.
+      expect(headers['X-Webhook-Signature']).toBe(
+        computeWebhookSignature('whsec_test', Number(headers['X-Webhook-Timestamp']), body),
+      );
+      // A different id or event type must produce a different MAC.
+      expect(
+        computeWebhookSignatureV2('whsec_test', Number(headers['X-Webhook-Timestamp']), 'd2', 'appointment.created', body),
+      ).not.toBe(expected);
+      expect(
+        computeWebhookSignatureV2('whsec_test', Number(headers['X-Webhook-Timestamp']), 'd1', 'appointment.cancelled', body),
+      ).not.toBe(expected);
+    });
+
+    it('sends the stable event identity: own id for a first delivery, the ROOT id for a replay', async () => {
+      mockDeliverWebhookRequest.mockResolvedValue(ok);
+      await processor.process(makeJob({ tenantId: 't1', webhookDeliveryId: 'd1' }));
+      expect(mockDeliverWebhookRequest.mock.calls[0][2]['X-Webhook-Original-Id']).toBe('d1');
+
+      deliveryService.loadForProcessing.mockResolvedValueOnce({
+        ...baseDelivery,
+        id: 'd3',
+        replayed_from_id: 'd2',
+      });
+      deliveryService.rootDeliveryId.mockResolvedValueOnce('d1');
+      await processor.process(makeJob({ tenantId: 't1', webhookDeliveryId: 'd3' }));
+      const headers = mockDeliverWebhookRequest.mock.calls[1][2];
+      expect(headers['X-Webhook-Id']).toBe('d3');
+      expect(headers['X-Webhook-Original-Id']).toBe('d1');
+    });
+
+    it('does NOT deliver to a URL the endpoint was edited to after the event was queued (permanent)', async () => {
+      deliveryService.loadForProcessing.mockResolvedValueOnce({
+        ...baseDelivery,
+        webhook_endpoint_url_snapshot: 'https://old.example.com/hook',
+      });
+      await expect(
+        processor.process(makeJob({ tenantId: 't1', webhookDeliveryId: 'd1' })),
+      ).resolves.toBeUndefined();
+      expect(mockDeliverWebhookRequest).not.toHaveBeenCalled();
+      expect(deliveryService.markFailedPermanent).toHaveBeenCalledWith(
+        'd1',
+        undefined,
+        undefined,
+        expect.stringContaining('endpoint_url_changed'),
+      );
+    });
+
+    it('delivers normally when the snapshot still equals the live URL', async () => {
+      mockDeliverWebhookRequest.mockResolvedValueOnce(ok);
+      deliveryService.loadForProcessing.mockResolvedValueOnce({
+        ...baseDelivery,
+        webhook_endpoint_url_snapshot: 'https://example.com/hook',
+      });
+      await processor.process(makeJob({ tenantId: 't1', webhookDeliveryId: 'd1' }));
+      expect(mockDeliverWebhookRequest).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('marks FAILED (permanent) and does NOT throw on a non-retryable 4xx', async () => {

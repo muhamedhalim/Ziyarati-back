@@ -12,6 +12,7 @@ import { ApiKeyProtected } from '../platform/decorators/api-key-protected.decora
 import { INTEGRATION_SCOPE } from '../platform/integration-scopes.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { ApiIntegrationReadErrors } from './integration-api-docs';
 import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /**
@@ -24,6 +25,7 @@ import { FeatureKey } from '../subscription-billing/feature-registry';
 @ApiTags('Integration API')
 @ApiSecurity('ApiKey-auth')
 @RequireFeature(FeatureKey.INTEGRATIONS)
+@ApiIntegrationReadErrors()
 @Controller('integrations/availability')
 export class IntegrationAvailabilityController {
   constructor(

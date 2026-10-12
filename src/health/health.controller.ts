@@ -14,6 +14,7 @@ import { Public } from '../modules/auth/decorators/public.decorator';
 import { QueueService } from '../queue/queue.service';
 import { withTimeout } from '../common/utils/with-timeout.util';
 import { SchemaGuardRegistry } from '../config/schema-guard.registry';
+import { getAppRevision } from '../common/utils/app-revision.util';
 
 /**
  * The subset of `pg.Client` the readiness probe actually uses — an
@@ -111,7 +112,7 @@ export class HealthController implements OnModuleDestroy {
   @Public()
   @Get('liveness')
   liveness() {
-    return { status: 'ok', timestamp: new Date().toISOString() };
+    return { status: 'ok', timestamp: new Date().toISOString(), revision: getAppRevision() };
   }
 
   /**

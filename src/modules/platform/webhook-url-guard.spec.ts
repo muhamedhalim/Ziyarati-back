@@ -237,3 +237,101 @@ describe('resolveSafeWebhookTarget (DNS resolution + rebinding protection)', () 
     expect(dnsMock.resolve4).not.toHaveBeenCalled();
   });
 });
+
+// ── Audit remediation F04 (HTTPS only in production) and F06 (IPv6 transition forms) ──
+
+describe('production protocol policy (F04)', () => {
+  const OLD_ENV = { ...process.env };
+  beforeEach(() => {
+    process.env.NODE_ENV = 'production';
+    delete process.env.WEBHOOK_ALLOW_INSECURE_HTTP;
+    dnsMock.resolve4.mockReset();
+    dnsMock.resolve6.mockReset();
+  });
+  afterEach(() => {
+    process.env = { ...OLD_ENV };
+  });
+
+  it('rejects a public http URL at registration/update time with a stable reason', () => {
+    try {
+      assertSafeWebhookUrl('http://api.myclinic.example/hooks');
+      throw new Error('expected rejection');
+    } catch (e) {
+      expect(e).toBeInstanceOf(AppError);
+      expect((e as AppError).message).toMatch(/https/i);
+    }
+  });
+
+  it.each([
+    'HTTP://api.myclinic.example/hooks',
+    'http://api.myclinic.example:443/hooks',
+    'http://api.myclinic.example@evil.example/hooks',
+  ])('rejects scheme/port variants: %s', (url) => {
+    expect(() => assertSafeWebhookUrl(url)).toThrow(AppError);
+  });
+
+  it('still accepts https', () => {
+    expect(() => assertSafeWebhookUrl('https://api.myclinic.example/hooks')).not.toThrow();
+  });
+
+  it('refuses at DELIVERY time too (legacy stored http endpoint)', async () => {
+    await expect(resolveSafeWebhookTarget(new URL('http://93.184.216.34/hook'))).rejects.toBeInstanceOf(AppError);
+    expect(dnsMock.resolve4).not.toHaveBeenCalled();
+  });
+
+  it('honours the backend-only escape hatch (not a request field)', () => {
+    process.env.WEBHOOK_ALLOW_INSECURE_HTTP = 'true';
+    expect(() => assertSafeWebhookUrl('http://api.myclinic.example/hooks')).not.toThrow();
+  });
+
+  it('WEBHOOK_ALLOW_INSECURE_HTTP=false enforces https outside production too (staging / tests)', () => {
+    process.env.NODE_ENV = 'test';
+    process.env.WEBHOOK_ALLOW_INSECURE_HTTP = 'false';
+    expect(() => assertSafeWebhookUrl('http://api.myclinic.example/hooks')).toThrow(AppError);
+    expect(() => assertSafeWebhookUrl('https://api.myclinic.example/hooks')).not.toThrow();
+  });
+
+  it('keeps blocking private targets even with the escape hatch', () => {
+    process.env.WEBHOOK_ALLOW_INSECURE_HTTP = 'true';
+    expect(() => assertSafeWebhookUrl('http://127.0.0.1/hooks')).toThrow(AppError);
+  });
+});
+
+describe('IPv6 transition mechanisms embed an IPv4 target (F06)', () => {
+  beforeEach(() => {
+    dnsMock.resolve4.mockReset();
+    dnsMock.resolve6.mockReset();
+  });
+
+  it.each([
+    ['NAT64 of 127.0.0.1 (audit literal)', 'https://[64:ff9b::7f00:1]/'],
+    ['NAT64 of 169.254.169.254 (audit literal)', 'https://[64:ff9b::a9fe:a9fe]/'],
+    ['6to4 of 127.0.0.1 (audit literal)', 'https://[2002:7f00:1::]/'],
+    ['NAT64 expanded + zero padded', 'https://[0064:ff9b:0000:0000:0000:0000:7f00:0001]/'],
+    ['NAT64 upper case', 'https://[64:FF9B::A9FE:A9FE]/'],
+    ['NAT64 of 10.0.0.5', 'https://[64:ff9b::a00:5]/'],
+    ['6to4 of 192.168.1.1', 'https://[2002:c0a8:101::1]/'],
+    ['6to4 expanded', 'https://[2002:7f00:0001:0000:0000:0000:0000:0000]/'],
+    ['local-use NAT64 64:ff9b:1::/48', 'https://[64:ff9b:1::5db8:d822]/'],
+    ['Teredo 2001:0::/32', 'https://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/'],
+  ])('registration blocks %s', (_n, url) => {
+    expect(() => assertSafeWebhookUrl(url)).toThrow(AppError);
+  });
+
+  it('allows NAT64 of a public IPv4 and an ordinary public IPv6', () => {
+    expect(() => assertSafeWebhookUrl('https://[64:ff9b::5db8:d822]/')).not.toThrow(); // 93.184.216.34
+    expect(() => assertSafeWebhookUrl('https://[2606:2800:220:1:248:1893:25c8:1946]/')).not.toThrow();
+  });
+
+  it('delivery-time: a literal NAT64 loopback is a permanent SsrfBlockedError', async () => {
+    await expect(resolveSafeWebhookTarget(new URL('https://[64:ff9b::7f00:1]/'))).rejects.toBeInstanceOf(AppError);
+  });
+
+  it('delivery-time: an AAAA answer in a transition range blocks the whole target', async () => {
+    dnsMock.resolve4.mockRejectedValueOnce(Object.assign(new Error('ENODATA'), { code: 'ENODATA' }));
+    dnsMock.resolve6.mockResolvedValueOnce(['64:ff9b::a9fe:a9fe']);
+    await expect(resolveSafeWebhookTarget(new URL('https://rebind.example.com/hook'))).rejects.toBeInstanceOf(
+      SsrfBlockedError,
+    );
+  });
+});

@@ -169,6 +169,17 @@ export class IntegrationIdMapService {
     }
   }
 
+  /**
+   * Remember the fingerprint of the platform record as the integration last left
+   * it. Best-effort: a failure here only means the next update is treated
+   * conservatively (conflict) — it must never fail the write it follows.
+   */
+  async recordBaseline(mappingId: string, fingerprint: string): Promise<void> {
+    await this.repo
+      .update({ id: mappingId }, { last_synced_hash: fingerprint, last_synced_at: new Date() })
+      .catch((e) => this.logger.warn(`baseline record failed: ${(e as Error)?.message}`));
+  }
+
   async list(tenantId: string, query: QueryMappingsDto) {
     const base: FindOptionsWhere<IntegrationIdMap> = { tenant: { id: tenantId } };
     if (query.connectionId) base.connection = { id: query.connectionId };

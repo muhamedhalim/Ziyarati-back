@@ -17,6 +17,7 @@ import {
   WEBHOOK_HEADER,
   WEBHOOK_PAYLOAD_MAX_BYTES,
   computeWebhookSignature,
+  computeWebhookSignatureV2,
 } from '../../modules/platform/webhook.constants';
 import { deliverWebhookRequest } from '../../modules/platform/webhook-http-client';
 
@@ -122,6 +123,24 @@ export class WebhookDeliveryProcessor extends WorkerHost {
     }
     const { endpoint, secret } = active;
 
+    // The destination is bound to the URL the event was dispatched to. If the
+    // endpoint's URL has been edited since, a queued/retrying delivery must NOT
+    // silently go to the new destination (it may sit across a trust boundary
+    // the original authorisation never covered). It fails permanently and can be
+    // replayed deliberately, which snapshots the then-current URL.
+    if (
+      delivery.webhook_endpoint_url_snapshot &&
+      delivery.webhook_endpoint_url_snapshot !== endpoint.url
+    ) {
+      await this.deliveryService.markFailedPermanent(
+        deliveryId,
+        undefined,
+        undefined,
+        'endpoint_url_changed: the endpoint URL was edited after this event was queued — replay it to deliver to the new URL',
+      );
+      return; // permanent — no throw, no retry
+    }
+
     const bodyString = JSON.stringify(delivery.payload);
     if (Buffer.byteLength(bodyString, 'utf8') > WEBHOOK_PAYLOAD_MAX_BYTES) {
       await this.deliveryService.markFailedPermanent(
@@ -150,14 +169,25 @@ export class WebhookDeliveryProcessor extends WorkerHost {
       bodyString,
     );
 
+    const signatureV2 = computeWebhookSignatureV2(
+      secret,
+      timestampSeconds,
+      delivery.id,
+      delivery.event_type,
+      bodyString,
+    );
+    const originalId = await this.deliveryService.rootDeliveryId(delivery);
+
     const result = await deliverWebhookRequest(
       endpoint.url,
       bodyString,
       {
         [WEBHOOK_HEADER.ID]: delivery.id,
+        [WEBHOOK_HEADER.ORIGINAL_ID]: originalId,
         [WEBHOOK_HEADER.EVENT]: delivery.event_type,
         [WEBHOOK_HEADER.TIMESTAMP]: String(timestampSeconds),
         [WEBHOOK_HEADER.SIGNATURE]: signature,
+        [WEBHOOK_HEADER.SIGNATURE_V2]: signatureV2,
       },
       this.timeoutMs,
     );

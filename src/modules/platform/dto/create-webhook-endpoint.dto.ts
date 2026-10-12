@@ -24,7 +24,7 @@ export class CreateWebhookEndpointDto {
   name?: string;
 
   @ApiProperty({
-    description: 'The external URL to receive signed POST deliveries. http or https only.',
+    description: 'The external URL to receive signed POST deliveries. HTTPS is required in production (plain http is accepted only in non-production environments).',
     example: 'https://erp.myclinic.example/webhooks/ziyarati',
   })
   @IsString()

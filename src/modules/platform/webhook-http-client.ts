@@ -47,6 +47,15 @@ export async function deliverWebhookRequest(
   try {
     pinned = await resolveSafeWebhookTarget(url);
   } catch (err) {
+    if (
+      err instanceof AppError &&
+      (err.publicContext as { reason?: string } | undefined)?.reason === 'https_required'
+    ) {
+      // Not a probing oracle (nothing about the target is revealed) and the
+      // clinic needs to know what to fix: an endpoint stored with http:// before
+      // HTTPS became mandatory.
+      return { ok: false, transient: false, error: 'Delivery blocked: the endpoint URL must use https' };
+    }
     if (err instanceof SsrfBlockedError || err instanceof AppError) {
       // Never confirm *which* address/range was blocked to the caller — that
       // would be a probing oracle. Permanent: retrying changes nothing.

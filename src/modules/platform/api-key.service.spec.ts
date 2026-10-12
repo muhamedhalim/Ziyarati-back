@@ -357,6 +357,24 @@ describe('ApiKeyService', () => {
       await expect(service.authenticate('plain')).rejects.toMatchObject({ code: ErrorCode.UNAUTHORIZED });
     });
 
+    it('F09 — missing, unknown, revoked and expired keys carry the SAME public message', async () => {
+      const messages: string[] = [];
+      const capture = async () => {
+        const e = (await service.authenticate('plain').catch((x) => x)) as { message: string };
+        messages.push(e.message);
+      };
+      mockAuthenticateQuery(null);
+      await capture(); // unknown
+      mockAuthenticateQuery({ id: 'k1', is_active: false }, TENANT);
+      await capture(); // revoked / deactivated
+      mockAuthenticateQuery({ id: 'k2', is_active: true, expires_at: new Date(Date.now() - 1000) }, TENANT);
+      await capture(); // expired
+      const missing = (await service.authenticate(undefined).catch((x) => x)) as { message: string };
+      messages.push(missing.message);
+      expect(new Set(messages).size).toBe(1);
+      expect(messages[0]).toBe('Invalid or inactive API key');
+    });
+
     it('SEC-06 — tells the guard WHICH key was refused and why, without changing the public 401', async () => {
       await expect(service.authenticate(undefined)).rejects.toMatchObject({
         internalContext: { reason: 'missing' },

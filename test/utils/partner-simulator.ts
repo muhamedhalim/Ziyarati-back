@@ -87,6 +87,10 @@ export interface ReceivedHook {
   event: string | undefined;
   timestamp: string | undefined;
   signature: string | undefined;
+  /** v2 signature (also covers the delivery id and event type). */
+  signatureV2?: string;
+  /** Stable event identity: equal on retries AND on manual replays. */
+  originalId?: string;
   rawBody: string;
   /** What the partner's own verification concluded. */
   verdict: ReceiverVerdict;
@@ -231,6 +235,8 @@ export class PartnerReceiver {
       event: h('x-webhook-event'),
       timestamp: h('x-webhook-timestamp'),
       signature: h('x-webhook-signature'),
+      signatureV2: h('x-webhook-signature-v2'),
+      originalId: h('x-webhook-original-id'),
       rawBody,
       verdict,
       duplicate,

@@ -236,6 +236,25 @@ export class WebhookDeliveryService {
     );
   }
 
+  /**
+   * Id of the FIRST delivery of this event — follows the `replayed_from_id`
+   * chain (bounded, so a corrupted cycle can never loop). Sent as
+   * `X-Webhook-Original-Id` so partners have one stable key per event.
+   */
+  async rootDeliveryId(delivery: { id: string; replayed_from_id?: string | null }): Promise<string> {
+    let currentId = delivery.id;
+    let parentId = delivery.replayed_from_id ?? null;
+    for (let hops = 0; parentId && hops < 20; hops += 1) {
+      currentId = parentId;
+      const parent = await this.deliveries.findOne({
+        where: { id: parentId },
+        select: { id: true, replayed_from_id: true },
+      });
+      parentId = parent?.replayed_from_id ?? null;
+    }
+    return currentId;
+  }
+
   /** Terminal, non-retryable outcome (permanent 4xx, disabled endpoint, oversized payload). */
   async markFailedPermanent(
     id: string,

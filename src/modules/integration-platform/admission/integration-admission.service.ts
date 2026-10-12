@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
+import { createHash } from 'node:crypto';
 
 import { IntegrationImportJob } from '../../../entities/Integration/IntegrationImportJob';
 import { IntegrationSyncJob } from '../../../entities/Integration/IntegrationSyncJob';
@@ -22,6 +23,8 @@ export interface AdmissionContext {
   /** API key id when the caller is an external M2M client. */
   keyId?: string | null;
   connectionId?: string | null;
+  /** Caller's source address — only used by ops with a per-IP budget. Hashed in the bucket key. */
+  ip?: string | null;
 }
 
 /**
@@ -65,6 +68,13 @@ export class IntegrationAdmissionService {
 
     if (limits.perKeyPerMin && ctx.keyId) {
       scopes.push({ bucket: `int:${op}:key:${ctx.keyId}`, ratePerMinute: this.limit(op, 'KEY', limits.perKeyPerMin) });
+    }
+    if (limits.perIpPerMin && ctx.ip) {
+      const ipHash = createHash('sha256').update(ctx.ip).digest('hex').slice(0, 16);
+      scopes.push({
+        bucket: `int:${op}:ip:${ctx.connectionId ?? '-'}:${ipHash}`,
+        ratePerMinute: this.limit(op, 'IP', limits.perIpPerMin),
+      });
     }
     scopes.push({ bucket: `int:${op}:tenant`, ratePerMinute: this.limit(op, 'TENANT', limits.perTenantPerMin) });
     if (limits.perConnectionPerMin && ctx.connectionId) {
@@ -149,7 +159,7 @@ export class IntegrationAdmissionService {
   // ── Config helpers ────────────────────────────────────────────────────────
 
   /** Env override: `INTEGRATION_RL_<OP>_<SCOPE>` (op dots → underscores). */
-  private limit(op: AdmissionOp, scope: 'KEY' | 'TENANT' | 'CONNECTION', fallback: number): number {
+  private limit(op: AdmissionOp, scope: 'KEY' | 'IP' | 'TENANT' | 'CONNECTION', fallback: number): number {
     const key = `INTEGRATION_RL_${op.toUpperCase().replace(/\./g, '_')}_${scope}`;
     return this.num(key, fallback);
   }

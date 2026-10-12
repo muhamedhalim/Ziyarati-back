@@ -21,7 +21,7 @@ export class UpdateWebhookEndpointDto {
   name?: string;
 
   @ApiPropertyOptional({
-    description: 'Replace the delivery URL. Re-validated by the same SSRF guard as create (http/https only, no internal/private targets).',
+    description: 'Replace the delivery URL. Re-validated by the same guard as create (https required in production; no internal/private targets).',
     example: 'https://erp.myclinic.example/webhooks/ziyarati',
   })
   @IsOptional()

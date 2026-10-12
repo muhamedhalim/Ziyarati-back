@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { LessThanOrEqual, Repository } from 'typeorm';
 import { createHash } from 'node:crypto';
 
 import { IntegrationIdempotencyKey } from '../../../entities/Integration/IntegrationIdempotencyKey';
@@ -10,6 +10,29 @@ import { AppError, ErrorCode, isUniqueViolation } from '../../../common/errors';
 
 /** TTL for a stored idempotency record. */
 const IDEMPOTENCY_TTL_MS = 24 * 3600 * 1000;
+
+/** Matches the `idempotency_key` varchar(255) column and the published contract. */
+export const IDEMPOTENCY_KEY_MAX_LENGTH = 255;
+const IDEMPOTENCY_KEY_RE = /^[!-~]+$/;
+
+/**
+ * Validate a caller-supplied `Idempotency-Key` BEFORE it reaches the database
+ * (an over-long value used to surface as a 500 DATABASE_ERROR). 1–255 printable
+ * ASCII characters, no whitespace or control characters. Absent/empty = no dedupe.
+ */
+export function assertValidIdempotencyKey(key: string | undefined): void {
+  if (key === undefined || key === '') return;
+  if (
+    typeof key !== 'string' ||
+    key.length > IDEMPOTENCY_KEY_MAX_LENGTH ||
+    !IDEMPOTENCY_KEY_RE.test(key)
+  ) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, {
+      message: `Idempotency-Key must be 1–${IDEMPOTENCY_KEY_MAX_LENGTH} printable ASCII characters without spaces`,
+      publicContext: { header: 'Idempotency-Key', maxLength: IDEMPOTENCY_KEY_MAX_LENGTH },
+    });
+  }
+}
 
 export interface IdempotencyBeginResult {
   /** A prior COMPLETED result exists for this key+payload — return it verbatim. */
@@ -26,6 +49,10 @@ export interface IdempotencyBeginResult {
  *  - Key + same payload, prior COMPLETED → returns the stored response (replay).
  *  - Key + same payload, still IN_PROGRESS → 409 (a concurrent retry is racing).
  *  - Key + DIFFERENT payload → 422 (key reuse with a different body is a bug/attack).
+ *  - A record past its `expires_at` is treated as ABSENT at lookup even if the
+ *    daily purge has not run (the documented window is 24 h). It is removed with
+ *    a conditional delete and the normal insert path runs, so the unique index
+ *    still collapses concurrent retries.
  *
  * Correctness under races relies on the unique index (tenant, idempotency_key):
  * two concurrent begins collapse to one inserted row; the loser re-reads and
@@ -51,12 +78,19 @@ export class IntegrationIdempotencyService {
     key: string | undefined,
     endpoint: string,
     requestHash: string,
+    now: Date = new Date(),
   ): Promise<IdempotencyBeginResult> {
     if (!key) return {};
 
-    const existing = await this.repo.findOne({
+    let existing: IntegrationIdempotencyKey | null = await this.repo.findOne({
       where: { tenant: { id: tenantId }, idempotency_key: key },
     });
+    if (existing && existing.expires_at && existing.expires_at.getTime() <= now.getTime()) {
+      // Expired → absent. The delete is conditional on expiry so a row that was
+      // replaced in the meantime is never removed.
+      await this.repo.delete({ id: existing.id, expires_at: LessThanOrEqual(now) });
+      existing = null;
+    }
     if (existing) return this.branchExisting(existing, requestHash);
 
     try {
@@ -68,7 +102,7 @@ export class IntegrationIdempotencyService {
           endpoint,
           request_hash: requestHash,
           status: 'in_progress',
-          expires_at: new Date(Date.now() + IDEMPOTENCY_TTL_MS),
+          expires_at: new Date(now.getTime() + IDEMPOTENCY_TTL_MS),
         }),
       );
       return { recordId: saved.id };

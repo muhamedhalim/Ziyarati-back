@@ -14,6 +14,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { toIntegrationAppointment } from './integration.mappers';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { ApiIntegrationReadErrors } from './integration-api-docs';
 import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /**
@@ -38,6 +39,7 @@ const INTEGRATION_CALLER = {
 @ApiTags('Integration API')
 @ApiSecurity('ApiKey-auth')
 @RequireFeature(FeatureKey.INTEGRATIONS)
+@ApiIntegrationReadErrors()
 @Controller('integrations/appointments')
 export class IntegrationAppointmentsController {
   constructor(

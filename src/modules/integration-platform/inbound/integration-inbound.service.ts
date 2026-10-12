@@ -24,6 +24,7 @@ import {
   IntegrationResource,
   MAX_WEBHOOK_BODY_BYTES,
   TERMINAL_INBOUND_STATUSES,
+  UPSERT_LIFECYCLE,
   UPSERT_OUTCOME,
   WEBHOOK_ENDPOINT_STATUS,
   WEBHOOK_SIGNATURE_SCHEME,
@@ -49,16 +50,20 @@ import {
 /**
  * Read-only hints an inbound event may carry through to the shared pipeline.
  * These are NOT writable fields (the source-of-truth engine ignores them) — they
- * only tell an adapter which existing record to match or which lifecycle action
- * to perform. Anything outside this list and the resource allowlist is dropped.
+ * only tell an adapter which existing record to match. Anything outside this
+ * list and the resource allowlist is dropped.
+ *
+ * `action` is deliberately NOT here: the lifecycle an event may perform is
+ * decided by its authorised EVENT TYPE alone (see INBOUND_EVENT_MAP and
+ * `process()`), never by a field in the body — otherwise an endpoint that only
+ * allows `appointment.created` could still cancel or move appointments.
+ * (`branchExternalId` is gone too: branches have no external-id mapping.)
  */
 const SAFE_INBOUND_HINTS = [
   'matchEmail',
   'customerExternalId',
   'staffExternalId',
-  'branchExternalId',
   'serviceExternalIds',
-  'action',
   'reason',
 ] as const;
 
@@ -147,46 +152,25 @@ export class IntegrationInboundService {
     }
     const tenantId = (endpoint.tenant as Tenant)?.id;
 
-    // 3. Admission — fail-closed. Runs before any persistence so a rejected
-    //    delivery leaves nothing behind.
-    await this.admission.admit(ADMISSION_OP.INBOUND_WEBHOOK, { tenantId, connectionId });
-
     const h = readInboundHeaders(headers);
     const scheme = endpoint.signature_scheme as WebhookSignatureScheme;
 
-    // 4. Signature — FIRST security gate. Everything after it is attributable to
-    //    a caller holding the shared secret.
-    if (!h.signature) {
-      return this.rejectUnauthenticated(endpoint, tenantId, INBOUND_REJECTION.MISSING_SIGNATURE, ip);
-    }
-    // v2 signs the event id and type, so both headers are mandatory — say which
-    // is missing rather than reporting a bare "invalid signature". (A provider
-    // adapter that owns verification has its own scheme; this does not apply.)
-    if (scheme === WEBHOOK_SIGNATURE_SCHEME.HMAC_SHA256_TIMESTAMPED_V2 && !this.hasAdapterVerifier(endpoint)) {
-      if (!h.eventId) {
-        return this.rejectUnauthenticated(endpoint, tenantId, INBOUND_REJECTION.MISSING_EVENT_ID, ip);
-      }
-      if (!h.eventType) {
-        return this.rejectUnauthenticated(endpoint, tenantId, INBOUND_REJECTION.MISSING_EVENT_TYPE, ip);
-      }
-    }
-    const secret = this.endpoints.secretOf(endpoint);
-    if (!secret || !this.verifySignature(endpoint, scheme, secret, h, rawBody, headers)) {
-      return this.rejectUnauthenticated(endpoint, tenantId, INBOUND_REJECTION.INVALID_SIGNATURE, ip);
+    // 3. Authenticate FIRST (pure in-memory HMAC — no persistence). The verdict
+    //    decides WHICH admission budget is charged: a delivery that fails here
+    //    must not consume the connection budget reserved for signed events, or
+    //    anyone who knows the (non-secret) connection id could lock the real
+    //    partner out.
+    const authFailure = this.authenticate(endpoint, scheme, h, rawBody, headers);
+    if (authFailure) {
+      // Own per-source-IP / per-connection bucket. Fail-closed 503 if the
+      // limiter is unreachable; 429 + Retry-After when exhausted — in which case
+      // NOTHING is written (no counter, no audit row), bounding DB work.
+      await this.admission.admit(ADMISSION_OP.INBOUND_WEBHOOK_UNSIGNED, { tenantId, connectionId, ip });
+      return this.rejectUnauthenticated(endpoint, tenantId, authFailure, ip);
     }
 
-    // 5. Replay window — a stale or far-future timestamp is refused even with a
-    //    valid MAC, because the timestamp is bound INTO the MAC.
-    const verdict = verifyTimestamp(scheme, h.timestamp, endpoint.tolerance_seconds);
-    if (verdict !== 'ok') {
-      const reason =
-        verdict === 'stale'
-          ? INBOUND_REJECTION.STALE_TIMESTAMP
-          : verdict === 'future'
-            ? INBOUND_REJECTION.FUTURE_TIMESTAMP
-            : INBOUND_REJECTION.MISSING_TIMESTAMP;
-      return this.rejectUnauthenticated(endpoint, tenantId, reason, ip);
-    }
+    // 4. Admission for AUTHENTICATED traffic — fail-closed, before any persistence.
+    await this.admission.admit(ADMISSION_OP.INBOUND_WEBHOOK, { tenantId, connectionId });
 
     // ── Authenticated from here: rejections get a history row ───────────────
 
@@ -345,7 +329,7 @@ export class IntegrationInboundService {
   async process(inboundEventId: string): Promise<void> {
     const event = await this.events.findOne({
       where: { id: inboundEventId },
-      relations: { tenant: true, connection: true },
+      relations: { tenant: true, connection: true, endpoint: true },
     });
     if (!event) {
       this.logger.warn(`inbound event ${inboundEventId} not found — skipping`);
@@ -358,6 +342,32 @@ export class IntegrationInboundService {
 
     const tenantId = (event.tenant as Tenant).id;
     const connectionId = event.connection?.id ?? null;
+
+    // AUTHORITATIVE authorisation, at APPLY time. The receiver already checked
+    // the allow-list, but this is the path that mutates data: it re-derives what
+    // the event may do from its type alone and re-checks the endpoint as it is
+    // NOW (allow-list narrowed, endpoint disabled or removed since acceptance).
+    const mapped = INBOUND_EVENT_MAP[event.event_type as InboundEvent];
+    const ep = event.endpoint;
+    const denied = !mapped
+      ? INBOUND_REJECTION.UNSUPPORTED_EVENT
+      : !ep || ep.status !== WEBHOOK_ENDPOINT_STATUS.ACTIVE
+        ? INBOUND_REJECTION.ENDPOINT_INACTIVE
+        : !(ep.allowed_events ?? []).includes(event.event_type)
+          ? INBOUND_REJECTION.EVENT_NOT_ALLOWED
+          : null;
+    if (denied) {
+      event.rejection_reason = denied;
+      await this.finish(event, INBOUND_STATUS.REJECTED, `Not applied: ${denied}`, null, null);
+      return;
+    }
+    // Lifecycle comes ONLY from the event type; any `action` that may be in a
+    // payload staged by an older build is discarded here.
+    const applyPayload: Record<string, unknown> = { ...((event.payload ?? {}) as Record<string, unknown>) };
+    delete applyPayload.action;
+    if (mapped.action) applyPayload.action = mapped.action;
+    const lifecycle =
+      mapped.resource === 'appointment' ? (mapped.action ?? UPSERT_LIFECYCLE.CREATE) : undefined;
 
     event.status = INBOUND_STATUS.PROCESSING;
     event.attempts += 1;
@@ -403,9 +413,9 @@ export class IntegrationInboundService {
           connectionId,
           policy,
           event.external_id as string,
-          (event.payload ?? {}) as Record<string, unknown>,
+          applyPayload,
           { userId },
-          { safe: false },
+          { safe: false, lifecycle },
         );
       } catch (err) {
         await this.idempotency.fail(begin.recordId);
@@ -500,6 +510,40 @@ export class IntegrationInboundService {
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────
+
+  /**
+   * Pure authentication verdict for one delivery: `null` when the signature and
+   * timestamp are valid, otherwise the rejection code. No I/O.
+   */
+  private authenticate(
+    endpoint: IntegrationWebhookEndpoint,
+    scheme: WebhookSignatureScheme,
+    h: ReturnType<typeof readInboundHeaders>,
+    rawBody: string,
+    headers: InboundHeaders,
+  ): InboundRejection | null {
+    if (!h.signature) return INBOUND_REJECTION.MISSING_SIGNATURE;
+    // v2 signs the event id and type, so both headers are mandatory — say which
+    // is missing rather than reporting a bare "invalid signature". (A provider
+    // adapter that owns verification has its own scheme; this does not apply.)
+    if (scheme === WEBHOOK_SIGNATURE_SCHEME.HMAC_SHA256_TIMESTAMPED_V2 && !this.hasAdapterVerifier(endpoint)) {
+      if (!h.eventId) return INBOUND_REJECTION.MISSING_EVENT_ID;
+      if (!h.eventType) return INBOUND_REJECTION.MISSING_EVENT_TYPE;
+    }
+    const secret = this.endpoints.secretOf(endpoint);
+    if (!secret || !this.verifySignature(endpoint, scheme, secret, h, rawBody, headers)) {
+      return INBOUND_REJECTION.INVALID_SIGNATURE;
+    }
+    // Replay window — a stale or far-future timestamp is refused even with a
+    // valid MAC, because the timestamp is bound INTO the MAC.
+    const verdict = verifyTimestamp(scheme, h.timestamp, endpoint.tolerance_seconds);
+    if (verdict === 'ok') return null;
+    return verdict === 'stale'
+      ? INBOUND_REJECTION.STALE_TIMESTAMP
+      : verdict === 'future'
+        ? INBOUND_REJECTION.FUTURE_TIMESTAMP
+        : INBOUND_REJECTION.MISSING_TIMESTAMP;
+  }
 
   /** Provider adapter verification when it defines one; otherwise the compiled scheme. */
   private verifySignature(

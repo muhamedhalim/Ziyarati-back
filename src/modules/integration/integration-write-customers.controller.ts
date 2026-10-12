@@ -16,6 +16,7 @@ import { IntegrationWriteService } from '../integration-platform/write/integrati
 import { INTEGRATION_RESOURCE } from '../integration-platform/integration-platform.constants';
 import { UpsertRecordDto } from '../integration-platform/dto/upsert-record.dto';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { ApiIntegrationWriteErrors } from './integration-api-docs';
 import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /**
@@ -27,6 +28,7 @@ import { FeatureKey } from '../subscription-billing/feature-registry';
 @ApiTags('Integration API')
 @ApiSecurity('ApiKey-auth')
 @RequireFeature(FeatureKey.INTEGRATIONS)
+@ApiIntegrationWriteErrors()
 @Controller('integrations/customers')
 export class IntegrationWriteCustomersController {
   constructor(
@@ -42,7 +44,7 @@ export class IntegrationWriteCustomersController {
   @ApiHeader({
     name: 'Idempotency-Key',
     required: false,
-    description: 'Retry-safe write key (unique per tenant).',
+    description: 'Retry-safe write key (unique per clinic, 1-255 printable ASCII characters, honoured for 24 hours).',
   })
   @ApiKeyProtected(INTEGRATION_SCOPE.CUSTOMERS_WRITE)
   @Post('upsert')

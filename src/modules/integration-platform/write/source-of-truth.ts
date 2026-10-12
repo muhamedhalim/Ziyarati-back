@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { AppError, ErrorCode } from '../../../common/errors';
 
 import {
@@ -218,13 +220,48 @@ export interface ConflictDecision {
   changedFields: string[];
 }
 
+export interface ConflictOptions {
+  /**
+   * True when the platform record is byte-for-byte what the integration last
+   * wrote (its stored baseline fingerprint matches the current view). Nobody on
+   * the clinic side has changed it since, so there is nothing to protect and
+   * `reject_and_report` may apply the partner's update. Absent/false (no
+   * baseline, or the record moved on) keeps the conservative behaviour.
+   */
+  platformUntouched?: boolean;
+}
+
+/**
+ * Stable fingerprint of an allowlisted comparable view. Stored on the id
+ * mapping after every integration-applied write so a later update can tell
+ * "the clinic changed this record" apart from "only this integration ever
+ * touched it". One-way (SHA-256) — no field value is persisted.
+ */
+export function viewFingerprint(view: Record<string, unknown>): string {
+  const canon = (v: unknown): string => {
+    if (v === null || v === undefined) return 'null';
+    if (v instanceof Date) return v.toISOString();
+    if (Array.isArray(v)) return JSON.stringify(v.map((x) => String(x)).sort());
+    if (typeof v === 'object') return JSON.stringify(v);
+    return String(v);
+  };
+  const body = Object.keys(view)
+    .sort()
+    .map((k) => `${k}=${canon(view[k])}`)
+    .join('\u0001');
+  return createHash('sha256').update(body).digest('hex');
+}
+
 /**
  * Given the connection's conflict policy and a diff between the incoming external
  * values and the current platform record, decides whether to apply the change.
  *
  * - external_wins  → apply the external values (still only allowlisted fields).
  * - platform_wins  → keep the platform record; do not apply.
- * - reject_and_report → do not apply; flag for manual review (422 at the API).
+ * - reject_and_report → do not apply and flag for manual review (HTTP 409 at the
+ *   API) — UNLESS the platform record is still exactly what this integration
+ *   last wrote (`opts.platformUntouched`), in which case there is no competing
+ *   change and the update is applied.
  *
  * A policy can only ever choose among ALLOWLISTED fields — it is structurally
  * incapable of touching a protected field, because `changed` is computed from
@@ -234,6 +271,7 @@ export function decideConflict(
   policy: ConflictPolicy,
   clean: Record<string, unknown>,
   current: Record<string, unknown>,
+  opts: ConflictOptions = {},
 ): ConflictDecision {
   const changedFields = Object.keys(clean).filter(
     (k) => !valuesEqual(clean[k], current[k]),
@@ -250,6 +288,7 @@ export function decideConflict(
       return { apply: false, report: false, changedFields };
     case CONFLICT_POLICY.REJECT_AND_REPORT:
     default:
+      if (opts.platformUntouched) return { apply: true, report: false, changedFields };
       return { apply: false, report: true, changedFields };
   }
 }
@@ -257,6 +296,13 @@ export function decideConflict(
 /** Loose equality for scalar field comparison (numbers vs decimal-strings, dates, etc.). */
 function valuesEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
+  // Id lists (e.g. appointment serviceIds) are SETS: order and duplicates are not a change.
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    const sa = [...new Set(a.map((x) => String(x)))].sort();
+    const sb = [...new Set(b.map((x) => String(x)))].sort();
+    return sa.length === sb.length && sa.every((x, i) => x === sb[i]);
+  }
   if (a === null || a === undefined) return b === null || b === undefined;
   if (b === null || b === undefined) return false;
   if (a instanceof Date || b instanceof Date) {

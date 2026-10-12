@@ -12,3 +12,14 @@ export const REQUIRE_SCOPES_KEY = 'integrationScopes';
  */
 export const RequireScopes = (...scopes: IntegrationScope[]) =>
   SetMetadata(REQUIRE_SCOPES_KEY, scopes);
+
+export const REQUIRE_ANY_SCOPE_KEY = 'integrationAnyScope';
+
+/**
+ * Like `RequireScopes` but satisfied by ANY ONE of the given scopes. Used by
+ * read-only discovery routes (e.g. branch ids) that several unrelated workflows
+ * need, so no new scope has to be issued. Combine with `@ApiKeyProtected()`
+ * (no scopes) so the key is still authenticated and tenant-checked.
+ */
+export const RequireAnyScope = (...scopes: IntegrationScope[]) =>
+  SetMetadata(REQUIRE_ANY_SCOPE_KEY, scopes);
