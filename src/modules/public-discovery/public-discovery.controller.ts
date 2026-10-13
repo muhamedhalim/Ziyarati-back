@@ -17,6 +17,7 @@ import {
   PUBLIC_DISCOVERY_CLINICS_THROTTLE,
   PUBLIC_DISCOVERY_CLINIC_DETAIL_THROTTLE,
   PUBLIC_DISCOVERY_MARKETPLACE_CLINIC_THROTTLE,
+  PUBLIC_DISCOVERY_CATEGORIES_THROTTLE,
   PUBLIC_DISCOVERY_SPECIALTIES_THROTTLE,
   PUBLIC_DISCOVERY_SPECIALTY_DETAIL_THROTTLE,
   PUBLIC_DISCOVERY_DOCTORS_THROTTLE,
@@ -167,6 +168,28 @@ export class PublicDiscoveryController {
   @Public()
   @ApiOperation({
     summary:
+      'List clinic-managed service categories that have bookable services',
+    description:
+      'Contract C13. The categories clinics manage in the dashboard (Services → Categories), ' +
+      'folded across clinics by name. A category appears only while its clinic is eligible, it ' +
+      'is active and not deleted, and it holds at least one active service offered at an active ' +
+      'branch. `name` is the clinic-entered wording (no Arabic/English pair exists for categories); ' +
+      '`slug` is derived from it. Capped, busiest first. Use `slug` as `categorySlug` on the ' +
+      'services search.',
+  })
+  @ApiOkResponse({
+    description:
+      'Categories with `{ slug, name, clinicCount, serviceCount, services[] }`.',
+  })
+  @Throttle(PUBLIC_DISCOVERY_CATEGORIES_THROTTLE)
+  @Get('categories')
+  categories() {
+    return this.discovery.listCategories();
+  }
+
+  @Public()
+  @ApiOperation({
+    summary:
       'Specialty detail: clinics and doctors, city-filterable, paginated',
     description:
       'Contract C4. An unknown slug 404s. A slug that exists but currently has zero eligible ' +
@@ -299,6 +322,13 @@ export class PublicDiscoveryController {
   @ApiQuery({ name: 'q', required: false })
   @ApiQuery({ name: 'cityId', required: false, format: 'uuid' })
   @ApiQuery({ name: 'specialtySlug', required: false })
+  @ApiQuery({
+    name: 'categorySlug',
+    required: false,
+    description:
+      'A `slug` from GET /public/discovery/categories (clinic-managed service category). ' +
+      'A slug that matches no eligible category returns an empty page.',
+  })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'pageSize', required: false, type: Number })
   @ApiOkResponse({ description: 'Matching service offerings, paginated.' })
@@ -308,6 +338,7 @@ export class PublicDiscoveryController {
     @Query('q') q?: string,
     @Query('cityId') cityId?: string,
     @Query('specialtySlug') specialtySlug?: string,
+    @Query('categorySlug') categorySlug?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
   ) {
@@ -317,6 +348,7 @@ export class PublicDiscoveryController {
       q,
       cityId,
       specialtySlug,
+      categorySlug,
       page: toInt(page),
       pageSize: toInt(pageSize),
     });

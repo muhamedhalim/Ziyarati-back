@@ -79,6 +79,21 @@ export const PUBLIC_DISCOVERY_SPECIALTIES_THROTTLE = {
   },
 };
 
+/** GET — the clinic-managed category index (C13). Two bounded queries over
+ *  live service data, so it is held to the clinic-search ceiling rather than
+ *  the specialty taxonomy's. */
+export const PUBLIC_DISCOVERY_CATEGORIES_LIMIT = 30;
+
+export const PUBLIC_DISCOVERY_CATEGORIES_THROTTLE = {
+  default: {
+    limit:
+      process.env.NODE_ENV === 'test'
+        ? 1_000_000
+        : PUBLIC_DISCOVERY_CATEGORIES_LIMIT,
+    ttl: 60_000,
+  },
+};
+
 /** GET — a single specialty's paginated clinics/doctors (C4). */
 export const PUBLIC_DISCOVERY_SPECIALTY_DETAIL_LIMIT = 30;
 

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
 import { AppError, ErrorCode } from '../../common/errors';
+import { slugify } from '../../common/utils/slugify.util';
 import { AvailabilityService } from '../scheduling/availability.service';
 import { DEFAULT_CHANGE_WINDOW_HOURS } from '../patient-actions/patient-change-window.service';
 
@@ -72,6 +73,13 @@ const BRANCH_OFFERS_SERVICE = `(
         WHERE sp2."serviceId" = s.id AND sp2.is_active = true
      )
    )`;
+
+/** Upper bound on the public category index (busiest first). */
+const MAX_PUBLIC_CATEGORIES = 60;
+/** Real services shown inside a category's folder on the Marketplace. */
+const SAMPLE_SERVICES_PER_CATEGORY = 3;
+/** How many of a category's per-clinic rows are sampled for those services. */
+const SAMPLE_CATEGORY_IDS_PER_GROUP = 4;
 
 /**
  * Public (anonymous) clinic discovery for the website chat widget.
@@ -1080,6 +1088,225 @@ export class PublicDiscoveryService {
   }
 
   /**
+   * Marketplace contract C13 — the public category index. These are the
+   * clinic-managed `service_categories` (the dashboard's /app/services
+   * Categories tab), NOT the platform `specialties` taxonomy — a category the
+   * clinic creates, renames, disables or deletes there is what this returns.
+   *
+   * Categories are tenant-owned free text (one `name`, no slug, no Arabic/English
+   * pair), so the public identity is DERIVED: the same `slugify()` the service
+   * slugs use, applied to the name. "Dental" at one clinic and "dental " at
+   * another therefore fold into one public category. A rename changes the slug —
+   * deliberately: the clinic's own wording is the source of truth and there is no
+   * second place to pin an old one.
+   *
+   * VISIBILITY (fail-closed, mirrors `searchServices`): the clinic is eligible,
+   * the category is active and not soft-deleted, and it holds at least one
+   * active, not-deleted service that is actually offered at an active branch —
+   * so a category on the index always has results behind it.
+   *
+   * Capped at `MAX_PUBLIC_CATEGORIES`, busiest first, so a platform with a long
+   * tail of one-off names cannot make this an unbounded payload.
+   */
+  async listCategories(): Promise<
+    {
+      slug: string;
+      name: string;
+      clinicCount: number;
+      serviceCount: number;
+      services: {
+        slug: string;
+        name: string;
+        clinic: { name: string; slug: string };
+      }[];
+    }[]
+  > {
+    const rows = (await this.dataSource.query(
+      `SELECT sc.id, sc.name, t.id AS tenant_id,
+              COUNT(DISTINCT s.id)::int AS service_count
+         FROM service_categories sc
+         JOIN tenants t ON t.id = sc."tenantId"
+         LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+         JOIN services s ON s."categoryId" = sc.id
+                        AND s."tenantId" = t.id
+                        AND s.is_active = true
+                        AND s.deleted_at IS NULL
+         JOIN branches b ON b."tenantId" = t.id AND b.is_active = true AND b.deleted_at IS NULL
+         LEFT JOIN service_prices sp ON sp."serviceId" = s.id AND sp."branchId" = b.id AND sp.is_active = true
+        WHERE sc.is_active = true
+          AND sc.deleted_at IS NULL
+          AND ${ELIGIBLE_CLINIC}
+          AND ${BRANCH_OFFERS_SERVICE}
+        GROUP BY sc.id, sc.name, t.id`,
+    )) as Record<string, unknown>[];
+
+    interface Group {
+      slug: string;
+      names: Map<string, number>;
+      categoryIds: { id: string; serviceCount: number }[];
+      tenants: Set<string>;
+      serviceCount: number;
+    }
+    const groups = new Map<string, Group>();
+    for (const r of rows) {
+      const display = this.cleanCategoryName(r.name as string);
+      const slug = slugify(display, '');
+      if (!slug) continue; // a name with no letters/digits has no public identity
+      let g = groups.get(slug);
+      if (!g) {
+        g = {
+          slug,
+          names: new Map(),
+          categoryIds: [],
+          tenants: new Set(),
+          serviceCount: 0,
+        };
+        groups.set(slug, g);
+      }
+      g.names.set(display, (g.names.get(display) ?? 0) + 1);
+      g.categoryIds.push({
+        id: r.id as string,
+        serviceCount: n(r.service_count),
+      });
+      g.tenants.add(r.tenant_id as string);
+      g.serviceCount += n(r.service_count);
+    }
+
+    const top = [...groups.values()]
+      .sort(
+        (a, b) =>
+          b.tenants.size - a.tenants.size ||
+          b.serviceCount - a.serviceCount ||
+          a.slug.localeCompare(b.slug),
+      )
+      .slice(0, MAX_PUBLIC_CATEGORIES);
+    if (top.length === 0) return [];
+
+    // A few real services per category — the folder's contents on the
+    // Marketplace. Bounded: at most `SAMPLE_CATEGORY_IDS_PER_GROUP` category rows
+    // per group, `SAMPLE_SERVICES_PER_CATEGORY` services each.
+    const sampleIds = top.flatMap((g) =>
+      [...g.categoryIds]
+        .sort((a, b) => b.serviceCount - a.serviceCount)
+        .slice(0, SAMPLE_CATEGORY_IDS_PER_GROUP)
+        .map((c) => c.id),
+    );
+    const sampleRows = (await this.dataSource.query(
+      `SELECT x.category_id, x.public_slug, x.name, x.clinic_name, x.clinic_slug
+         FROM service_categories sc
+         JOIN tenants t ON t.id = sc."tenantId"
+         LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+         CROSS JOIN LATERAL (
+           SELECT sc.id AS category_id, s.public_slug, s.name,
+                  t.name AS clinic_name, t.slug AS clinic_slug
+             FROM services s
+            WHERE s."categoryId" = sc.id
+              AND s."tenantId" = t.id
+              AND s.is_active = true
+              AND s.deleted_at IS NULL
+              AND EXISTS (
+                SELECT 1
+                  FROM branches b
+                  LEFT JOIN service_prices sp ON sp."serviceId" = s.id AND sp."branchId" = b.id AND sp.is_active = true
+                 WHERE b."tenantId" = t.id AND b.is_active = true AND b.deleted_at IS NULL
+                   AND ${BRANCH_OFFERS_SERVICE}
+              )
+            ORDER BY s.name ASC, s.id ASC
+            LIMIT ${SAMPLE_SERVICES_PER_CATEGORY}
+         ) x
+        WHERE sc.id = ANY($1::uuid[])
+          AND sc.is_active = true
+          AND sc.deleted_at IS NULL
+          AND ${ELIGIBLE_CLINIC}`,
+      [sampleIds],
+    )) as Record<string, unknown>[];
+
+    const samplesByCategory = new Map<string, Record<string, unknown>[]>();
+    for (const r of sampleRows) {
+      const id = r.category_id as string;
+      const list = samplesByCategory.get(id) ?? [];
+      list.push(r);
+      samplesByCategory.set(id, list);
+    }
+
+    return top.map((g) => {
+      // The wording most clinics use wins; a tie falls to the alphabetically
+      // first so the choice is stable between requests.
+      const name = [...g.names.entries()].sort(
+        (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+      )[0][0];
+
+      const candidates = g.categoryIds
+        .flatMap((c) => samplesByCategory.get(c.id) ?? [])
+        .sort(
+          (a, b) =>
+            String(a.name).localeCompare(String(b.name)) ||
+            String(a.clinic_slug).localeCompare(String(b.clinic_slug)),
+        );
+      // One service per clinic first (variety), then fill from what is left.
+      const seenClinics = new Set<string>();
+      const picked: Record<string, unknown>[] = [];
+      for (const c of candidates) {
+        if (picked.length >= SAMPLE_SERVICES_PER_CATEGORY) break;
+        if (seenClinics.has(c.clinic_slug as string)) continue;
+        seenClinics.add(c.clinic_slug as string);
+        picked.push(c);
+      }
+      for (const c of candidates) {
+        if (picked.length >= SAMPLE_SERVICES_PER_CATEGORY) break;
+        if (!picked.includes(c)) picked.push(c);
+      }
+
+      return {
+        slug: g.slug,
+        name,
+        clinicCount: g.tenants.size,
+        serviceCount: g.serviceCount,
+        services: picked.map((p) => ({
+          slug: p.public_slug as string,
+          name: p.name as string,
+          clinic: {
+            name: p.clinic_name as string,
+            slug: p.clinic_slug as string,
+          },
+        })),
+      };
+    });
+  }
+
+  /** Collapses runs of whitespace and trims — the category name as displayed. */
+  private cleanCategoryName(name: string): string {
+    return String(name ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  /**
+   * Resolves a public category slug to every matching category id across
+   * eligible clinics, using the same derivation as `listCategories()`. Empty
+   * when nothing matches — the caller answers with an empty page, never a 404
+   * (an unknown category is indistinguishable from one with no results).
+   */
+  private async categoryIdsForSlug(slug: string): Promise<string[]> {
+    const key = slugify(slug, '');
+    if (!key) return [];
+    const rows = (await this.dataSource.query(
+      `SELECT sc.id, sc.name
+         FROM service_categories sc
+         JOIN tenants t ON t.id = sc."tenantId"
+         LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+        WHERE sc.is_active = true
+          AND sc.deleted_at IS NULL
+          AND ${ELIGIBLE_CLINIC}`,
+    )) as Record<string, unknown>[];
+    return rows
+      .filter(
+        (r) => slugify(this.cleanCategoryName(r.name as string), '') === key,
+      )
+      .map((r) => r.id as string);
+  }
+
+  /**
    * Marketplace contract C4 — specialty detail: clinics and doctors
    * associated with it, city-filterable, paginated. A specialty whose `slug`
    * does not exist at all 404s (a genuinely bad slug); a specialty that
@@ -1427,6 +1654,8 @@ export class PublicDiscoveryService {
     q?: string;
     cityId?: string;
     specialtySlug?: string;
+    /** Clinic-managed service category (contract C13) — derived slug, see `listCategories()`. */
+    categorySlug?: string;
     page?: number;
     pageSize?: number;
   }) {
@@ -1435,6 +1664,18 @@ export class PublicDiscoveryService {
     const specialtySlug = filters.specialtySlug?.trim() || null;
     const page = Math.max(1, filters.page ?? 1);
     const pageSize = Math.min(Math.max(1, filters.pageSize ?? 24), 24);
+
+    // A category slug that resolves to nothing is an empty page, not a 404 and
+    // not "unfiltered" — falling through would publish every service under a
+    // category name that matched none.
+    let categoryIds: string[] | null = null;
+    const categorySlug = filters.categorySlug?.trim();
+    if (categorySlug) {
+      categoryIds = await this.categoryIdsForSlug(categorySlug);
+      if (categoryIds.length === 0) {
+        return { items: [], total: 0, page, pageSize };
+      }
+    }
 
     // Independently-numbered WHERE fragments per query — see searchDoctors().
     const [rows, [{ total }]] = await Promise.all([
@@ -1457,9 +1698,10 @@ export class PublicDiscoveryService {
             AND ($4::text IS NULL
                  OR EXISTS (SELECT 1 FROM specialties sp4
                              WHERE sp4.id = s."specialtyId" AND sp4.slug = $4))
+            AND ($6::uuid[] IS NULL OR s."categoryId" = ANY($6::uuid[]))
           ORDER BY s.name ASC, b.name ASC
           LIMIT $1::int OFFSET (($5::int - 1) * $1::int)`,
-        [pageSize, like, city, specialtySlug, page],
+        [pageSize, like, city, specialtySlug, page, categoryIds],
       ),
       this.dataSource.query(
         `SELECT COUNT(*)::int AS total
@@ -1476,8 +1718,9 @@ export class PublicDiscoveryService {
             AND ($2::uuid IS NULL OR b.city_id = $2::uuid)
             AND ($3::text IS NULL
                  OR EXISTS (SELECT 1 FROM specialties sp4
-                             WHERE sp4.id = s."specialtyId" AND sp4.slug = $3))`,
-        [like, city, specialtySlug],
+                             WHERE sp4.id = s."specialtyId" AND sp4.slug = $3))
+            AND ($4::uuid[] IS NULL OR s."categoryId" = ANY($4::uuid[]))`,
+        [like, city, specialtySlug, categoryIds],
       ),
     ]);
 
