@@ -2255,6 +2255,26 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     });
   });
 
+  describe('customer created for a new WhatsApp contact', () => {
+    it('is created WITHOUT an email — no placeholder @bot.internal address is minted', async () => {
+      contacts.findOne.mockResolvedValue(null);
+      customers.search.mockResolvedValue({ data: [] });
+      customers.create.mockResolvedValue({ id: 'cust-new' });
+      contacts.save.mockImplementation(async (c: unknown) => c);
+
+      await service.findOrCreateContact(TENANT, '966500000000', 'Sara');
+
+      const dto = customers.create.mock.calls[0][1];
+      expect(dto).toMatchObject({
+        phone: '966500000000',
+        whatsapp_id: '966500000000',
+        source: 'whatsapp',
+      });
+      expect(dto.email).toBeUndefined();
+      expect(JSON.stringify(dto)).not.toContain('bot.internal');
+    });
+  });
+
   describe('a patient’s first two messages race to create their customer', () => {
     it('the loser adopts the winner’s customer instead of failing its turn', async () => {
       contacts.findOne.mockResolvedValue(null);

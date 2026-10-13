@@ -634,16 +634,22 @@ describe('CustomerService', () => {
       );
     });
 
-    it('gives each record its own synthetic email — one phone may now own several', async () => {
+    it('stores NULL (no placeholder address) when no email is supplied — one phone may own several records', async () => {
       customers.find.mockResolvedValue([]);
       await service.findOrCreateForBooking(TENANT, { fullName: 'One', phone: PHONE });
-      await service.findOrCreateForBooking(TENANT, { fullName: 'Two', phone: PHONE });
-      const emails = created.map((c) => c.email as string);
-      expect(new Set(emails).size).toBe(2);
-      for (const e of emails) expect(e).toMatch(/^patient\+t1-966500123456-[0-9a-f]{8}@booking\.internal$/);
+      await service.findOrCreateForBooking(TENANT, { fullName: 'Two', phone: PHONE, email: '   ' });
+      expect(created).toHaveLength(2);
+      for (const c of created) expect(c.email ?? null).toBeNull();
+      expect(JSON.stringify(created)).not.toMatch(/\.internal/);
     });
 
-    it('uses the address the visitor typed; if it belongs to another record it is not attached — a private one is minted instead', async () => {
+    it('stores the address the visitor typed', async () => {
+      customers.find.mockResolvedValue([]);
+      await service.findOrCreateForBooking(TENANT, { fullName: 'Layla', phone: PHONE, email: 'layla@example.com' });
+      expect(created[0].email).toBe('layla@example.com');
+    });
+
+    it('if the typed address belongs to another record it is not attached — the booking proceeds with NULL email', async () => {
       customers.find.mockResolvedValue([]);
       customers.save.mockRejectedValueOnce(Object.assign(new Error('duplicate key'), { code: '23505' }));
       const c = await service.findOrCreateForBooking(TENANT, {
@@ -653,7 +659,7 @@ describe('CustomerService', () => {
       });
       expect(c.id).toBeTruthy();
       expect(created).toHaveLength(1);
-      expect(created[0].email).toMatch(/@booking\.internal$/);
+      expect(created[0].email ?? null).toBeNull();
     });
 
     it('a concurrent insert of the SAME person is re-read rather than duplicated', async () => {

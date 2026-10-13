@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -154,11 +153,10 @@ export class CustomerService {
    * can still land on that record. Closing that needs a verification step (a code
    * sent to the number), which this path does not have.
    *
-   * `email` is NOT NULL and unique per tenant, so a synthetic one is minted when
-   * the patient doesn't give one — the same convention the WhatsApp bridge uses;
-   * it carries a random part now that one phone may own several records. A
-   * supplied address that already belongs to another record is not attached to
-   * this one either. The `23505` retry closes the race where two concurrent
+   * `email` is optional: when the patient doesn't give one it is stored as NULL
+   * (no placeholder address is minted). A supplied address that already belongs
+   * to another record is not attached to this one either — the booking proceeds
+   * with no email instead. The `23505` retry closes the race where two concurrent
    * turns both miss the lookup and both insert.
    */
   async findOrCreateForBooking(
@@ -181,9 +179,7 @@ export class CustomerService {
     const existing = await findSamePerson();
     if (existing) return existing;
 
-    const synthetic = () =>
-      `patient+${tenantId}-${phone}-${randomUUID().slice(0, 8)}@booking.internal`;
-    const createWith = (email: string) =>
+    const createWith = (email?: string) =>
       this.create(tenantId, {
         full_name: input.fullName,
         phone,
@@ -191,16 +187,18 @@ export class CustomerService {
         source: 'public_ai',
       } as CreateCustomerDto);
 
-    const supplied = input.email?.trim();
+    // No address supplied => the column stays NULL (it is nullable, and NULLs
+    // are distinct in the tenant-scoped unique index).
+    const supplied = input.email?.trim() || undefined;
     try {
-      return await createWith(supplied || synthetic());
+      return await createWith(supplied);
     } catch (err) {
       // Concurrent insert won the race — re-read rather than failing the booking.
       const raced = await findSamePerson();
       if (raced) return raced;
       // The address the visitor typed belongs to a record that is not this person's
-      // (or was just taken): book under a private one rather than fail, or attach.
-      if (supplied) return createWith(synthetic());
+      // (or was just taken): book without one rather than fail, or attach.
+      if (supplied) return createWith(undefined);
       throw err;
     }
   }
