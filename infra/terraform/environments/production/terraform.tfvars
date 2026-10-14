@@ -23,18 +23,22 @@ app_url          = "https://www.ziyaratech.com"
 # First apply: a tag already pushed to ECR (see DEPLOYMENT.md §2).
 image_tag = "bootstrap"
 
-# 1 vCPU = one Node core (the API is CPU-bound on one core per k6).
+# 0.5 vCPU = half a Node core (~110 req/s per task at the k6 per-core rate, SCALING-ROADMAP).
+# Measured 2026-10-08..14 (AWS-COST-FORENSICS.md F-2): CPU avg 0.66%, memory max 266 MB, peak 4.6 req/s.
+# Was 1024/2048. Autoscaling (60% CPU target, max 6) still scales out; min_count stays 2 for AZ resilience.
 api = {
-  cpu           = 1024
-  memory        = 2048
+  cpu           = 512
+  memory        = 1024
   desired_count = 2
   min_count     = 2
   max_count     = 6
   cpu_target    = 60
 }
 
+# Was 512/1024. Measured: CPU avg 3%, memory max 281 MB of 1024 MB (AWS-COST-FORENSICS.md F-5).
+# Memory stays at 1 GB: 0.25 vCPU supports 0.5/1/2 GB and the OOM-kill alarm is at 85%.
 worker = {
-  cpu           = 512
+  cpu           = 256
   memory        = 1024
   desired_count = 1
   min_count     = 1
@@ -57,8 +61,8 @@ db = {
 }
 
 redis = {
-  node_type               = "cache.t4g.small"
-  num_cache_clusters      = 2 # primary + replica, Multi-AZ failover
+  node_type               = "cache.t4g.micro" # was cache.t4g.small; memory 2.7% max, engine CPU 1.4% (AWS-COST-FORENSICS.md F-4)
+  num_cache_clusters      = 2                 # primary + replica, Multi-AZ failover
   snapshot_retention_days = 7
 }
 
@@ -109,8 +113,10 @@ app_secret_keys = [
   # "TAP_LIVE_SECRET_KEY",
 ]
 
-alert_emails       = ["alerts@ziyaratech.com"] # set the real on-call mailbox(es)
-monthly_budget_usd = 650
+# The live SNS alert topics had ONE confirmed subscriber (below) and no Terraform-managed one; list both so a
+# human receives alerts even if the shared mailbox is unattended. Keep at least one monitored address here.
+alert_emails       = ["alerts@ziyaratech.com", "mohamedhalemm40@gmail.com"]
+monthly_budget_usd = 450 # GROSS usage (credits excluded since 2026-10); was 650 incl. credits, which never alerted
 
 # Decision D-1 — OPEN (DISASTER-RECOVERY.md). Do NOT fill this in without the
 # residency sign-off: the copy moves encrypted patient data out of me-central-1.

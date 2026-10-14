@@ -25,9 +25,9 @@ variable "monthly_budget_usd" {
 }
 
 variable "anomaly_threshold_usd" {
-  description = "Minimum absolute daily anomaly impact to email about"
+  description = "Minimum absolute anomaly impact (USD) to email about. Daily spend is ~$14, so 20 could only catch a >2x day."
   type        = number
-  default     = 20
+  default     = 5
 }
 
 variable "budget_emails" {
