@@ -63,3 +63,25 @@ run "reads_of_audited_buckets_are_recorded" {
     error_message = "Data events are expected when audited_bucket_arns is set"
   }
 }
+
+run "budget_tracks_gross_usage_and_alerts_early" {
+  command = plan
+
+  assert {
+    condition     = aws_budgets_budget.monthly.cost_types[0].include_credit == false
+    error_message = "The budget must exclude credits, otherwise actual spend is masked until credits run out"
+  }
+
+  assert {
+    condition = (
+      length([for n in aws_budgets_budget.monthly.notification : n if n.notification_type == "ACTUAL"]) == 3 &&
+      length([for n in aws_budgets_budget.monthly.notification : n if n.notification_type == "FORECASTED"]) == 1
+    )
+    error_message = "Expected ACTUAL alerts at 50/80/100% and one FORECASTED alert"
+  }
+
+  assert {
+    condition     = contains(one(one(aws_ce_anomaly_subscription.services.threshold_expression).dimension).values, "5")
+    error_message = "Anomaly threshold should default to $5 (daily spend is ~$14)"
+  }
+}
