@@ -82,9 +82,10 @@ export async function seedAdminUser(manager: EntityManager): Promise<void> {
         is_active: true,
       }),
     );
-    logger.success(`Super admin created successfully — "${email}"`);
+    // LSA-12: never the address — this line reaches the migrate/app log groups.
+    logger.success('Super admin created successfully');
   } else {
-    logger.info(`Super admin already exists — "${email}" (password left unchanged)`);
+    logger.info('Super admin already exists (password left unchanged)');
   }
 
   const existingLink = await userRoleRepo.findOne({

@@ -14,6 +14,14 @@
 # remote deployment needs TLS + authentication in front of Loki's push API and
 # Grafana (LOGGING.md §Remote deployment).
 #
+# SYNTHETIC DATA ONLY (LSA-15, docs/LOGGING-PRIVACY-REMEDIATION.md): never point
+# an app that holds real patient data — a production copy, a restored backup,
+# a shared staging database — at this stack. Loki has no authentication and
+# no masking, Tempo keeps 7 days of spans, and Alloy's `docker.sock` mount is
+# root-equivalent on the host (`:ro` does not restrict the Docker API). On any
+# shared host: put an authenticating proxy in front of Loki/Grafana and give
+# Alloy a read-only Docker socket proxy instead of the raw socket.
+#
 # Secrets (git-ignored, create once — LOGGING.md §Local stack):
 #   observability/.secrets/grafana_admin_password   Grafana admin password
 #   observability/.secrets/metrics_token            bearer token for the app's /metrics

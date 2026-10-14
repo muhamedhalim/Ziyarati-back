@@ -153,7 +153,8 @@ describe('summarizeBodyForLog', () => {
     expect(serialized).not.toContain('chest pain');
     expect(serialized).not.toContain('noor-clinic');
     expect(out.reason).toBe('[string:24]');
-    expect(out.age).toBe(41);
+    // LSA-07: numbers are values (vitals, a phone sent as a number), not shape.
+    expect(out.age).toBe('[number]');
     expect(out.urgent).toBe(true);
     expect(out.tags).toEqual(['[string:1]', '[string:1]']);
     expect(out.fullName).toBe('[REDACTED]');
@@ -190,6 +191,23 @@ describe('summarizeBodyForLog', () => {
     expect(summarizeBodyForLog(null)).toBeNull();
     expect(summarizeBodyForLog(undefined)).toBeUndefined();
     expect(summarizeBodyForLog('abc')).toBe('[string:3]');
-    expect(summarizeBodyForLog(Number.NaN)).toBe('number');
+    expect(summarizeBodyForLog(Number.NaN)).toBe('[number]');
+  });
+
+  it('LSA-07: never emits a numeric value or a user-chosen object key', () => {
+    const out = summarizeBodyForLog({
+      mobile: 966599000119,
+      vitals: { weight: 83.4, systolic: 151 },
+      answers: { 'Zqxcanary Patientname': true, 'CANARYSYMPTOM-chestpain': 'yes' },
+    });
+    const serialized = JSON.stringify(out);
+    for (const v of ['966599000119', '83.4', '151', 'Zqxcanary', 'CANARYSYMPTOM']) {
+      expect(serialized).not.toContain(v);
+    }
+    expect(out).toEqual({
+      mobile: '[number]',
+      vitals: { weight: '[number]', systolic: '[number]' },
+      answers: { '[key:1]': true, '[key:2]': '[REDACTED]' },
+    });
   });
 });

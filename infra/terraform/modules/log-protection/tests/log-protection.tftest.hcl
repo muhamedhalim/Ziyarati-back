@@ -84,6 +84,20 @@ run "regexes_match_what_they_claim_and_nothing_ordinary" {
     ])
     error_message = "JWT and pre-signed signature patterns"
   }
+
+  # LSA-02/LSA-05 additions (synthetic values only).
+  assert {
+    condition = alltrue([
+      can(regex(output.custom_identifiers.OpenAiApiKey, "key sk-proj-CANARYopenaiKEY1234567890 rejected")),
+      can(regex(output.custom_identifiers.TapSecretKey, "sk_live_CANARYtapKEY12345")),
+      can(regex(output.custom_identifiers.AwsAccessKeyId, "AKIACANARYAWSKEY1234")),
+      can(regex(output.custom_identifiers.EgyptianNationalId, "id 29901011099118 end")),
+      !can(regex(output.custom_identifiers.EgyptianNationalId, "49901011099118")),
+      !can(regex(output.custom_identifiers.OpenAiApiKey, "task-runner")),
+      !can(regex(output.custom_identifiers.TapSecretKey, "sk_live_short")),
+    ])
+    error_message = "Provider key and Egyptian ID patterns"
+  }
 }
 
 run "extra_identifier_names_are_validated" {

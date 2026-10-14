@@ -25,6 +25,13 @@ locals {
     JwtToken = "eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}"
     # Pre-signed URL signature
     PresignedUrlSignature = "X-Amz-Signature=[0-9a-fA-F]{64}"
+    # LSA-02/LSA-05: provider credentials that a provider error can echo back
+    # (OpenAI project/user keys, Tap secret keys, AWS access key ids).
+    OpenAiApiKey   = "sk-(?:proj-)?[A-Za-z0-9_-]{20,}"
+    TapSecretKey   = "sk_(?:live|test)_[A-Za-z0-9]{10,}"
+    AwsAccessKeyId = "(?:AKIA|ASIA)[A-Z0-9]{16}"
+    # Egyptian national ID: 14 digits, century digit 2 or 3.
+    EgyptianNationalId = "\\b[23][0-9]{13}\\b"
   }
   custom_identifiers = merge(local.default_custom_identifiers, var.extra_custom_identifiers)
 

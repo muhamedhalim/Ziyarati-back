@@ -183,13 +183,24 @@ describe('HTTP logging pipeline (integration)', () => {
     for (const r of handlerLines) expect(r.request_id).toBe(id);
   });
 
-  it('honours a well-formed caller X-Request-ID', async () => {
+  it('honours a well-formed, machine-generated caller X-Request-ID', async () => {
+    const upstream = 'gw-4bf92f3577b34da6a3ce929d0e0e4736';
     const res = await request(app.getHttpServer())
       .get('/api/v1/things/1')
-      .set('X-Request-ID', 'gateway-abc.123:xyz');
+      .set('X-Request-ID', upstream);
     await settle();
-    expect(res.headers['x-request-id']).toBe('gateway-abc.123:xyz');
-    expect(access()[0].request_id).toBe('gateway-abc.123:xyz');
+    expect(res.headers['x-request-id']).toBe(upstream);
+    expect(access()[0].request_id).toBe(upstream);
+  });
+
+  // LSA-09: a chosen word/number (here a synthetic phone) is never adopted.
+  it('replaces a caller-chosen, non-generated X-Request-ID', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/things/1')
+      .set('X-Request-ID', '0599000111');
+    await settle();
+    expect(res.headers['x-request-id']).toMatch(/^[0-9a-f-]{36}$/);
+    expect(JSON.stringify(access())).not.toContain('0599000111');
   });
 
   it.each([
@@ -263,7 +274,8 @@ describe('HTTP logging pipeline (integration)', () => {
       ['auth.login.failed', 'warn', 'invalid_credentials'],
     ]);
     const login = records().find((r) => r.event === 'auth.login.failed')!;
-    expect(login.client_ip).toMatch(/^(127\.0\.0\.1|::1)$/);
+    // LSA-08: the /24 (/48) network, never the full address.
+    expect(login.client_ip).toMatch(/^(127\.0\.0\.0|0:0:0::\/48)$/);
   });
 
   it('logs routine health checks at debug only', async () => {

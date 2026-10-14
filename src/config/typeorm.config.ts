@@ -2,7 +2,6 @@ import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import {
-  AdvancedConsoleLogger,
   DataSource,
   type Logger as TypeOrmLogger,
   type QueryRunner,
@@ -14,12 +13,18 @@ import { runMigrationsWithAdvisoryLock } from './run-migrations-with-lock';
 import { databaseSslOptions, isProductionEnv } from './database-ssl';
 import { MetricsService } from '../metrics/metrics.service';
 import { getCurrentRequestRoute } from '../core/tenant-context/tenant-context.service';
+import {
+  SafeTypeOrmLogger,
+  type TypeOrmLogging,
+} from '../common/logging/typeorm-safe-logger';
 
 /**
- * 015-db-api-efficiency-audit — P10/T062 (spec §21.2 gap). Wraps TypeORM's
- * own `AdvancedConsoleLogger` — preserving 100% of the existing
- * `TYPEORM_LOGGING=true` console output, byte-for-byte — and ALWAYS (query
- * text logging on or off) increments `db_queries_total`, labelled by route.
+ * 015-db-api-efficiency-audit — P10/T062 (spec §21.2 gap). Wraps the
+ * value-free `SafeTypeOrmLogger` (LSA-01: failed/slow queries become one
+ * structured line with verb, table and SQLSTATE — never SQL parameters) and
+ * ALWAYS (query text logging on or off) increments `db_queries_total`,
+ * labelled by route. `metrics` is optional: without it only the counter is
+ * skipped, never the safe logging.
  *
  * Counter-only, per the Constitution XXVI / spec §21.2 requirement: this
  * class never passes `query`/`parameters` to `MetricsService`, only the fact
@@ -34,17 +39,22 @@ import { getCurrentRequestRoute } from '../core/tenant-context/tenant-context.se
  * custom `logger` object (rather than a string preset) is supplied
  * (`LoggerFactory.create` returns a custom-object logger as-is) — so the
  * on/off + level filtering that option used to provide is reproduced here by
- * constructing the delegate `AdvancedConsoleLogger` with the same `logging`
- * value, which respects it internally.
+ * constructing the delegate with the same `logging` value.
  */
 export class MetricsAwareTypeOrmLogger implements TypeOrmLogger {
-  private readonly delegate: AdvancedConsoleLogger;
+  /**
+   * LSA-01: `SafeTypeOrmLogger`, not TypeORM's `AdvancedConsoleLogger` — the
+   * latter prints `query failed: … -- PARAMETERS: [<bound values>]` with
+   * plain `console.log`, which put row values on stdout for every failed
+   * statement regardless of `TYPEORM_LOGGING`.
+   */
+  private readonly delegate: SafeTypeOrmLogger;
 
   constructor(
-    private readonly metrics: MetricsService,
-    logging: boolean | ('query' | 'error' | 'warn')[],
+    private readonly metrics: MetricsService | undefined,
+    logging: TypeOrmLogging,
   ) {
-    this.delegate = new AdvancedConsoleLogger(logging);
+    this.delegate = new SafeTypeOrmLogger(logging);
   }
 
   logQuery(
@@ -52,7 +62,7 @@ export class MetricsAwareTypeOrmLogger implements TypeOrmLogger {
     parameters?: unknown[],
     queryRunner?: QueryRunner,
   ): void {
-    this.metrics.recordDbQuery(getCurrentRequestRoute() ?? 'unknown');
+    this.metrics?.recordDbQuery(getCurrentRequestRoute() ?? 'unknown');
     this.delegate.logQuery(query, parameters, queryRunner);
   }
 
@@ -62,12 +72,7 @@ export class MetricsAwareTypeOrmLogger implements TypeOrmLogger {
     parameters?: unknown[],
     queryRunner?: QueryRunner,
   ): void {
-    this.delegate.logQueryError(
-      error as string,
-      query,
-      parameters,
-      queryRunner,
-    );
+    this.delegate.logQueryError(error, query, parameters, queryRunner);
   }
 
   logQuerySlow(
@@ -235,17 +240,13 @@ export async function typeOrmFactory(
     // `logging` entirely (see `MetricsAwareTypeOrmLogger`'s docstring), so
     // the on/off + level behavior `logging` used to provide is reproduced by
     // constructing the logger with the identical value below.
-    logger: metrics
-      ? new MetricsAwareTypeOrmLogger(
-          metrics,
-          logging ? ['query', 'error', 'warn'] : ['error'],
-        )
-      : undefined,
-    logging: metrics
-      ? undefined
-      : logging
-        ? ['query', 'error', 'warn']
-        : ['error'],
+    // Always a custom logger (LSA-01): with no `MetricsService` the counter is
+    // simply skipped, but query errors still go through the value-free
+    // `SafeTypeOrmLogger` instead of TypeORM's parameter-printing default.
+    logger: new MetricsAwareTypeOrmLogger(
+      metrics,
+      logging ? ['query', 'error', 'warn'] : ['error'],
+    ),
     ssl,
     extra: {
       // Default raised 10 → 15 (Phase 0 correction, measured — see

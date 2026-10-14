@@ -58,11 +58,13 @@ describe('typeOrmFactory', () => {
     expect((options as { logging?: unknown }).logging).toBeUndefined();
   });
 
-  it('falls back to the plain `logging` array (no counter) when no MetricsService is supplied — existing callers unaffected', async () => {
+  it('still wires the safe logger (no counter) when no MetricsService is supplied — never TypeORM\'s parameter-printing default (LSA-01)', async () => {
     const config = createMockConfigService(baseEnv);
     const options = await typeOrmFactory(config as any);
-    expect((options as { logger?: unknown }).logger).toBeUndefined();
-    expect((options as { logging?: unknown }).logging).toEqual(['error']);
+    expect((options as { logger?: unknown }).logger).toBeInstanceOf(
+      MetricsAwareTypeOrmLogger,
+    );
+    expect((options as { logging?: unknown }).logging).toBeUndefined();
   });
 });
 

@@ -12,7 +12,7 @@ import { AppError } from '../errors/app-error';
 import { normalizeException } from '../errors/error-normalizer';
 import type { NormalizedError } from '../errors/error-normalizer';
 import { ErrorResponseBody } from '../interfaces/error-response.interface';
-import { sanitizeForLog, sanitizeUrlForLog } from '../utils/sanitize.util';
+import { queryKeysForLog, sanitizeForLog } from '../utils/sanitize.util';
 import { scrubText, summarizeBodyForLog } from '../utils/log-scrubber.util';
 import { formatClientIp, routeTemplate } from '../logging/http-access-log';
 import { LOG_EVENT } from '../logging/log-events';
@@ -160,10 +160,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
     // recipient ("invalid input syntax for type uuid: '0501234567'") — scrub
     // by shape before it is written (residency plan P7).
     const message = scrubText(
-      rawMessage ??
-        (Array.isArray(normalized.message)
-          ? normalized.message.join('; ')
-          : normalized.message),
+      withoutRawUrl(
+        rawMessage ??
+          (Array.isArray(normalized.message)
+            ? normalized.message.join('; ')
+            : normalized.message),
+        request.method,
+        route,
+      ),
     );
 
     const payload: Record<string, unknown> = {
@@ -172,9 +176,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
       request_id: requestId,
       method: request.method,
       route,
-      // Query string may carry a free-text search term (e.g. a customer's
-      // national ID) — redact those values before they reach the log.
-      path: sanitizeUrlForLog(request.originalUrl),
+      // LSA-06: never the raw URL. Path parameters (`/by-phone/<number>`) and
+      // query VALUES (search terms, names, phones) are whatever the caller
+      // typed; `route` is the matched template and `query_keys` the parameter
+      // NAMES only — enough to see which filters were used.
+      query_keys: queryKeysForLog(request.originalUrl),
       status,
       code: normalized.code,
       user_id: principal?.id,
@@ -207,7 +213,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
     // Security events carry the source address (trusted-proxy aware `req.ip`)
     // so bursts can be attributed and alerted on; ordinary failures do not.
     if (classification.security) {
-      payload.client_ip = formatClientIp(request.ip, 'full');
+      // LSA-08: the /24 (/48) network, not the full address joined to a user
+      // and clinic. Browser traffic arrives through the Vercel rewrite, so for
+      // it this is Vercel's shared egress network, not the end user's.
+      payload.client_ip = formatClientIp(request.ip, 'truncated');
       if (classification.reason) payload.reason = classification.reason;
     }
 
@@ -215,6 +224,19 @@ export class AllExceptionsFilter implements ExceptionFilter {
     else if (classification.level === 'info') this.logger.log(payload);
     else this.logger.warn(payload);
   }
+}
+
+/**
+ * Nest's router 404 is `Cannot GET /the/raw/path?with=query` — the caller's
+ * URL inside the MESSAGE, which bypassed the `path` redaction (LSA-06). The
+ * method and route template carry the same diagnostic without the values.
+ */
+const RAW_URL_MESSAGE_RE = /^Cannot [A-Z]{3,7} \S*/;
+
+function withoutRawUrl(message: string, method: string, route: string): string {
+  return RAW_URL_MESSAGE_RE.test(message)
+    ? message.replace(RAW_URL_MESSAGE_RE, `Cannot ${method} ${route}`)
+    : message;
 }
 
 interface FailureClassification {

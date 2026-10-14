@@ -115,10 +115,12 @@ describe('sanitizeForLog', () => {
 
   it('recurses into nested objects and arrays', () => {
     const out = sanitizeForLog({
-      user: { name: 'x', token: 't' },
+      user: { name: 'x', label: 'y', token: 't' },
       items: [{ secret: 's', ok: 1 }],
     }) as any;
-    expect(out.user.name).toBe('x');
+    // LSA-04: `name` is now on the exact PII list (a patient/staff name).
+    expect(out.user.name).toBe('[REDACTED]');
+    expect(out.user.label).toBe('y');
     expect(out.user.token).toBe('[REDACTED]');
     expect(out.items[0].secret).toBe('[REDACTED]');
     expect(out.items[0].ok).toBe(1);

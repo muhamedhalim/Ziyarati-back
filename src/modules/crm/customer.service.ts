@@ -420,7 +420,7 @@ export class CustomerService {
    * Tenant-scoped search across name/email/phone/national_id (partial) + optional
    * tag filter. `national_id` is sensitive: it is matched here but never logged —
    * the term can reach a log only via the request URL, which the exception filter
-   * redacts (`sanitizeUrlForLog`). Every OR branch spreads `base`, so tenant,
+   * never logs (route template + `query_keys` names only, LSA-06). Every OR branch spreads `base`, so tenant,
    * active and tag filters apply to a national_id match exactly as to the others.
    */
   async search(tenantId: string, dto: SearchCustomersDto) {

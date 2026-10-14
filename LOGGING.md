@@ -119,8 +119,10 @@ or clinician typed. Don't log a failure you are about to rethrow — its owner l
 
 ## 6. Request IDs and correlation
 
-1. `X-Request-ID` from the caller is honoured only if it matches `^[A-Za-z0-9._:-]{1,128}$`; anything else
-   (too long, spaces, quotes, CR/LF) is replaced by a UUID. The id is returned in the `X-Request-ID` response
+1. `X-Request-ID` from the caller is honoured only if it matches `^[A-Za-z0-9._:-]{1,128}$` **and** looks
+   machine-generated — it contains a UUID or a 16+ character run mixing letters and digits, and has no phone/
+   e-mail/ID shape (LSA-09). Anything else (too long, spaces, quotes, CR/LF, a chosen word or number such as a
+   phone) is replaced by a UUID. The id is returned in the `X-Request-ID` response
    header and in every error body (`requestId`).
 2. It is stored in the request's AsyncLocalStorage context, so every log line written while handling the request —
    across `await`s — carries `request_id`, plus `user_id`/`tenant_id` once authentication has run.
@@ -147,28 +149,42 @@ The per-processor `@OnWorkerEvent('failed')` lines and `QueueMonitor`'s QueueEve
 Layers, in order:
 1. **Allow-listing at the source.** The access log reads only method, route template, status, duration, response
    size, the authenticated principal and the trusted-proxy client address. No headers, cookies, bodies or query
-   strings. The exception filter logs a body's *shape* only (`[string:24]`), never its text. Business events log ids.
+   strings. The exception filter logs the route **template** and the query-parameter **names** (`query_keys`),
+   never the raw URL, a query value or a path parameter (LSA-06); a body's *shape* only (`[string:24]`,
+   `[number]`, user-chosen keys as `[key:N]`, LSA-07), never its text. Business events log ids.
+   **Structured fields are allow-listed** (`sanitizeLogFields`, LSA-04): a string survives only under an
+   identifier/enum key (`*_id`, `status`, `code`, `provider`, …) or when it is itself a machine token
+   (`meta_graph`, `RATE_LIMITED`, `msg_4fA9`); free text becomes `[string:N]`; 4–8 bare digits under a neutral
+   key become `[digits:N]`; 7+ digit integers under a neutral key `[NUMBER]`. Caller fields can never replace
+   the context's `request_id`/`user_id`/`tenant_id`/`trace_id` (LSA-10), and a record is capped at 32 KB (LSA-11).
+   TypeORM never prints SQL or parameters: a failed/slow query is one `database.query.failed`/`.slow` line with
+   verb, table, SQLSTATE and constraint only (`SafeTypeOrmLogger`, LSA-01).
 2. **Never serialize objects.** Class instances (requests, sockets, ORM entities) become `[ClassName]`.
 3. **Key-name redaction** (`sanitize.util.ts`): password, secret, token, authorization, api key, cookie, card/cvv/
    iban/account numbers, ssn, mfa/otp/totp, recovery/backup codes, session ids, signatures, private keys,
    credentials, and exact PII names (email, phone, names, national id, notes, diagnosis, symptoms, medications, …),
    in any naming style (`access_token`, `refreshToken`, `X-Api-Key`, nested objects, arrays).
 4. **Value-shape scrubbing** (`log-scrubber.util.ts`) on every string, message and stack: emails, 9–19-digit runs
-   (phones, national/Iqama ids, cards — incl. Arabic-Indic digits), JWTs, bearer/basic credentials, signed-URL and
-   token query parameters, Postgres row values.
+   (phones, national/Iqama ids, cards — incl. Arabic-Indic digits), bracketed/dotted phones, bare 7–8 digit local
+   numbers, `%2B`-encoded `+`, JWTs, bearer/basic credentials, `Cookie:` headers, provider keys (`sk-…`,
+   `sk_live_…`, `AKIA…`), OTPs next to the word that names them, public IPv4 (kept as /24), signed-URL and token
+   query parameters, Postgres row values (including nested `Key (lower(x))=(…)`).
 5. **Injection safety.** Output is JSON (control characters escaped); `message` additionally has CR/LF/control
    characters replaced, so a value can never forge a second line.
 6. **Read-side backstop (CloudWatch only):** the log-group data-protection policy masks e-mails, Saudi mobile
-   numbers, national ids and JWTs for principals without `logs:Unmask`.
+   numbers, national ids, Egyptian ids, JWTs, signed-URL signatures and provider keys for principals without
+   `logs:Unmask`. **As of 2026-10-14 it is NOT applied in production** — see docs/LOGGING-PRIVACY-REMEDIATION.md.
 
 **Verify:** `npx jest src/common/logging/redaction src/common/logging/structured-logger` (fake secrets/PII pushed
 through the real logger; asserts none reaches the output).
 
-**Limits — not claimed away:** a secret under an *unrecognised key* whose value has *no recognisable shape* (e.g.
-`{ foo: 'hunter2' }`) is not caught; short numbers (< 9 digits) inside free text are kept; key matching is
-deliberately broad and can hide harmless fields (`signatureValid`). The allow-list/no-objects rules are the primary
-defence; the deny-lists are the backstop. Client IPs are personal data: full IPs appear only on security events
-(failed logins, 401/403/429); the access log truncates them (`LOG_ACCESS_CLIENT_IP`).
+**Limits — not claimed away:** the `message` text, error messages and stacks are shape-scrubbed only — a name or
+clinical wording interpolated into a message (`` `send failed for ${patient.name}` ``, `${err.message}` of a
+provider error that echoes patient text) is **not** caught; call sites must log ids and error codes instead. A
+single machine-token-shaped value with a digit under `code`/`reason`/an id key survives. Key matching is
+deliberately broad and can hide harmless fields (`signatureValid`). Client IPs are personal data: every log line
+carries at most the /24 (/48) network (`LOG_ACCESS_CLIENT_IP=full` is an explicit operator opt-in for the access
+log only); for browser traffic that network is Vercel's shared egress, not the user's (LSA-08).
 
 **Tenant isolation:** `tenant_id` comes only from the authenticated principal (or a job whose tenant/actor was
 re-authorized by `runInTenantContext`). Logs are operator-only (IAM on CloudWatch, Grafana login locally); there is
@@ -189,7 +205,9 @@ no tenant-facing log endpoint.
 | `QUEUE_LOG_COMPLETED` | `false` | legacy per-job completion lines |
 | `OTEL_ENABLED` | `false` | turns tracing on (§11) |
 | `OTEL_TRACES_SAMPLER_ARG` | `0.1` deployed / `1` local | root sampling ratio |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | e.g. `http://tempo:4318` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | e.g. `http://tempo:4318` locally; **deployed: must be `https://`** |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | — | overrides the base endpoint for traces (same rules) |
+| `OTEL_ALLOWED_COLLECTOR_HOSTS` | — | comma-separated hostnames; deployed tracing refuses any other host (LSA-03) |
 | `OTEL_EXPORTER_OTLP_HEADERS` | — | e.g. `authorization=Bearer%20<token>` for an authenticated collector |
 | `METRICS_TOKEN` | — | bearer token for `/api/v1/metrics` and the worker's `:9091/metrics` (fail-closed in production) |
 
@@ -256,10 +274,13 @@ Labels in Loki are only `service`, `env`, `level`. Everything else (`request_id`
 
 ### Tracing and data residency
 Tracing is an **egress path**: with `OTEL_ENABLED=true` the app sends span data (route templates, SQL text without
-parameters, Redis command names, provider hosts) to `OTEL_EXPORTER_OTLP_ENDPOINT`. The subprocessor egress scan
-(`subprocessor-egress.spec.ts`) does not detect it (the exporter is loaded lazily), so treat it as a residency
-decision: point it only at a self-hosted collector in the same region (e.g. an in-VPC Tempo/ADOT), never a
-third-party SaaS endpoint, unless the subprocessor register is updated first.
+parameters, Redis command names, provider hosts) to the OTLP endpoint. Every span is sanitized before export
+(`SanitizingSpanProcessor`, LSA-03): route templates / `:param` paths only, no client address, user agent,
+headers, exception message or stack, SQL string literals replaced, attributes outside the semantic-convention
+allow-list dropped. In production/staging, `startTracing` **refuses to start** unless the endpoint is `https://`
+and its host is in `OTEL_ALLOWED_COLLECTOR_HOSTS`. `tracing.ts` is registered in `subprocessor-egress.spec.ts` as
+an internal (in-VPC collector) egress. `OTEL_ENABLED` stays unset in deployed environments until the conditions
+in docs/LOGGING-PRIVACY-REMEDIATION.md §OpenTelemetry are met.
 
 ### Correlating logs with traces
 With `OTEL_ENABLED=true`, lines written inside a sampled span carry `trace_id`. In Grafana, a `trace_id` in a Loki
@@ -311,7 +332,7 @@ scraper (CloudWatch agent sidecar or Amazon Managed Prometheus) is a follow-up t
 | `critical-fatal-process-error` | count `{ $.level = "fatal" }` | ≥ 1 in 5 min | §12 Fatal crash |
 | `warning-app-5xx-ratio` | `100 × Http5xx / HttpRequests` from access lines | > `http_5xx_ratio_percent` (2) with ≥ `http_5xx_min_requests` (50) per `http_5xx_period_seconds` (300 s); 2 of 3 periods | §12 5xx ratio |
 | `warning-failed-login-burst` | count `auth.login.failed` | ≥ `failed_login_burst_threshold` (20) / 5 min | §12 Failed-login burst |
-| `warning-failed-logins-single-ip` | Contributor Insights top `client_ip` | ≥ `failed_login_ip_threshold` (10) / 5 min | WAF block candidate |
+| `warning-failed-logins-single-ip` | Contributor Insights top `client_ip` (/24) | ≥ `failed_login_ip_threshold` (10) / 5 min | **off by default** (`enable_failed_login_ip_rule`, LSA-08): browser traffic shares Vercel's egress network |
 | `warning-refresh-token-reuse` | count `auth.refresh.reuse_detected` | ≥ 1 / 5 min | check `user_id`, `client_ip` |
 | `critical-{api,worker}-logs-silent` | count `app.heartbeat` | < 1 for 10 min (missing = breaching) | §12 Missing logs |
 | `warning-provider-failures-<provider>` | `ProviderFailures{Provider}` | > 10 / 5 min for 10 min | §12 Provider failures |

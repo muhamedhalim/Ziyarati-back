@@ -3,6 +3,8 @@ import { DataSource } from 'typeorm';
 import { join } from 'node:path';
 import type { TlsOptions } from 'node:tls';
 
+import { SafeTypeOrmLogger } from '../common/logging/typeorm-safe-logger';
+
 /**
  * Fixed Postgres advisory-lock id serializing migration runs across every
  * process root (API + worker) and every replica of each (gap-closure — see
@@ -50,7 +52,9 @@ export async function runMigrationsWithAdvisoryLock(
     // connection that opens FIRST on any boot, before the runtime
     // DataSource exists, so it must never diverge from it.
     ssl,
-    logging: ['error'],
+    // LSA-01: TypeORM's default console logger prints failing statements
+    // with every bound parameter; the safe logger writes SQLSTATE/table only.
+    logger: new SafeTypeOrmLogger(['error']),
   });
 
   await migrationDataSource.initialize();

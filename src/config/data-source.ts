@@ -1,6 +1,7 @@
 import { DataSource } from 'typeorm';
 import { join } from 'node:path';
 import { databaseSslOptions } from './database-ssl';
+import { SafeTypeOrmLogger } from '../common/logging/typeorm-safe-logger';
 
 // Invoke the migration CLI with env preloaded, e.g.
 //   node -r dotenv/config ./node_modules/typeorm/cli.js migration:run -d dist/config/data-source.js
@@ -30,4 +31,7 @@ export default new DataSource({
   // defensive "exactly one CA source" check rather than merely duplicating
   // the Joi schema's.
   ssl: databaseSslOptions(process.env),
+  // LSA-01: a failed statement is reported as SQLSTATE/table only — never
+  // TypeORM's `-- PARAMETERS: [...]` console output.
+  logger: new SafeTypeOrmLogger(['error']),
 });

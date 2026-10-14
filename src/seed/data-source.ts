@@ -3,6 +3,8 @@ import { join } from 'path';
 import * as dotenv from 'dotenv';
 import { DataSource, DataSourceOptions } from 'typeorm';
 
+import { SafeTypeOrmLogger } from '../common/logging/typeorm-safe-logger';
+
 // Load .env before reading any connection settings.
 dotenv.config();
 
@@ -48,5 +50,8 @@ export const SeedDataSource = new DataSource({
   // any checkout that has an `entities/**/*.spec.ts` file.
   entities: [join(__dirname, '..', 'entities', '**', '!(*.spec).{ts,js}')],
   synchronize: false,
-  logging: process.env.DB_LOGGING === 'true',
+  // LSA-01: never TypeORM's parameter-printing console logger.
+  logger: new SafeTypeOrmLogger(
+    process.env.DB_LOGGING === 'true' ? ['query', 'error', 'warn'] : ['error'],
+  ),
 });

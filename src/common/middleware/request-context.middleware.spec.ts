@@ -20,11 +20,23 @@ describe('requestContext middleware', () => {
     expect(next).toHaveBeenCalled();
   });
 
-  it('honours an incoming X-Request-Id for cross-service tracing', () => {
-    const { req, res, next } = buildReqRes({ [REQUEST_ID_HEADER]: 'upstream-id' });
+  it('honours an incoming machine-generated X-Request-Id for cross-service tracing', () => {
+    const upstream = 'gw-3f2b8c1e-aaaa-4bbb-8ccc-1234567890ab';
+    const { req, res, next } = buildReqRes({ [REQUEST_ID_HEADER]: upstream });
     requestContext(req, res, next);
-    expect(req.requestId).toBe('upstream-id');
+    expect(req.requestId).toBe(upstream);
   });
+
+  // LSA-09: a chosen word or number is not a correlation id — it would be
+  // written verbatim into every log line of the request.
+  it.each(['upstream-id', '0599000111', '%2B966599000112', 'Zqxcanary.Patientname', 'a'.repeat(128)])(
+    'replaces a caller-chosen, non-generated id: %j',
+    (value) => {
+      const { req, res, next } = buildReqRes({ [REQUEST_ID_HEADER]: value });
+      requestContext(req, res, next);
+      expect(req.requestId).toMatch(/^[0-9a-f-]{36}$/);
+    },
+  );
 
   it('generates a new id when the incoming header is blank', () => {
     const { req, res, next } = buildReqRes({ [REQUEST_ID_HEADER]: '   ' });
@@ -41,10 +53,11 @@ describe('requestContext middleware', () => {
   });
 
   it('accepts exactly 128 chars, replaces 129', () => {
-    const ok = buildReqRes({ [REQUEST_ID_HEADER]: 'a'.repeat(128) });
+    const id128 = 'a1'.repeat(64);
+    const ok = buildReqRes({ [REQUEST_ID_HEADER]: id128 });
     requestContext(ok.req, ok.res, ok.next);
-    expect(ok.req.requestId).toBe('a'.repeat(128));
-    const bad = buildReqRes({ [REQUEST_ID_HEADER]: 'a'.repeat(129) });
+    expect(ok.req.requestId).toBe(id128);
+    const bad = buildReqRes({ [REQUEST_ID_HEADER]: `${id128}b` });
     requestContext(bad.req, bad.res, bad.next);
     expect(bad.req.requestId).toMatch(/^[0-9a-f-]{36}$/);
   });
@@ -60,7 +73,7 @@ describe('requestContext middleware', () => {
   );
 
   it('keeps ids in the common correlation shapes', () => {
-    for (const v of ['req_01HZX.abc:1-2', '3f2b8c1e-aaaa-bbbb-cccc-1234567890ab', 'trace.id_42']) {
+    for (const v of ['req_01HZXQ8V7K2M4N6P8R0T', '3f2b8c1e-aaaa-bbbb-cccc-1234567890ab', 'trace.4bf92f3577b34da6a3ce929d0e0e4736']) {
       const { req, res, next } = buildReqRes({ [REQUEST_ID_HEADER]: v });
       requestContext(req, res, next);
       expect(req.requestId).toBe(v);

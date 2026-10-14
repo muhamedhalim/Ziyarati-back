@@ -106,3 +106,6 @@ ziyaratech.backup
 
 # Observability stack: generated scrape token (never commit)
 /observability/.secrets/
+
+# LSA-17: perf-run session cookies / tokens are never committed.
+scripts/perf/load/*.txt

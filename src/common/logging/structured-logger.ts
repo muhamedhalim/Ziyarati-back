@@ -1,7 +1,7 @@
 import type { LoggerService } from '@nestjs/common';
 import pino, { type DestinationStream, type Logger as PinoLogger } from 'pino';
 
-import { sanitizeForLog } from '../utils/sanitize.util';
+import { sanitizeLogFields } from '../utils/sanitize.util';
 import { scrubText } from '../utils/log-scrubber.util';
 import { currentLogContext } from './log-context';
 import { contextToEventPrefix } from './log-events';
@@ -25,8 +25,10 @@ import {
  *
  * Redaction is the SAME seam `RedactingLogger` used (residency plan P7):
  *  - free text (message, error message, stack) is scrubbed by value shape;
- *  - structured fields go through the key-based `sanitizeForLog`, which also
- *    scrubs every string inside them;
+ *  - structured fields go through the ALLOW-LIST `sanitizeLogFields` (LSA-04):
+ *    credential/PII key names are redacted, string values survive only under
+ *    identifier/enum keys or when they are machine tokens (free text becomes
+ *    `[string:N]`), and every kept string is shape-scrubbed;
  *  - context fields (request/user/tenant/job/trace ids) come only from
  *    `currentLogContext()`, i.e. from authenticated or authorized state.
  *
@@ -61,6 +63,30 @@ export interface StructuredLoggerOptions {
 }
 
 const MAX_MESSAGE_LENGTH = 8_192;
+/**
+ * LSA-11: one serialized record may not exceed this (CloudWatch's hard limit
+ * is 256 KB per event). Over it, the record keeps its identity, event,
+ * message and error summary and drops the structured fields.
+ */
+const MAX_RECORD_BYTES = 32_768;
+/**
+ * LSA-10: identity/correlation keys owned by `currentLogContext()` (from
+ * authenticated or authorized state). When the context has a value, a
+ * caller's field of the same name cannot replace it; a differing caller value
+ * is kept as `data_<key>` so nothing is silently lost.
+ */
+const CONTEXT_KEYS = [
+  'request_id',
+  'user_id',
+  'tenant_id',
+  'platform_admin',
+  'trace_id',
+  'span_id',
+  'queue',
+  'job_name',
+  'job_id',
+  'attempt',
+];
 const EVENT_RE = /^[a-z0-9_]+(?:\.[a-z0-9_]+){1,5}$/;
 /** Base fields a caller's structured fields may never overwrite. */
 const RESERVED_KEYS = new Set([
@@ -262,18 +288,61 @@ export class StructuredLogger implements LoggerService {
         };
       else if (!error.stack) error.stack = scrubText(stack);
     }
-    if (extras.length) fields.extra = extras.map((x) => sanitizeValue(x));
+    if (extras.length)
+      fields.extra = extras.map((x) =>
+        x instanceof Error
+          ? serializeError(x, false)
+          : sanitizeLogFields({ extra: x }).extra,
+      );
 
+    const ctx = currentLogContext();
+    for (const key of CONTEXT_KEYS) {
+      if (ctx[key] === undefined || !(key in fields)) continue;
+      if (fields[key] !== ctx[key]) fields[`data_${key}`] = fields[key];
+      delete fields[key];
+    }
     const record: Record<string, unknown> = {
-      ...currentLogContext(),
       ...fields,
+      ...ctx,
       event: event ?? `${contextToEventPrefix(context)}.log`,
       message: cleanText(text),
     };
     if (context) record.context = cleanText(context).slice(0, 128);
     if (error) record.error = error;
-    return record;
+    return capRecordSize(record, ctx);
   }
+}
+
+/** LSA-11: bounded record size; never throws. */
+function capRecordSize(
+  record: Record<string, unknown>,
+  ctx: Record<string, unknown>,
+): Record<string, unknown> {
+  let size: number;
+  try {
+    size = Buffer.byteLength(JSON.stringify(record), 'utf8');
+  } catch {
+    return record; // the caller's catch turns this into logger.write_failed
+  }
+  if (size <= MAX_RECORD_BYTES) return record;
+  const error = record.error as SerializedError | undefined;
+  const capped: Record<string, unknown> = {
+    ...ctx,
+    event: record.event,
+    message: String(record.message ?? '').slice(0, 2_048),
+    truncated: true,
+    original_bytes: size,
+  };
+  if (record.context) capped.context = record.context;
+  if (error) {
+    capped.error = {
+      type: error.type,
+      message: error.message.slice(0, 2_048),
+      ...(error.code ? { code: error.code } : {}),
+      ...(error.stack ? { stack: error.stack.slice(0, 8_192) } : {}),
+    };
+  }
+  return capped;
 }
 
 /**
@@ -338,30 +407,20 @@ function sanitizeFields(
       out[safeKey] = value;
       continue;
     }
-    // Wrap so the key itself is checked by the key-based redactor too.
-    out[safeKey] = (
-      sanitizeForLog({ [key]: sanitizeValue(value) }) as Record<string, unknown>
-    )[key];
+    if (value instanceof Error) {
+      // Same treatment as the top-level `error`: type + shape-scrubbed message.
+      out[safeKey] = serializeError(value, false);
+      continue;
+    }
+    // LSA-04: allow-list, not deny-list — the key decides whether a string
+    // value is operational; free text becomes `[string:N]` (sanitize.util).
+    // Raw value in, so nested entities/requests are still seen as instances.
+    const gated = sanitizeLogFields({ [key]: value });
+    const [onlyKey] = Object.keys(gated);
+    if (onlyKey !== undefined)
+      out[onlyKey === key ? safeKey : onlyKey] = gated[onlyKey];
   }
   return out;
-}
-
-/** Errors inside fields become serialized errors; everything else is left for `sanitizeForLog`. */
-function sanitizeValue(value: unknown): unknown {
-  if (value instanceof Error) return serializeError(value, false);
-  if (value instanceof Date)
-    return Number.isNaN(value.getTime()) ? null : value.toISOString();
-  if (typeof value === 'bigint') return value.toString();
-  if (
-    value !== null &&
-    typeof value === 'object' &&
-    !Array.isArray(value) &&
-    !isPlainObject(value)
-  ) {
-    // Never serialize class instances (ORM entities, requests, sockets) — name only.
-    return `[${(value as object).constructor?.name ?? 'Object'}]`;
-  }
-  return sanitizeForLog(value);
 }
 
 export function serializeError(
@@ -414,7 +473,7 @@ function safeString(value: unknown): string {
   try {
     if (typeof value === 'string') return value;
     if (typeof value === 'function') return '[function]';
-    const json = JSON.stringify(sanitizeForLog(value));
+    const json = JSON.stringify(sanitizeLogFields({ value }).value);
     return json ?? String(value);
   } catch {
     return '[unserializable]';

@@ -115,13 +115,13 @@ locals {
       }
       "warning-job-retry-storm" = {
         metric = "JobRetries", dims = {}, stat = "Sum"
-        op     = "GreaterThan", threshold = 100, period = 300, evals = 2, missing = "notBreaching"
+        op     = "GreaterThanThreshold", threshold = 100, period = 300, evals = 2, missing = "notBreaching"
         desc   = "L-07: > 100 job retries per 5 min for 10 min — a dependency is failing and jobs are backing off. Query 'failed-jobs'."
       }
     },
     { for p in var.alarm_providers : "warning-provider-failures-${p}" => {
       metric = "ProviderFailures", dims = { Provider = p }, stat = "Sum"
-      op     = "GreaterThan", threshold = var.provider_failure_threshold, period = 300, evals = 2, missing = "notBreaching"
+      op     = "GreaterThanThreshold", threshold = var.provider_failure_threshold, period = 300, evals = 2, missing = "notBreaching"
       desc   = "L-08: > ${var.provider_failure_threshold} ${p} 5xx/429/timeout/network failures per 5 min for 10 min. Query 'provider-failures'; check the provider status page and NAT egress."
     } },
     # A process that stops writing logs (hung, crash-looping before logging, or
@@ -222,7 +222,7 @@ resource "aws_cloudwatch_contributor_insight_rule" "failed_logins_by_ip" {
 resource "aws_cloudwatch_metric_alarm" "failed_logins_single_ip" {
   count               = var.enable_failed_login_ip_rule ? 1 : 0
   alarm_name          = "${var.name}-warning-failed-logins-single-ip"
-  alarm_description   = "L-03b: one source address made >= ${var.failed_login_ip_threshold} failed logins in 5 min. Query 'failed-logins-by-ip'; consider a WAF block for that address."
+  alarm_description   = "L-03b: one source address made >= ${var.failed_login_ip_threshold} failed logins in 5 min. Query 'failed-logins-by-ip'; client_ip is a /24 or /48 network, and for browser traffic the Vercel egress network: confirm the source before any WAF block."
   comparison_operator = "GreaterThanOrEqualToThreshold"
   threshold           = var.failed_login_ip_threshold
   evaluation_periods  = 1

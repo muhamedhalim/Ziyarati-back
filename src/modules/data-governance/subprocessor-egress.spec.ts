@@ -88,6 +88,12 @@ describe('subprocessor register ↔ code', () => {
     // The log event name `http.request.completed` matches `https?\.request`;
     // neither file makes a call (LOGGING.md).
     'common/logging/log-events.ts': 'internal',
+    // OTLP trace export (OFF unless OTEL_ENABLED=true). In a deployed
+    // environment it refuses to start unless the endpoint is https:// to a
+    // host in OTEL_ALLOWED_COLLECTOR_HOSTS — an in-VPC collector, never a
+    // vendor (LOGGING-PRIVACY-REMEDIATION LSA-03). A SaaS trace backend would
+    // need its own register entry before it could be allow-listed.
+    'common/logging/tracing.ts': 'internal',
     'main.ts': 'internal',
     'metrics/start-metrics-http-server.ts': 'internal',
     'modules/ai-realtime/ws-handshake-admission.ts': 'internal',

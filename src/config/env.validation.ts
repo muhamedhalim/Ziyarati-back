@@ -1002,6 +1002,12 @@ export const validate = (config: Record<string, unknown>) => {
     OTEL_ENABLED: Joi.string().valid('true', 'false'),
     OTEL_TRACES_SAMPLER_ARG: Joi.number().min(0).max(1),
     OTEL_EXPORTER_OTLP_ENDPOINT: Joi.string().uri({ scheme: ['http', 'https'] }).allow(''),
+    // LSA-03: tracing.ts refuses to start in production/staging unless the
+    // endpoint is https:// AND its host is listed here (comma-separated).
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: Joi.string()
+      .uri({ scheme: ['http', 'https'] })
+      .allow(''),
+    OTEL_ALLOWED_COLLECTOR_HOSTS: Joi.string().allow(''),
     CAMPAIGN_GLOBAL_MAX_PER_SEC: Joi.number().min(1),
     DLQ_POLL_MS: Joi.number().integer().min(1),
     DLQ_WARN_THRESHOLD: Joi.number().integer().min(0),

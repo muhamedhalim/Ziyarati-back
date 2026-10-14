@@ -309,8 +309,9 @@ describe('AllExceptionsFilter', () => {
 
         const logged = JSON.stringify(errorSpy.mock.calls[0]?.[0]);
         expect(logged).not.toContain('29801011234567');
-        // Operator can still see the route and the non-sensitive filters.
-        expect(logged).toContain('/api/v1/crm/customers/search?q=[REDACTED]&page=2&limit=20');
+        // Operator can still see WHICH filters were used — names only (LSA-06).
+        expect((errorSpy.mock.calls[0]?.[0] as any).query_keys).toEqual(['limit', 'page', 'q']);
+        expect((errorSpy.mock.calls[0]?.[0] as any).path).toBeUndefined();
         errorSpy.mockRestore();
       });
 

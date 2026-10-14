@@ -224,6 +224,8 @@ data "aws_iam_policy_document" "tf_plan_deny" {
       "logs:StartQuery",
       "logs:GetQueryResults",
       "logs:StartLiveTail",
+      # LSA-16: never see the original of a masked log event.
+      "logs:Unmask",
     ]
     resources = ["*"]
   }
@@ -288,4 +290,23 @@ resource "aws_iam_role" "tf_apply" {
 resource "aws_iam_role_policy_attachment" "tf_apply_admin" {
   role       = aws_iam_role.tf_apply.name
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AdministratorAccess"
+}
+
+# LSA-16: AdministratorAccess includes logs:Unmask, which would show the
+# original of every masked identifier in every log group. Terraform manages the
+# data-protection POLICY; it never needs to read unmasked content. Unmasking is
+# break-glass only (docs/LOGGING-PRIVACY-REMEDIATION.md), not a side effect of deploying.
+data "aws_iam_policy_document" "tf_apply_no_unmask" {
+  statement {
+    sid       = "NoUnmask"
+    effect    = "Deny"
+    actions   = ["logs:Unmask"]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "tf_apply_no_unmask" {
+  name   = "deny-log-unmask"
+  role   = aws_iam_role.tf_apply.id
+  policy = data.aws_iam_policy_document.tf_apply_no_unmask.json
 }

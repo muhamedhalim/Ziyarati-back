@@ -49,13 +49,59 @@ const DIGIT_RUN_RE = new RegExp(
 // identifier; timestamps in messages are worth keeping.
 const EPOCH_MS_RE = /^1\d{12}$/;
 
-// PostgreSQL driver detail that quotes row values.
-const PG_KEY_DETAIL_RE = /\bKey \(([^)]*)\)=\(([^)]*)\)/g;
+// PostgreSQL driver detail that quotes row values. The column list may itself
+// contain parentheses (`lower(full_name::text)`), so both parts are matched
+// lazily up to the `)=(` separator and the phrase PostgreSQL ends the detail
+// with (LSA-05); the fallback catches any shape the first one misses.
+const PG_KEY_DETAIL_RE =
+  /\bKey \(([^\n]{1,300}?)\)=\(([^\n]*?)\)(?=\s+(?:already exists|conflicts with|is not present|is still referenced|is duplicated)|\.?\s*$|\.\s)/gm;
+const PG_KEY_DETAIL_FALLBACK_RE =
+  /(\bKey \([^\n]*?\)=\()(?!\[REDACTED\]\))[^\n]*/g;
 const PG_FAILING_ROW_RE = /\bFailing row contains \([^)]*\)/g;
 const PG_INVALID_INPUT_RE =
   /(\binvalid input (?:syntax|value) for [^:"]*:\s*)"[^"]*"/gi;
 const PG_QUOTED_VALUE_RE =
   /(\bvalue\s+)"[^"]*"(\s+(?:is out of range|too long|violates))/gi;
+
+// ─── LSA-05 additions ──────────────────────────────────────────────────── //
+// Provider credentials a provider error can echo back.
+const PROVIDER_KEY_RE =
+  /\b(?:sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{16,}|sk_(?:live|test)_[A-Za-z0-9]{8,}|rk_(?:live|test)_[A-Za-z0-9]{8,}|whsec_[A-Za-z0-9]{8,}|(?:AKIA|ASIA)[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abprs]-[A-Za-z0-9-]{10,})/g;
+// `Cookie:` / `Set-Cookie:` header text: the whole value goes.
+const COOKIE_HEADER_RE = /\b(Set-Cookie|Cookie)(\s*[:=]\s*)[^\r\n]*/gi;
+// A one-time code next to the word that names it (`OTP 482913`,
+// `verification code: 4829`, `رمز التحقق ٤٨٢٩١٣`). Bare 4–8 digit numbers
+// elsewhere — including a provider's `error code 131047` — are left alone.
+const OTP_CONTEXT_RE = new RegExp(
+  `(\\b(?:otp|one[- ]time|passcode|pin|verification)\\b|رمز|كود)([^0-9\\u0660-\\u0669\\n]{0,24})${DIGIT_CLASS}{4,8}(?![0-9])`,
+  'gi',
+);
+// Phone numbers written with brackets or dots: `(059) 900-0113`, `059.900.0114`.
+const FORMATTED_PHONE_RE =
+  /(?<![\w.])(?:\+?\(\d{2,4}\)[ .-]?\d{2,4}[ .-]?\d{3,4}|\d{3}\.\d{3}\.\d{4})(?![\w.]|\.\d)/g;
+// A bare 7–8 digit run (a local number without area code). Conservative by
+// design: this module removes when unsure.
+const SHORT_LOCAL_NUMBER_RE = new RegExp(
+  `(?<![\\w.:-])${DIGIT_CLASS}{7,8}(?![\\w-]|[.:]${DIGIT_CLASS})`,
+  'g',
+);
+// IPv4 in text. Private/loopback ranges are infrastructure and stay; a public
+// address keeps its /24 only.
+const IPV4_RE =
+  /(?<![\w.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?![\w]|\.\d)/g;
+
+function scrubIpv4(match: string, a: string, b: string, c: string): string {
+  if ([a, b, c].some((o) => Number(o) > 255)) return match;
+  const o1 = Number(a);
+  const o2 = Number(b);
+  const isPrivate =
+    o1 === 10 ||
+    o1 === 127 ||
+    (o1 === 172 && o2 >= 16 && o2 <= 31) ||
+    (o1 === 192 && o2 === 168) ||
+    (o1 === 169 && o2 === 254);
+  return isPrivate ? match : `${a}.${b}.${c}.0`;
+}
 
 /** Maps Arabic-Indic and Extended Arabic-Indic digits to ASCII; everything else is returned unchanged. */
 export function toAsciiDigits(text: string): string {
@@ -90,15 +136,25 @@ export function scrubText(input: string): string {
       : input;
 
   out = out
+    // `%2B966…` hides the `+` behind a word character (`B`), which defeats
+    // the digit look-behind; decode it first (LSA-05).
+    .replace(/%2B(?=[0-9])/gi, '+')
     .replace(PG_KEY_DETAIL_RE, `Key ($1)=([REDACTED])`)
+    .replace(PG_KEY_DETAIL_FALLBACK_RE, `$1[REDACTED])`)
     .replace(PG_FAILING_ROW_RE, 'Failing row contains ([REDACTED])')
     .replace(PG_INVALID_INPUT_RE, `$1"${R}"`)
     .replace(PG_QUOTED_VALUE_RE, `$1"${R}"$2`)
     .replace(JWT_RE, '[JWT]')
     .replace(AUTH_SCHEME_RE, `$1 ${R}`)
     .replace(SECRET_QUERY_RE, `$1${R}`)
+    .replace(PROVIDER_KEY_RE, '[SECRET]')
+    .replace(COOKIE_HEADER_RE, `$1$2${R}`)
     .replace(EMAIL_RE, '[EMAIL]')
-    .replace(DIGIT_RUN_RE, scrubDigits);
+    .replace(OTP_CONTEXT_RE, `$1$2[OTP]`)
+    .replace(IPV4_RE, scrubIpv4)
+    .replace(FORMATTED_PHONE_RE, '[NUMBER]')
+    .replace(DIGIT_RUN_RE, scrubDigits)
+    .replace(SHORT_LOCAL_NUMBER_RE, '[NUMBER]');
   return out;
 }
 
@@ -154,18 +210,22 @@ export function scrubError(err: unknown): ScrubbedError {
 const SECRET_KEY_RE =
   /password|secret|token|authorization|apikey|api_key|cookie|cvv|cvc|iban|cardnumber|creditcard|accountnumber|nationalid|national_id|ssn|email|phone|fullname|full_name|dateofbirth|date_of_birth|chronic|content|notes?|text|prompt|reply|body|diagnos|symptom|medication|allerg/i;
 
+/** A body key that is a plain identifier (a DTO field name), not user-chosen text. */
+const BODY_KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,40}$/;
+
 /**
  * Shape-only view of a request body for the error log: which fields were sent,
  * their type and length, never their text. Values whose KEY is sensitive are
- * shown as `[REDACTED]`; booleans and numbers are kept (they are what an
- * engineer needs to reproduce a validation failure and carry no free text).
+ * shown as `[REDACTED]`. Booleans are kept; numbers are NOT (LSA-07: a phone
+ * sent as a number, a weight or a blood-pressure reading is a value, not a
+ * shape) and become `[number]`. A key that is not a plain identifier — e.g. a
+ * user-defined map keyed by a symptom or a name — becomes `[key:N]`.
  * Depth and breadth are capped.
  */
 export function summarizeBodyForLog(value: unknown, depth = 0): unknown {
   if (value === null || value === undefined) return value;
   if (typeof value === 'boolean') return value;
-  if (typeof value === 'number')
-    return Number.isFinite(value) ? value : 'number';
+  if (typeof value === 'number') return '[number]';
   if (typeof value === 'string') return `[string:${value.length}]`;
   if (typeof value !== 'object') return `[${typeof value}]`;
   if (depth >= 4) return '[Truncated]';
@@ -179,8 +239,10 @@ export function summarizeBodyForLog(value: unknown, depth = 0): unknown {
 
   const out: Record<string, unknown> = {};
   const entries = Object.entries(value as Record<string, unknown>);
+  let opaque = 0;
   for (const [key, val] of entries.slice(0, 50)) {
-    out[key] = SECRET_KEY_RE.test(key)
+    const safeKey = BODY_KEY_RE.test(key) ? key : `[key:${++opaque}]`;
+    out[safeKey] = SECRET_KEY_RE.test(key)
       ? R
       : summarizeBodyForLog(val, depth + 1);
   }

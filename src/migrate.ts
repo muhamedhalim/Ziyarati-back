@@ -30,6 +30,10 @@
 import 'reflect-metadata';
 
 import AppDataSource from './config/data-source';
+import {
+  scrubFailureReason,
+  scrubText,
+} from './common/utils/log-scrubber.util';
 
 type Command = 'run' | 'show' | 'revert';
 
@@ -129,9 +133,9 @@ main()
     process.exit(0);
   })
   .catch((err: unknown) => {
-    console.error(
-      `[migrate] FAILED: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    if (err instanceof Error && err.stack) console.error(err.stack);
+    // LSA-01/LSA-12: a driver message can quote a row value
+    // (`invalid input syntax …: "<value>"`) — scrub by shape before printing.
+    console.error(`[migrate] FAILED: ${scrubFailureReason(err, 2_000)}`);
+    if (err instanceof Error && err.stack) console.error(scrubText(err.stack));
     process.exit(1);
   });

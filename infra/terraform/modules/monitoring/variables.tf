@@ -165,9 +165,9 @@ variable "failed_login_ip_threshold" {
 }
 
 variable "enable_failed_login_ip_rule" {
-  description = "Create the Contributor Insights rule (+ alarm) ranking failed logins by client_ip (~USD 0.50/month plus matched events)."
+  description = "Create the Contributor Insights rule (+ alarm) ranking failed logins by client_ip (~USD 0.50/month plus matched events). OFF by default (LSA-08): browser logins reach the API through the Vercel rewrite, so client_ip is Vercel's shared egress network for every user; the rule would rank unrelated users together and a WAF block on that address would block everyone. Enable only once the edge-token path supplies the real client address."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "alarm_providers" {

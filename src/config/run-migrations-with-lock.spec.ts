@@ -13,6 +13,8 @@ const dataSourceInstance = {
 
 jest.mock('typeorm', () => ({
   DataSource: jest.fn().mockImplementation(() => dataSourceInstance),
+  // SafeTypeOrmLogger (LSA-01) builds its dev-only echo delegate from this.
+  AdvancedConsoleLogger: jest.fn().mockImplementation(() => ({})),
 }));
 
 import { DataSource } from 'typeorm';

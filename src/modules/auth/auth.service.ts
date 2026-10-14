@@ -396,7 +396,9 @@ export class AuthService {
       message: 'Login succeeded',
       user_id: result.user.id,
       tenant_id: result.user.tenantId ?? undefined,
-      client_ip: formatClientIp(context?.ipAddress, 'full'),
+      // LSA-08: the /24 (/48) network, never the full address joined to a
+      // user and clinic; for browser traffic this is the Vercel egress anyway.
+      client_ip: formatClientIp(context?.ipAddress, 'truncated'),
     });
     return result;
   }
@@ -896,7 +898,9 @@ export class AuthService {
       event: LOG_EVENT.AUTH_REFRESH_REUSE_DETECTED,
       message: 'Rotated refresh token replayed; its token family was revoked',
       user_id: stored.user?.id,
-      client_ip: formatClientIp(context?.ipAddress, 'full'),
+      // LSA-08: network only in the log; the full address is kept in the
+      // access-controlled audit trail written just below.
+      client_ip: formatClientIp(context?.ipAddress, 'truncated'),
     });
     await this.auditRefreshReuseEvent(stored, context);
   }

@@ -74,6 +74,8 @@ export const LOG_EVENT = {
 
   // Database
   DATABASE_OPERATION_FAILED: 'database.operation.failed',
+  DATABASE_QUERY_FAILED: 'database.query.failed',
+  DATABASE_QUERY_SLOW: 'database.query.slow',
 } as const;
 
 export type LogEventName = (typeof LOG_EVENT)[keyof typeof LOG_EVENT];
