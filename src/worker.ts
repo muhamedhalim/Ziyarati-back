@@ -1,9 +1,19 @@
-import { Logger } from '@nestjs/common';
+// MUST stay the first import — see common/logging/tracing.ts.
+import './common/logging/tracing-worker';
+// Second: JSON logging for module-load-time Logger calls too (WorkerModule
+// logs its WORKER_ROLE decision while it is being imported).
+import './common/logging/logger-worker';
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 
 import { WorkerModule } from './worker.module';
-import { RedactingLogger } from './common/logging/redacting-logger';
+import { createRootLogger } from './common/logging/structured-logger';
+import { installJobInstrumentation } from './common/logging/job-instrumentation';
+import { installProviderInstrumentation } from './common/logging/provider-instrumentation';
+import { installFatalHandlers } from './common/logging/process-handlers';
+import { startHeartbeat } from './common/logging/heartbeat';
+import { LOG_EVENT } from './common/logging/log-events';
+import { isTracingEnabled, shutdownTracing } from './common/logging/tracing';
 import { MetricsService } from './metrics/metrics.service';
 import { startMetricsHttpServer } from './metrics/start-metrics-http-server';
 
@@ -26,12 +36,21 @@ process.env.PROCESS_ROLE = 'worker';
  * connections — so no job is lost on a normal deploy/restart.
  */
 async function bootstrap(): Promise<void> {
-  const logger = new Logger('Worker');
+  // Job failures log `err.message` verbatim in ~20 processors; the structured
+  // logger scrubs them all through the same seam RedactingLogger used
+  // (residency plan P7), and emits one JSON line per record. See LOGGING.md.
+  const rootLogger = createRootLogger('worker');
+  // Before the context exists: crashes during boot are logged too. Until the
+  // app is up there is nothing to close, so shutdown resolves immediately.
+  let closeApp: (reason: string) => Promise<void> = async () => undefined;
+  installFatalHandlers({ logger: rootLogger, shutdown: () => closeApp('fatal_error') });
+  // Both must run before any Worker or HTTP client is constructed.
+  installJobInstrumentation();
+  installProviderInstrumentation();
+
   const app = await NestFactory.createApplicationContext(WorkerModule, {
     bufferLogs: false,
-    // Job failures log `err.message` verbatim in ~20 processors; the redacting
-    // logger is the one place that scrubs them all (residency plan P7).
-    logger: new RedactingLogger(),
+    logger: rootLogger,
   });
 
   // Minimal /metrics listener (M14 — docs/CACHING_QUEUES_AUDIT.md), a plain
@@ -42,28 +61,46 @@ async function bootstrap(): Promise<void> {
     app.get(MetricsService),
   );
 
+  // `app.shutdown.completed` is written only after the drain really finished.
   let shuttingDown = false;
-  const shutdown = async (signal: string): Promise<void> => {
+  closeApp = async (reason: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
-    logger.log(`Received ${signal} — draining workers and shutting down…`);
+    const startedAt = Date.now();
+    rootLogger.event('info', LOG_EVENT.APP_SHUTDOWN_STARTED, `Received ${reason}; draining workers and shutting down`, { reason });
     try {
       await new Promise<void>((resolve) =>
         metricsServer.close(() => resolve()),
       );
       await app.close(); // closes processors gracefully (finishes active jobs) + monitor
-      logger.log('Worker shut down cleanly.');
-      process.exit(0);
+      await shutdownTracing();
+      rootLogger.event('info', LOG_EVENT.APP_SHUTDOWN_COMPLETED, 'Worker shut down cleanly', {
+        reason,
+        duration_ms: Date.now() - startedAt,
+      });
     } catch (err) {
-      logger.error(`Error during shutdown: ${(err as Error)?.message}`);
-      process.exit(1);
+      rootLogger.event('error', LOG_EVENT.APP_SHUTDOWN_FAILED, 'Error during shutdown', { reason, error: err });
+      throw err;
     }
   };
+  const shutdown = (signal: string): void => {
+    closeApp(signal).then(
+      () => process.exit(0),
+      () => process.exit(1),
+    );
+  };
 
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
-  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 
-  logger.log('🛠️  Worker process started — consuming BullMQ jobs');
+  startHeartbeat(rootLogger); // unref'd timer; never holds the process open
+  rootLogger.event('info', LOG_EVENT.APP_STARTUP_COMPLETED, 'Worker started; consuming BullMQ jobs', {
+    node_version: process.version,
+    log_level: rootLogger.config.level,
+    log_format: rootLogger.config.format,
+    tracing_enabled: isTracingEnabled(),
+    worker_role: process.env.WORKER_ROLE ?? 'all',
+  });
 }
 
 void bootstrap();

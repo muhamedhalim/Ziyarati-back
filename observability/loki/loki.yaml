@@ -1,0 +1,74 @@
+# Single-binary Loki for the local / verification stack (filesystem storage).
+# Retention: LOKI_RETENTION_PERIOD (default 720h = 30 days), enforced by the
+# compactor; deleted chunks are removed after retention_delete_delay.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  replication_factor: 1
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  retention_period: ${LOKI_RETENTION_PERIOD:-720h}
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+  # Bounded ingestion: a log storm is throttled (429 to the collector, which
+  # backs off) rather than exhausting the host.
+  ingestion_rate_mb: 8
+  ingestion_burst_size_mb: 16
+  per_stream_rate_limit: 4MB
+  # Labels are service / env / level only; anything more is a cardinality bug.
+  max_label_names_per_series: 6
+  max_query_series: 5000
+  allow_structured_metadata: true
+  volume_enabled: true
+  # Loki 3 would otherwise add a `service_name` index label (and detect levels)
+  # on its own; the collector already sets exactly service / env / level.
+  discover_service_name: []
+  discover_log_levels: false
+
+compactor:
+  working_directory: /loki/compactor
+  compaction_interval: 10m
+  retention_enabled: true
+  retention_delete_delay: 2h
+  delete_request_store: filesystem
+
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /etc/loki/rules
+  rule_path: /loki/rules-temp
+  alertmanager_url: http://alertmanager:9093
+  enable_api: true
+  enable_alertmanager_v2: true
+  evaluation_interval: 1m
+  ring:
+    kvstore:
+      store: inmemory
+
+analytics:
+  reporting_enabled: false

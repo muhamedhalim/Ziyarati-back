@@ -13,7 +13,8 @@ locals {
   fixed_common_env = {
     NODE_ENV                             = "production"
     PORT                                 = tostring(var.container_port)
-    NO_COLOR                             = "1" # plain-text CloudWatch lines (F-8)
+    NO_COLOR                             = "1"             # plain-text CloudWatch lines (F-8)
+    APP_ENV                              = var.environment # `env` on every log line (staging also runs NODE_ENV=production)
     AWS_REGION                           = var.aws_region
     DB_SSL_CA                            = "/app/certs/rds-global-bundle.pem"
     DB_MAX_CONNECTIONS                   = tostring(var.db.max_connections)

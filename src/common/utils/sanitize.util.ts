@@ -27,6 +27,22 @@ const SENSITIVE_KEY_PATTERNS = [
   'routingnumber',
   // National identifiers
   'ssn',
+  // MFA / one-time codes / sessions / request signing (LOGGING.md §Redaction).
+  // A 6-digit OTP is too short for the value-shape digit scrubber, so these
+  // must be caught by name.
+  'mfa',
+  'totp',
+  'otpcode',
+  'recoverycode',
+  'backupcode',
+  'passcode',
+  'pincode',
+  'securitycode',
+  'sessionid',
+  'signature',
+  'privatekey',
+  'credential',
+  'cardholder',
 ];
 
 /**
@@ -74,6 +90,12 @@ const SENSITIVE_KEY_EXACT = [
   'recipientname',
   'guestname',
   'insurancenumber',
+  // Short credential names that are too common as substrings (`footprint`,
+  // `spinner`, `company`) to match any other way.
+  'otp',
+  'pin',
+  'pan',
+  'sid',
 ];
 
 /**

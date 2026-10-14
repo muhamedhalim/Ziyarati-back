@@ -1,0 +1,49 @@
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: true
+    jsonData:
+      maxLines: 1000
+      # Click a trace_id in a log line to open the trace in Tempo.
+      derivedFields:
+        - name: trace_id
+          matcherRegex: '"trace_id":"([0-9a-f]{32})"'
+          datasourceUid: tempo
+          url: '$${__value.raw}'
+          urlDisplayLabel: Open trace
+
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    jsonData:
+      timeInterval: 15s
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      # From a span, jump to the log lines that carry its trace_id.
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: '-5m'
+        spanEndTimeShift: '5m'
+        filterByTraceID: false
+        customQuery: true
+        query: '{service=~"ziyaratech-.+"} | json | trace_id="$${__trace.traceId}"'
+
+  - name: Alertmanager
+    uid: alertmanager
+    type: alertmanager
+    access: proxy
+    url: http://alertmanager:9093
+    jsonData:
+      implementation: prometheus

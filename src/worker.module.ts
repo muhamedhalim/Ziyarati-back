@@ -26,6 +26,7 @@ import { StaffScopeModule } from './core/staff-scope/staff-scope.module';
 import { CryptoModule } from './common/crypto/crypto.module';
 import { QueueModule } from './queue/queue.module';
 import { MetricsModule } from './metrics/metrics.module';
+import { ObservabilityEventsModule } from './common/logging/observability-events.listener';
 import { SchemaGuardModule } from './config/schema-guard.module';
 import { MetricsService } from './metrics/metrics.service';
 import {
@@ -287,6 +288,8 @@ const WORKER_PROVIDERS =
     CryptoModule,
     QueueModule,
     MetricsModule,
+    // Operational log lines for committed business transitions (LOGGING.md).
+    ObservabilityEventsModule,
 
     SchemaGuardModule,
     // `QueueModule` only calls `BullModule.forRootAsync` (shared config, no

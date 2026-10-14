@@ -264,7 +264,7 @@ describe('AllExceptionsFilter', () => {
           const prodFilter = new AllExceptionsFilter();
           prodFilter.catch(new Error('leaked internal db connection string'), host);
         });
-        const logged = errorSpy.mock.calls[0]?.[0] as string;
+        const logged = JSON.stringify(errorSpy.mock.calls[0]?.[0]);
         expect(logged).toContain('leaked internal db connection string');
         errorSpy.mockRestore();
       });
@@ -281,7 +281,7 @@ describe('AllExceptionsFilter', () => {
           );
           prodFilter.catch(err, host);
         });
-        const logged = warnSpy.mock.calls[0]?.[0] as string;
+        const logged = JSON.stringify(warnSpy.mock.calls[0]?.[0]);
         expect(logged).toContain('duplicate key value violates unique constraint');
         // The client, meanwhile, only ever saw the friendly mapped message.
         expect(bodySent().message).toBe('This email is already in use');
@@ -294,7 +294,7 @@ describe('AllExceptionsFilter', () => {
           const prodFilter = new AllExceptionsFilter();
           prodFilter.catch(new Error('boom'), host);
         });
-        const logged = errorSpy.mock.calls[0]?.[0] as string;
+        const logged = JSON.stringify(errorSpy.mock.calls[0]?.[0]);
         expect(logged).toContain('[REDACTED]');
         expect(logged).not.toContain('"password":"secret"');
         errorSpy.mockRestore();
@@ -307,7 +307,7 @@ describe('AllExceptionsFilter', () => {
         request.body = {};
         filter.catch(new Error('boom'), host);
 
-        const logged = errorSpy.mock.calls[0]?.[0] as string;
+        const logged = JSON.stringify(errorSpy.mock.calls[0]?.[0]);
         expect(logged).not.toContain('29801011234567');
         // Operator can still see the route and the non-sensitive filters.
         expect(logged).toContain('/api/v1/crm/customers/search?q=[REDACTED]&page=2&limit=20');
@@ -319,7 +319,7 @@ describe('AllExceptionsFilter', () => {
         request.body = { full_name: 'Sara', national_id: '29801011234567' };
         filter.catch(new Error('boom'), host);
 
-        const logged = errorSpy.mock.calls[0]?.[0] as string;
+        const logged = JSON.stringify(errorSpy.mock.calls[0]?.[0]);
         expect(logged).not.toContain('29801011234567');
         errorSpy.mockRestore();
       });
@@ -387,8 +387,8 @@ describe('AllExceptionsFilter', () => {
             const f = new AllExceptionsFilter();
             f.catch(buildError(), host);
           });
-          const loggedJson = errorSpy.mock.calls[0]?.[0] as string;
-          const loggedTrace = errorSpy.mock.calls[0]?.[1] as string;
+          const loggedJson = JSON.stringify(errorSpy.mock.calls[0]?.[0]);
+          const loggedTrace = (errorSpy.mock.calls[0]?.[0] as any)?.error?.stack as string;
           expect(loggedJson).toContain('gatewayReason');
           expect(loggedJson).toContain('insufficient_funds_raw_provider_text');
           expect(loggedTrace).toContain('gateway.example');
@@ -429,7 +429,7 @@ describe('AllExceptionsFilter — log content (residency plan P7)', () => {
 
   afterEach(() => jest.restoreAllMocks());
 
-  const logged = (spy: jest.SpyInstance) => String(spy.mock.calls[0]?.[0]);
+  const logged = (spy: jest.SpyInstance) => JSON.stringify(spy.mock.calls[0]?.[0]);
 
   it('never logs the text of a request body, only its shape', () => {
     const spy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
@@ -472,7 +472,7 @@ describe('AllExceptionsFilter — log content (residency plan P7)', () => {
     filter.catch(err, host);
 
     const line = logged(spy);
-    const stack = String(spy.mock.calls[0]?.[1]);
+    const stack = String((spy.mock.calls[0]?.[0] as any)?.error?.stack);
     expect(line).not.toContain('sara@example.com');
     expect(stack).not.toContain('sara@example.com');
     expect(stack).toContain('Caused by');

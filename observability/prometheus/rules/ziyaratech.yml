@@ -1,0 +1,114 @@
+# Prometheus alert rules over the app's native metrics (src/metrics/metrics.service.ts).
+# Every expression uses only metrics the app actually exports. `for:` and
+# minimum-traffic guards keep startup, deploys and quiet hours from paging.
+# Thresholds are the documented defaults (LOGGING.md §Alerts) — edit here.
+groups:
+  - name: ziyaratech-http
+    rules:
+      - alert: ZiyaraTechHttp5xxRatioHigh
+        # > 2% of requests are 5xx over 5 min, only when there were >= 50 requests.
+        expr: |
+          (
+            sum by (env) (rate(http_request_duration_seconds_count{service="ziyaratech-api", status_code=~"5.."}[5m]))
+            / sum by (env) (rate(http_request_duration_seconds_count{service="ziyaratech-api"}[5m]))
+          ) > 0.02
+          and on (env)
+          sum by (env) (increase(http_request_duration_seconds_count{service="ziyaratech-api"}[5m])) >= 50
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 'API 5xx ratio above 2% ({{ $labels.env }})'
+          runbook: 'LOGGING.md §Runbooks — 5xx ratio. Loki: {service="ziyaratech-api", level="error"} | json'
+
+      - alert: ZiyaraTechApiP95LatencyHigh
+        expr: |
+          histogram_quantile(0.95, sum by (env, le) (rate(http_request_duration_seconds_bucket{service="ziyaratech-api"}[5m]))) > 1
+          and on (env)
+          sum by (env) (increase(http_request_duration_seconds_count{service="ziyaratech-api"}[5m])) >= 50
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'API p95 latency above 1 s for 10 min ({{ $labels.env }})'
+
+  - name: ziyaratech-errors
+    rules:
+      - alert: ZiyaraTechErrorLogRateHigh
+        # Elevated application error rate: > 12 error/fatal lines per minute.
+        expr: sum by (service, env) (rate(log_events_total{level=~"error|fatal"}[5m])) > 0.2
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: '{{ $labels.service }} writes > 12 error lines/min ({{ $labels.env }})'
+          runbook: "LOGGING.md §Runbooks — error rate. Loki: topk(10, sum by (event) (count_over_time({service=\"{{ $labels.service }}\", level=~\"error|fatal\"} | json [15m])))"
+
+      - alert: ZiyaraTechLoggerWriteFailures
+        expr: increase(logger_write_failures_total[15m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: '{{ $labels.service }} dropped log lines it could not serialize'
+
+  - name: ziyaratech-integrations
+    rules:
+      - alert: ZiyaraTechProviderFailures
+        expr: |
+          sum by (env, provider) (
+            increase(external_requests_total{outcome=~"server_error|rate_limited|timeout|network_error"}[5m])
+          ) > 10
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: '{{ $labels.provider }}: > 10 failed calls per 5 min for 10 min ({{ $labels.env }})'
+          runbook: 'LOGGING.md §Runbooks — provider failures. Loki: {env="{{ $labels.env }}"} | json | event="provider.request.failed" | provider="{{ $labels.provider }}"'
+
+      - alert: ZiyaraTechWhatsappAiTurnsFailing
+        expr: sum by (env) (increase(whatsapp_ai_turn_failures_total[15m])) >= 3
+        labels: { severity: warning }
+        annotations:
+          summary: 'WhatsApp AI assistant failed >= 3 turns in 15 min ({{ $labels.env }})'
+
+  - name: ziyaratech-jobs
+    rules:
+      - alert: ZiyaraTechJobFailures
+        expr: sum by (env, queue) (increase(bullmq_job_attempts_total{outcome="failed"}[15m])) >= 5
+        labels: { severity: warning }
+        annotations:
+          summary: 'Queue {{ $labels.queue }}: >= 5 jobs failed permanently in 15 min ({{ $labels.env }})'
+          runbook: 'LOGGING.md §Runbooks — failed jobs. Loki: {service="ziyaratech-worker"} | json | event="job.processing.failed" | queue="{{ $labels.queue }}"'
+
+      - alert: ZiyaraTechJobRetryStorm
+        expr: sum by (env, queue) (increase(bullmq_job_attempts_total{outcome="retry"}[5m])) > 100
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Queue {{ $labels.queue }}: > 100 retries per 5 min — a dependency is failing'
+
+      - alert: ZiyaraTechDbPoolSaturated
+        expr: max by (service, env) (db_pool_waiting) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: '{{ $labels.service }}: requests have been queueing for a DB connection for 5 min'
+
+  - name: ziyaratech-pipeline
+    rules:
+      - alert: ZiyaraTechScrapeTargetDown
+        expr: up == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: '{{ $labels.job }} is not reachable by Prometheus'
+
+      - alert: ZiyaraTechLogShippingDropping
+        # Alloy gave up on a batch after its bounded retries — lines were lost.
+        expr: sum(rate(loki_write_dropped_entries_total[5m])) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: 'The log collector is dropping lines (Loki unreachable or rejecting)'
+          runbook: 'LOGGING.md §Runbooks — missing logs.'
+
+      - alert: ZiyaraTechLokiRejectingLines
+        expr: sum by (reason) (rate(loki_discarded_samples_total[5m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Loki is discarding log lines (reason: {{ $labels.reason }})'

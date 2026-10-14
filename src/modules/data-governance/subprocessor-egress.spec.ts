@@ -85,6 +85,10 @@ describe('subprocessor register ↔ code', () => {
    * (an inbound server, or a destination check that makes no call).
    */
   const OUTBOUND: Record<string, string> = {
+    // The log event name `http.request.completed` matches `https?\.request`;
+    // neither file makes a call (LOGGING.md).
+    'common/logging/log-events.ts': 'internal',
+    'main.ts': 'internal',
     'metrics/start-metrics-http-server.ts': 'internal',
     'modules/ai-realtime/ws-handshake-admission.ts': 'internal',
     'modules/ai/providers/openai-batch.provider.ts': 'openai',

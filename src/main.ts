@@ -1,9 +1,22 @@
-import { Logger, ValidationPipe } from '@nestjs/common';
+// MUST stay the first import: optional OpenTelemetry has to patch http/pg/
+// ioredis before anything loads them (no-op unless OTEL_ENABLED=true).
+import './common/logging/tracing-api';
+// Second: JSON logging for module-load-time Logger calls too.
+import './common/logging/logger-api';
+import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
-import { RedactingLogger } from './common/logging/redacting-logger';
+import { createRootLogger } from './common/logging/structured-logger';
+import { createHttpObservabilityMiddleware, type ClientIpMode } from './common/logging/http-access-log';
+import { installProviderInstrumentation } from './common/logging/provider-instrumentation';
+import { installFatalHandlers } from './common/logging/process-handlers';
+import { startHeartbeat } from './common/logging/heartbeat';
+import { LOG_EVENT } from './common/logging/log-events';
+import { isTracingEnabled, shutdownTracing } from './common/logging/tracing';
+import { DataSource } from 'typeorm';
+import { AppRedisService } from './queue/app-redis.service';
 import { requestContext } from './common/middleware/request-context.middleware';
 import { TenantContextService } from './core/tenant-context/tenant-context.service';
 import { MetricsService } from './metrics/metrics.service';
@@ -18,10 +31,20 @@ import { buildCorsOptions, parseAllowedOrigins } from './config/cors-origins';
 import { applyTrustProxy } from './config/trust-proxy';
 
 async function bootstrap() {
-  // Every Logger call in the process goes through the redacting logger (residency plan P7).
+  // Every Logger call in the process goes through the structured logger: one
+  // JSON line per record, redacted by the same scrubber the old
+  // RedactingLogger used (residency plan P7). See LOGGING.md.
+  const rootLogger = createRootLogger('api');
+  // Crash = log once at fatal, graceful close (bounded), exit 1 → restart.
+  // Installed before the app exists so boot failures are logged too; until
+  // then there is nothing to close and shutdown resolves immediately.
+  let closeApp: (reason: string) => Promise<void> = async () => undefined;
+  installFatalHandlers({ logger: rootLogger, shutdown: () => closeApp('fatal_error') });
+  // Outbound provider latency/outcome (undici diagnostics channel) — before any client is built.
+  installProviderInstrumentation();
   const app = await NestFactory.create(AppModule, {
     rawBody: true,
-    logger: new RedactingLogger(),
+    logger: rootLogger,
   });
 
   // ---------------- Client address trust (SEC-02) ----------------
@@ -37,15 +60,18 @@ async function bootstrap() {
   // — T025's empirically-confirmed gap: ApiLoggingInterceptor sits AFTER the
   // guard chain and never sees these. Pure timing + a status-code counter,
   // no body/header access, no auth/tenant/rate-limit decision touched.
+  //
+  // The same middleware writes the one `http.request.completed` access-log
+  // line per request (route template, status, duration, request id, and the
+  // principal authentication attached) — see common/logging/http-access-log.ts.
   const metrics = app.get(MetricsService);
-  app.use((req, res, next) => {
-    const startedAt = process.hrtime.bigint();
-    res.on('finish', () => {
-      const durationSeconds = Number(process.hrtime.bigint() - startedAt) / 1e9;
-      metrics.recordHttpRequest(req.method, res.statusCode, durationSeconds);
-    });
-    next();
-  });
+  app.use(
+    createHttpObservabilityMiddleware({
+      metrics,
+      clientIpMode: (app.get(ConfigService).get<string>('LOG_ACCESS_CLIENT_IP') ??
+        'truncated') as ClientIpMode,
+    }),
+  );
 
   // ---------------- Response compression (PERF-BE-001) ----------------
   // Response-side only — wraps res.write/res.end, runs after guards/handlers
@@ -106,7 +132,7 @@ async function bootstrap() {
   // cross-origin traffic (the realtime polling fallback) is refused — so the
   // effective value has to be visible somewhere. Origins are public by
   // definition; no secret is printed.
-  new Logger('Bootstrap').log(`CORS allow-list: ${allowedOrigins.join(', ')}`);
+  rootLogger.log(`CORS allow-list: ${allowedOrigins.join(', ')}`, 'Bootstrap');
 
   // ---------------- Global Prefix ----------------
   app.setGlobalPrefix('api/v1');
@@ -184,27 +210,65 @@ async function bootstrap() {
   // leaking its Redis producer connections on every single restart rather than
   // closing them — the exact gap this closes. Mirrors `worker.ts`'s identical
   // manual SIGTERM/SIGINT handling for consistency across both processes.
-  const logger = new Logger('Bootstrap');
+  //
+  // `app.shutdown.completed` is written only AFTER app.close() resolved, so a
+  // "clean shutdown" line in the logs means the cleanup really finished.
   let shuttingDown = false;
-  const shutdown = async (signal: string): Promise<void> => {
+  closeApp = async (reason: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
-    logger.log(`Received ${signal} — closing HTTP server and cleaning up…`);
+    const startedAt = Date.now();
+    rootLogger.event('info', LOG_EVENT.APP_SHUTDOWN_STARTED, `Received ${reason}; closing HTTP server and cleaning up`, { reason });
     try {
       await app.close(); // runs onModuleDestroy on every module, incl. ProducerQueues
-      logger.log('API shut down cleanly.');
-      process.exit(0);
+      await shutdownTracing(); // flush buffered spans (bounded; no-op when tracing is off)
+      rootLogger.event('info', LOG_EVENT.APP_SHUTDOWN_COMPLETED, 'API shut down cleanly', {
+        reason,
+        duration_ms: Date.now() - startedAt,
+      });
     } catch (err) {
-      logger.error(`Error during shutdown: ${(err as Error)?.message}`);
-      process.exit(1);
+      rootLogger.event('error', LOG_EVENT.APP_SHUTDOWN_FAILED, 'Error during shutdown', { reason, error: err });
+      throw err;
     }
   };
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
-  process.on('SIGINT', () => void shutdown('SIGINT'));
+  const shutdown = (signal: string): void => {
+    closeApp(signal).then(
+      () => process.exit(0),
+      () => process.exit(1),
+    );
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 
   // ---------------- Start Server ----------------
   const port = process.env.PORT ?? 3000;
   await app.listen(port, '0.0.0.0');
+
+  // Startup is reported only once the port is bound. Dependency state is what
+  // boot itself established (TypeORM connected — boot fails otherwise; the
+  // Redis KV client's live status); the readiness probe remains the
+  // authoritative check. Never logs a URL, credential or env dump.
+  startHeartbeat(rootLogger); // unref'd timer; never holds the process open
+  rootLogger.event('info', LOG_EVENT.APP_STARTUP_COMPLETED, 'API started', {
+    port: Number(port),
+    node_version: process.version,
+    log_level: rootLogger.config.level,
+    log_format: rootLogger.config.format,
+    tracing_enabled: isTracingEnabled(),
+    cluster_workers: Number(process.env.API_CLUSTER_WORKERS ?? 1),
+    dependencies: {
+      database: safeStatus(() => (app.get(DataSource).isInitialized ? 'up' : 'down')),
+      redis: safeStatus(() => app.get(AppRedisService).application.status),
+    },
+  });
+}
+
+function safeStatus(read: () => string): string {
+  try {
+    return read();
+  } catch {
+    return 'unknown';
+  }
 }
 
 // PERF-INFRA-003 — process-level scaling. Default (API_CLUSTER_WORKERS unset

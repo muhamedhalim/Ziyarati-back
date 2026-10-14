@@ -988,6 +988,20 @@ export const validate = (config: Record<string, unknown>) => {
     QUEUE_ENV_PREFIX: Joi.string().allow('', null),
     QUEUE_BACKOFF_MAX_MS: Joi.number().integer().min(1),
     QUEUE_LOG_COMPLETED: Joi.string().valid('true', 'false'),
+    // Logging & observability (LOGGING.md). Shape only, no defaults: the
+    // logger reads these before ConfigModule exists (log-config.ts applies
+    // and re-validates the defaults itself, so a bad value can never reach a
+    // log line). LOG_FORMAT is forced to json in deployed environments.
+    LOG_LEVEL: Joi.string().valid('debug', 'info', 'warn', 'error', 'fatal', 'silent'),
+    LOG_FORMAT: Joi.string().valid('json', 'pretty'),
+    LOG_ACCESS_CLIENT_IP: Joi.string().valid('full', 'truncated', 'off'),
+    LOG_HEARTBEAT_INTERVAL_MS: Joi.number().integer().min(0),
+    SERVICE_NAME: Joi.string().pattern(/^[a-z0-9][a-z0-9-]{0,63}$/),
+    APP_ENV: Joi.string().pattern(/^[a-z0-9][a-z0-9-]{0,31}$/),
+    APP_VERSION: Joi.string().pattern(/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/),
+    OTEL_ENABLED: Joi.string().valid('true', 'false'),
+    OTEL_TRACES_SAMPLER_ARG: Joi.number().min(0).max(1),
+    OTEL_EXPORTER_OTLP_ENDPOINT: Joi.string().uri({ scheme: ['http', 'https'] }).allow(''),
     CAMPAIGN_GLOBAL_MAX_PER_SEC: Joi.number().min(1),
     DLQ_POLL_MS: Joi.number().integer().min(1),
     DLQ_WARN_THRESHOLD: Joi.number().integer().min(0),

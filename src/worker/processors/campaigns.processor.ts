@@ -57,7 +57,8 @@ export class CampaignLaunchProcessor extends WorkerHost {
 
   @OnWorkerEvent('failed')
   async onFailed(job: Job, err: Error) {
-    this.logger.error(`launch job=${job?.id} FAILED: ${err?.message}`);
+    // Logged at error by the job wrapper (common/logging/job-instrumentation.ts).
+    this.logger.debug(`launch job=${job?.id} FAILED: ${err?.message}`);
     await parkExhaustedOrPermanent(this.queue, QUEUE.CAMPAIGNS_LAUNCH, job, err, this.logger);
   }
 }
@@ -92,7 +93,8 @@ export class CampaignFanoutProcessor extends WorkerHost {
 
   @OnWorkerEvent('failed')
   async onFailed(job: Job, err: Error) {
-    this.logger.error(`fanoutChunk job=${job?.id} FAILED: ${err?.message}`);
+    // Logged at error by the job wrapper (common/logging/job-instrumentation.ts).
+    this.logger.debug(`fanoutChunk job=${job?.id} FAILED: ${err?.message}`);
     await parkExhaustedOrPermanent(this.queue, QUEUE.CAMPAIGNS_FANOUT, job, err, this.logger);
   }
 }
@@ -198,7 +200,8 @@ export class CampaignDispatchProcessor extends WorkerHost {
     const data = job?.data as CampaignProcessRecipientJob;
     const exhausted = (job?.attemptsMade ?? 0) >= (job?.opts?.attempts ?? 1);
     const permanent = err instanceof UnrecoverableError;
-    this.logger.error(
+    // Logged at error by the job wrapper (common/logging/job-instrumentation.ts).
+    this.logger.debug(
       `processRecipient job=${job?.id} recipient=${data?.recipientId} FAILED ` +
         `(attempt ${job?.attemptsMade}, permanent=${permanent}): ${err?.message}`,
     );

@@ -1,0 +1,195 @@
+{
+  "uid": "ziyaratech-overview",
+  "title": "ZiyaraTech — Service Overview",
+  "description": "Requests, errors, latency, integrations, jobs and the logging pipeline. Metrics: Prometheus (src/metrics/metrics.service.ts). Logs: Loki (LOGGING.md schema).",
+  "tags": ["ziyaratech", "observability"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "env",
+        "label": "Environment",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "query": "label_values(up{service=~\"ziyaratech-.*\"}, env)", "refId": "env" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "query": "label_values(up{service=~\"ziyaratech-.*\"}, service)", "refId": "service" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "request_id",
+        "label": "Request ID",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": "", "value": "" }
+      }
+    ]
+  },
+  "panels": [
+    { "type": "row", "title": "HTTP", "id": 100, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "collapsed": false, "panels": [] },
+    {
+      "id": 1, "type": "timeseries", "title": "Request rate by status",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "sum by (status_code) (rate(http_request_duration_seconds_count{service=\"ziyaratech-api\", env=~\"$env\"}[$__rate_interval]))", "legendFormat": "{{status_code}}" }]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "5xx ratio",
+      "description": "Share of requests answered 5xx. Alert: > 2% with >= 50 requests in 5 min.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.02 }] },
+          "custom": { "thresholdsStyle": { "mode": "line" } }
+        },
+        "overrides": []
+      },
+      "targets": [{ "refId": "A", "expr": "sum(rate(http_request_duration_seconds_count{service=\"ziyaratech-api\", env=~\"$env\", status_code=~\"5..\"}[5m])) / clamp_min(sum(rate(http_request_duration_seconds_count{service=\"ziyaratech-api\", env=~\"$env\"}[5m])), 1e-9)", "legendFormat": "5xx ratio" }]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "Latency p50 / p95 / p99",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"ziyaratech-api\", env=~\"$env\"}[$__rate_interval])))", "legendFormat": "p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"ziyaratech-api\", env=~\"$env\"}[$__rate_interval])))", "legendFormat": "p95" },
+        { "refId": "C", "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"ziyaratech-api\", env=~\"$env\"}[$__rate_interval])))", "legendFormat": "p99" }
+      ]
+    },
+
+    { "type": "row", "title": "Errors", "id": 101, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }, "collapsed": false, "panels": [] },
+    {
+      "id": 4, "type": "timeseries", "title": "Warn / error / fatal lines per second",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 10 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "sum by (service, level) (rate(log_events_total{service=~\"$service\", env=~\"$env\", level=~\"warn|error|fatal\"}[$__rate_interval]))", "legendFormat": "{{service}} {{level}}" }]
+    },
+    {
+      "id": 5, "type": "barchart", "title": "Top error events (time range)",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 10 },
+      "options": { "orientation": "horizontal", "xField": "event", "legend": { "showLegend": false } },
+      "targets": [{ "refId": "A", "queryType": "instant", "expr": "topk(10, sum by (event) (count_over_time({service=~\"$service\", env=~\"$env\", level=~\"error|fatal\"} | json [$__range])))", "legendFormat": "{{event}}" }],
+      "transformations": [{ "id": "reduce", "options": { "reducers": ["lastNotNull"], "mode": "seriesToRows" } }]
+    },
+    {
+      "id": 6, "type": "barchart", "title": "Top error types (time range)",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 10 },
+      "options": { "orientation": "horizontal", "legend": { "showLegend": false } },
+      "targets": [{ "refId": "A", "queryType": "instant", "expr": "topk(10, sum by (error_type) (count_over_time({service=~\"$service\", env=~\"$env\", level=~\"error|fatal\"} | json error_type=\"error.type\" [$__range])))", "legendFormat": "{{error_type}}" }],
+      "transformations": [{ "id": "reduce", "options": { "reducers": ["lastNotNull"], "mode": "seriesToRows" } }]
+    },
+    {
+      "id": 7, "type": "logs", "title": "Recent errors",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 18 },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending", "enableLogDetails": true },
+      "targets": [{ "refId": "A", "expr": "{service=~\"$service\", env=~\"$env\", level=~\"error|fatal\"}" }]
+    },
+
+    { "type": "row", "title": "Integrations & background jobs", "id": 102, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 }, "collapsed": false, "panels": [] },
+    {
+      "id": 8, "type": "timeseries", "title": "External provider failures",
+      "description": "Outbound fetch outcomes other than success (WhatsApp/Meta, Tap, OpenAI, Resend…).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 28 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "sum by (provider, outcome) (rate(external_requests_total{env=~\"$env\", outcome!=\"success\"}[$__rate_interval]))", "legendFormat": "{{provider}} {{outcome}}" }]
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "External provider p95 latency",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 28 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum by (provider, le) (rate(external_request_duration_seconds_bucket{env=~\"$env\"}[$__rate_interval])))", "legendFormat": "{{provider}}" }]
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "Job failures and retries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 28 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "sum by (queue, outcome) (increase(bullmq_job_attempts_total{env=~\"$env\", outcome=~\"failed|retry\"}[$__rate_interval]))", "legendFormat": "{{queue}} {{outcome}}" }]
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "Queue depth (waiting / delayed / failed)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "max by (queue, state) (bullmq_queue_depth{env=~\"$env\", state=~\"waiting|delayed|failed\"}) > 0", "legendFormat": "{{queue}} {{state}}" }]
+    },
+    {
+      "id": 12, "type": "table", "title": "Failed logins by source (time range)",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "targets": [{ "refId": "A", "queryType": "instant", "expr": "topk(10, sum by (client_ip, reason) (count_over_time({service=\"ziyaratech-api\", env=~\"$env\"} | json | event=\"auth.login.failed\" [$__range])))" }],
+      "transformations": [{ "id": "reduce", "options": { "reducers": ["lastNotNull"], "mode": "seriesToRows" } }]
+    },
+
+    { "type": "row", "title": "Logging pipeline", "id": 103, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 44 }, "collapsed": false, "panels": [] },
+    {
+      "id": 13, "type": "stat", "title": "Targets up",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 45 },
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }]
+        },
+        "overrides": []
+      },
+      "targets": [{ "refId": "A", "expr": "up", "legendFormat": "{{service}}" }]
+    },
+    {
+      "id": 14, "type": "timeseries", "title": "Collector: lines shipped / dropped",
+      "description": "Alloy loki.write. Dropped > 0 means lines were lost after bounded retries.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 45 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(loki_write_sent_entries_total[$__rate_interval]))", "legendFormat": "sent/s" },
+        { "refId": "B", "expr": "sum(rate(loki_write_dropped_entries_total[$__rate_interval]))", "legendFormat": "dropped/s" }
+      ]
+    },
+    {
+      "id": 15, "type": "timeseries", "title": "Lines written by the app, per level",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 45 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "sum by (service, level) (rate(log_events_total{env=~\"$env\"}[$__rate_interval]))", "legendFormat": "{{service}} {{level}}" }]
+    },
+
+    { "type": "row", "title": "Investigate a request", "id": 104, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 51 }, "collapsed": false, "panels": [] },
+    {
+      "id": 16, "type": "logs", "title": "All lines for request_id = $request_id",
+      "description": "Paste an X-Request-ID (from a response header or an error body) into the Request ID box above. Covers the API and any worker job it enqueued.",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 52 },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Ascending", "enableLogDetails": true },
+      "targets": [{ "refId": "A", "expr": "{service=~\"ziyaratech-.+\"} | json | request_id=\"$request_id\"" }]
+    }
+  ]
+}

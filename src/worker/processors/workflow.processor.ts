@@ -172,7 +172,8 @@ export class WorkflowProcessor extends WorkerHost {
 
   @OnWorkerEvent('failed')
   onFailed(job: Job, err: Error) {
-    this.logger.error(
+    // Logged at error by the job wrapper (common/logging/job-instrumentation.ts).
+    this.logger.debug(
       `${job?.name} job=${job?.id} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`,
     );
   }

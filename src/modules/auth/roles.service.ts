@@ -15,6 +15,7 @@ import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 import { AppError, ErrorCode } from '../../common/errors';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { LOG_EVENT } from '../../common/logging/log-events';
 import {
   CUSTOM_ROLE_NAME_FALLBACK,
   CUSTOM_ROLE_NAME_PREFIX,
@@ -258,6 +259,7 @@ export class RolesService {
     );
 
     await this.replaceRolePermissions(role, permissionIds);
+    this.logRoleChange('permissions_replaced', { role_id: roleId, tenant_id: tenantId ?? undefined, permission_count: permissionIds.length });
     return this.findOne(roleId, tenantId);
   }
 
@@ -552,7 +554,9 @@ export class RolesService {
     if (existing) {
       throw new AppError(ErrorCode.ROLE_ASSIGNMENT_EXISTS);
     }
-    return this.userRoles.save(this.userRoles.create({ user, role }));
+    const saved = await this.userRoles.save(this.userRoles.create({ user, role }));
+    this.logRoleChange('role_assigned', { role_id: role.id, target_user_id: user.id, tenant_id: tenantId ?? undefined });
+    return saved;
   }
 
   async removeRoleFromUser(
@@ -568,6 +572,21 @@ export class RolesService {
       throw new AppError(ErrorCode.ROLE_ASSIGNMENT_NOT_FOUND);
     }
     await this.userRoles.remove(link);
+    this.logRoleChange('role_unassigned', { role_id: roleId, target_user_id: userId, tenant_id: tenantId ?? undefined });
+  }
+
+  /**
+   * Operational breadcrumb for a COMMITTED role/permission change (LOGGING.md).
+   * The acting user and request id come from the log context automatically;
+   * only ids and counts are logged, never permission slugs or names.
+   */
+  private logRoleChange(action: string, fields: Record<string, unknown>): void {
+    this.logger.log({
+      event: LOG_EVENT.AUTH_ROLE_PERMISSIONS_CHANGED,
+      message: `Role change: ${action}`,
+      action,
+      ...fields,
+    });
   }
 
   async listUserRoles(

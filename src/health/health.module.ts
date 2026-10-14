@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Client } from 'pg';
+import { Client, type ClientConfig } from 'pg';
 
 import {
   HealthController,
@@ -32,7 +32,9 @@ import { databaseSslOptions } from '../config/database-ssl';
           DB_SSL_CA: config.get<string>('DB_SSL_CA'),
           DB_SSL_CA_CERT: config.get<string>('DB_SSL_CA_CERT'),
         });
-        return new Client({ connectionString: databaseUrl, ssl });
+        // Typing only: `@types/pg` (pulled in by the optional OpenTelemetry pg
+        // instrumentation) narrows `ssl` to tls.ConnectionOptions; the value is unchanged.
+        return new Client({ connectionString: databaseUrl, ssl: ssl as ClientConfig['ssl'] });
       },
     },
   ],

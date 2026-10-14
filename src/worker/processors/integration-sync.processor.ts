@@ -50,7 +50,8 @@ export class IntegrationSyncProcessor extends WorkerHost {
   @OnWorkerEvent('failed')
   async onFailed(job: Job, err: Error) {
     const data = job?.data as IntegrationSyncJobData | undefined;
-    this.logger.error(
+    // Logged at error by the job wrapper (common/logging/job-instrumentation.ts).
+    this.logger.debug(
       `integration.sync job=${job?.id} sync=${data?.syncJobId} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`,
     );
   }

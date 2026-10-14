@@ -11,6 +11,7 @@ import { ALL_QUEUES, bullPrefix, DLQ_QUEUES } from '../queue/queue.constants';
 import { eventsConnectionOptions } from '../queue/redis.config';
 import { QueueService } from '../queue/queue.service';
 import { MetricsService } from '../metrics/metrics.service';
+import { LOG_EVENT } from '../common/logging/log-events';
 
 /**
  * Centralized queue observability via BullMQ QueueEvents. One listener per queue
@@ -64,16 +65,34 @@ export class QueueMonitorService implements OnModuleInit, OnModuleDestroy {
         if (this.logCompleted)
           this.logger.log(`[${name}] ✓ completed job=${jobId}`);
       });
+      // Failure ownership (LOGGING.md): the processor wrapper
+      // (common/logging/job-instrumentation.ts) logs each failed attempt
+      // ONCE, from the replica that ran it, with attempt/duration/tenant.
+      // This listener runs in EVERY worker replica and sees every failure in
+      // the cluster, so logging here too duplicated each failure N+1 times.
+      // Kept at debug for local diagnosis only.
       qe.on('failed', ({ jobId, failedReason }) => {
         this.metrics.recordJobEvent(name, 'failed');
-        this.logger.error(`[${name}] ✗ failed job=${jobId}: ${failedReason}`);
+        this.logger.debug(`[${name}] failed job=${jobId} (QueueEvents): ${failedReason}`);
       });
+      // Stalled jobs are only observable here (a stalled job never reached
+      // the wrapper's catch), so this remains the owner of that event.
       qe.on('stalled', ({ jobId }) => {
         this.metrics.recordJobEvent(name, 'stalled');
-        this.logger.warn(`[${name}] ⚠ stalled job=${jobId}`);
+        this.logger.warn({
+          event: LOG_EVENT.JOB_STALLED,
+          message: `[${name}] ⚠ stalled job=${jobId}`,
+          queue: name,
+          job_id: jobId,
+        });
       });
       qe.on('error', (err) =>
-        this.logger.error(`[${name}] queue-events error: ${err?.message}`),
+        this.logger.error({
+          event: 'queue.events.failed',
+          message: `[${name}] queue-events error: ${err?.message}`,
+          queue: name,
+          error: err,
+        }),
       );
       this.events.push(qe);
     }
@@ -113,9 +132,13 @@ export class QueueMonitorService implements OnModuleInit, OnModuleDestroy {
       try {
         const depth = await this.queue.dlqDepth(dlq);
         if (depth >= this.dlqWarnAt) {
-          this.logger.error(
-            `[${dlq}] depth=${depth} ≥ threshold ${this.dlqWarnAt} — ALERT`,
-          );
+          this.logger.error({
+            event: LOG_EVENT.QUEUE_DLQ_DEPTH_HIGH,
+            message: `[${dlq}] depth=${depth} ≥ threshold ${this.dlqWarnAt} — ALERT`,
+            queue: dlq,
+            depth,
+            threshold: this.dlqWarnAt,
+          });
         } else if (depth > 0) {
           this.logger.warn(`[${dlq}] depth=${depth}`);
         }

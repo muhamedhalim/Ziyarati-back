@@ -14,6 +14,7 @@ import { typeOrmFactory } from './config/typeorm.config';
 import { QueueModule } from './queue/queue.module';
 import { HealthModule } from './health/health.module';
 import { MetricsModule } from './metrics/metrics.module';
+import { ObservabilityEventsModule } from './common/logging/observability-events.listener';
 import { SchemaGuardModule } from './config/schema-guard.module';
 import { MetricsHttpModule } from './metrics/metrics-http.module';
 import { MetricsService } from './metrics/metrics.service';
@@ -175,6 +176,8 @@ import { validate } from './config/env.validation';
     StaffScopeModule,
     HealthModule,
     MetricsModule,
+    // Operational log lines for committed business transitions (LOGGING.md).
+    ObservabilityEventsModule,
 
     SchemaGuardModule,
     MetricsHttpModule,

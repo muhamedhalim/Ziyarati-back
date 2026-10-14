@@ -53,7 +53,8 @@ export class WhatsappMediaProcessor extends WorkerHost {
     // Media is an enrichment: a permanent failure leaves the message itself
     // intact in the timeline, just without its attachment.
     const data = job?.data as WhatsappMediaDownloadJob | undefined;
-    this.logger.error(
+    // Logged at error by the job wrapper (common/logging/job-instrumentation.ts).
+    this.logger.debug(
       `${job?.name} job=${job?.id} media=${data?.mediaId} ` +
         `FAILED (attempt ${job?.attemptsMade}): ${err?.message}`,
     );

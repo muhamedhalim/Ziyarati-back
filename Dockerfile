@@ -113,6 +113,13 @@ COPY               --chown=node:node package.json         ./package.json
 ARG RDS_CA_BUNDLE_URL
 ADD --chmod=644 ${RDS_CA_BUNDLE_URL} /app/certs/rds-global-bundle.pem
 
+# Commit SHA the image was built from (CI: --build-arg APP_REVISION=$GITHUB_SHA).
+# Read by getAppRevision(): the `version` of every log line, /api/v1/health and
+# X-App-Revision. Validated as 7-40 hex at runtime, so an empty or odd value
+# just reports "unknown". Declared last so it does not bust the layers above.
+ARG APP_REVISION=""
+ENV APP_REVISION=${APP_REVISION}
+
 USER node
 
 EXPOSE 3000

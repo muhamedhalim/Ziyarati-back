@@ -38,10 +38,15 @@ resource "aws_sns_topic_subscription" "email" {
 }
 
 # ── Log-derived metrics (app metrics reach CloudWatch in Phase 2) ───────────
+# Application logs are JSON (one object per line, schema in LOGGING.md), so
+# these are JSON filter patterns. The image and these filters ship TOGETHER:
+# an older image writes text lines that the JSON patterns do not match.
+# More log-derived metrics, alarms and saved queries live in logs.tf.
 resource "aws_cloudwatch_log_metric_filter" "failed_jobs" {
   name           = "${var.name}-failed-jobs"
   log_group_name = var.worker_log_group_name
-  pattern        = "\"failed job=\""
+  # Final failures only — a retry is `job.processing.retry_scheduled`.
+  pattern = "{ $.event = \"job.processing.failed\" }"
   metric_transformation {
     name          = "FailedJobs"
     namespace     = "ZiyaraTech/${var.environment}"
@@ -54,7 +59,7 @@ resource "aws_cloudwatch_log_metric_filter" "app_errors" {
   for_each       = { api = var.api_log_group_name, worker = var.worker_log_group_name }
   name           = "${var.name}-${each.key}-errors"
   log_group_name = each.value
-  pattern        = "ERROR"
+  pattern        = "{ ($.level = \"error\") || ($.level = \"fatal\") }"
   metric_transformation {
     name          = "ErrorLines-${each.key}"
     namespace     = "ZiyaraTech/${var.environment}"

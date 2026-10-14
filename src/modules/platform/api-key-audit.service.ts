@@ -5,6 +5,7 @@ import { Repository } from 'typeorm';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 import { User } from '../../entities/Auth&RBAC/User';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { LOG_EVENT } from '../../common/logging/log-events';
 
 export const API_KEY_AUDIT_ACTION = {
   CREATE: 'api_key.create',
@@ -46,6 +47,16 @@ export class ApiKeyAuditService {
     ip: string | undefined,
     details?: Record<string, unknown>,
   ): Promise<void> {
+    // Operational breadcrumb alongside the durable audit row (LOGGING.md).
+    // Ids and the action only — never the key value or its prefix/details.
+    this.logger.log({
+      event: LOG_EVENT.AUTH_API_KEY_CHANGED,
+      message: `API key ${action}`,
+      action,
+      api_key_id: keyId,
+      tenant_id: tenantId ?? undefined,
+      user_id: userId,
+    });
     try {
       await this.auditLogs.save(
         this.auditLogs.create({

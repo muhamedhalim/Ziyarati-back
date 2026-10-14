@@ -132,3 +132,58 @@ variable "enable_ses_queue_alarm" {
   type        = bool
   default     = false
 }
+
+# ── Structured-log alarms (logs.tf, LOGGING.md §Alerts) ─────────────────────
+variable "http_5xx_ratio_percent" {
+  description = "Application 5xx ratio (percent of access-log requests) that raises L-02."
+  type        = number
+  default     = 2
+}
+
+variable "http_5xx_min_requests" {
+  description = "Minimum requests per evaluation period before the 5xx ratio is evaluated (quiet periods never alarm)."
+  type        = number
+  default     = 50
+}
+
+variable "http_5xx_period_seconds" {
+  description = "Evaluation period for the application 5xx ratio."
+  type        = number
+  default     = 300
+}
+
+variable "failed_login_burst_threshold" {
+  description = "Failed logins in 5 minutes, across all sources, that raise L-03."
+  type        = number
+  default     = 20
+}
+
+variable "failed_login_ip_threshold" {
+  description = "Failed logins in 5 minutes from ONE source address that raise L-03b."
+  type        = number
+  default     = 10
+}
+
+variable "enable_failed_login_ip_rule" {
+  description = "Create the Contributor Insights rule (+ alarm) ranking failed logins by client_ip (~USD 0.50/month plus matched events)."
+  type        = bool
+  default     = true
+}
+
+variable "alarm_providers" {
+  description = "Provider labels (provider-instrumentation.ts) that get a failure alarm."
+  type        = list(string)
+  default     = ["meta_graph", "openai", "tap", "resend"]
+}
+
+variable "provider_failure_threshold" {
+  description = "Provider 5xx/429/timeout/network failures per 5 minutes (sustained 10 minutes) that raise L-08."
+  type        = number
+  default     = 10
+}
+
+variable "enable_log_silence_alarms" {
+  description = "Alarm when the api/worker app.heartbeat stops for 10 minutes. Disable alarm actions during planned scale-to-zero."
+  type        = bool
+  default     = true
+}

@@ -177,13 +177,15 @@ export class NotificationsProcessor extends WorkerHost {
   async onFailed(job: Job, err: Error) {
     if (err instanceof DelayedError) return; // expected rate-limit reschedule
     if (job?.name !== JOB.NOTIFICATIONS_DISPATCH) {
-      this.logger.error(`${job?.name} job=${job?.id} FAILED: ${err?.message}`);
+      // Logged at error by the job wrapper (common/logging/job-instrumentation.ts).
+      this.logger.debug(`${job?.name} job=${job?.id} FAILED: ${err?.message}`);
       return;
     }
     const data = job?.data as NotificationDispatchJob;
     const exhausted = (job?.attemptsMade ?? 0) >= (job?.opts?.attempts ?? 1);
     const permanent = err instanceof UnrecoverableError;
-    this.logger.error(
+    // Logged at error by the job wrapper (common/logging/job-instrumentation.ts).
+    this.logger.debug(
       `dispatch job=${job?.id} id=${data?.notificationId} FAILED (attempt ${job?.attemptsMade}, permanent=${permanent}): ${err?.message}`,
     );
     // `permanent` (UnrecoverableError — payload validation, worker

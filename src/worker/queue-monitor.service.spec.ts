@@ -113,16 +113,26 @@ describe('QueueMonitorService', () => {
     );
   });
 
-  it('always logs `failed` and `stalled` events, regardless of QUEUE_LOG_COMPLETED', () => {
+  it('leaves `failed` to the job wrapper (debug only here) and owns `stalled` as a structured warn', () => {
+    const debugSpy = jest
+      .spyOn(Logger.prototype, 'debug')
+      .mockImplementation(() => undefined);
     service.onModuleInit();
     const qe = FakeQueueEvents.instances[0];
     qe.emit('failed', { jobId: 'j1', failedReason: 'boom' });
     qe.emit('stalled', { jobId: 'j2' });
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('failed job=j1: boom'),
+    // Every replica sees every failure through QueueEvents — logging it at
+    // error here duplicated the wrapper's one-per-attempt line (LOGGING.md).
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.stringContaining('failed job=j1 (QueueEvents): boom'),
     );
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('stalled job=j2'),
+      expect.objectContaining({
+        event: 'job.stalled',
+        message: expect.stringContaining('stalled job=j2'),
+        job_id: 'j2',
+      }),
     );
   });
 
@@ -183,7 +193,13 @@ describe('QueueMonitorService', () => {
       queue.dlqDepth.mockResolvedValue(200);
       service.onModuleInit();
       await jest.advanceTimersByTimeAsync(30_000);
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('ALERT'));
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'queue.dlq.depth_high',
+          message: expect.stringContaining('ALERT'),
+          depth: 200,
+        }),
+      );
       jest.useRealTimers();
     });
   });

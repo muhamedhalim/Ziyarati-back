@@ -1,0 +1,142 @@
+# ZiyaraTech self-hosted observability stack — LOCAL / VERIFICATION use.
+#
+#   Loki (logs) · Alloy (collector) · Prometheus (metrics + rules)
+#   Alertmanager (alert routing) · Tempo (traces) · Grafana (UI)
+#
+# Production logs live in CloudWatch Logs (see LOGGING.md §Architecture); this
+# stack is the disposable environment the ingestion check runs against, the
+# place to explore dashboards/queries locally, and the reference if the backend
+# ever moves to infrastructure where a self-hosted pipeline makes sense.
+#
+# Security posture (local): every port binds to 127.0.0.1 only; Grafana needs
+# an admin password from the environment and has anonymous access and sign-up
+# disabled; Loki runs single-tenant without auth — NEVER expose it as-is. A
+# remote deployment needs TLS + authentication in front of Loki's push API and
+# Grafana (LOGGING.md §Remote deployment).
+#
+# Secrets (git-ignored, create once — LOGGING.md §Local stack):
+#   observability/.secrets/grafana_admin_password   Grafana admin password
+#   observability/.secrets/metrics_token            bearer token for the app's /metrics
+# Start:  docker compose -f observability/docker-compose.yml up -d
+# Stop:   docker compose -f observability/docker-compose.yml down        (add -v to delete stored data)
+name: ziyaratech-observability
+
+networks:
+  observability:
+    name: ziyaratech-observability
+
+volumes:
+  loki_data:
+  prometheus_data:
+  tempo_data:
+  grafana_data:
+  alloy_data:
+
+services:
+  loki:
+    image: grafana/loki:3.5.0
+    command: ['-config.file=/etc/loki/loki.yaml', '-config.expand-env=true']
+    environment:
+      # Default 30 days; change here (and restart) to change retention.
+      LOKI_RETENTION_PERIOD: ${LOKI_RETENTION_PERIOD:-720h}
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - ./loki/rules:/etc/loki/rules:ro
+      - loki_data:/loki
+    ports:
+      - '127.0.0.1:3100:3100'
+    networks: [observability]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: { memory: 1g }
+
+  alloy:
+    image: grafana/alloy:v1.10.0
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      # Read-only Docker API access to discover labelled containers and read
+      # their stdout/stderr. Local only: a managed runtime (ECS Fargate) has
+      # no socket — production uses the awslogs driver instead.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Read positions survive restarts, so a collector restart resumes where
+      # it stopped instead of re-sending or skipping lines.
+      - alloy_data:/var/lib/alloy/data
+    ports:
+      - '127.0.0.1:12345:12345'
+    networks: [observability]
+    depends_on: [loki]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: { memory: 512m }
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}
+      - --storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-5GB}
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      # Bearer token for the app's /metrics endpoints (METRICS_TOKEN), written
+      # by the verification script / the operator. Git-ignored.
+      - ./.secrets:/etc/prometheus/secrets:ro
+      - prometheus_data:/prometheus
+    ports:
+      - '127.0.0.1:9090:9090'
+    networks: [observability]
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    command: ['--config.file=/etc/alertmanager/alertmanager.yml', '--storage.path=/alertmanager']
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - '127.0.0.1:9093:9093'
+    networks: [observability]
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.8.0
+    command: ['-config.file=/etc/tempo/tempo.yaml']
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - '127.0.0.1:4318:4318' # OTLP/HTTP
+      - '127.0.0.1:3200:3200'
+    networks: [observability]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      # Read from a git-ignored file (observability/.secrets/grafana_admin_password),
+      # never from the compose file or the shell history.
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+      GF_SECURITY_COOKIE_SAMESITE: strict
+      GF_SECURITY_DISABLE_GRAVATAR: 'true'
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./.secrets/grafana_admin_password:/run/secrets/grafana_admin_password:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - '127.0.0.1:3400:3000'
+    networks: [observability]
+    depends_on: [loki, prometheus, tempo]
+    restart: unless-stopped

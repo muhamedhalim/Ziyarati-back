@@ -56,7 +56,8 @@ export class WhatsappWebhookProcessor extends WorkerHost {
     // The event row stays `processed = false`, so it can be re-queued from the
     // admin retry endpoint after the cause is fixed — nothing is lost.
     const data = job?.data as WhatsappWebhookProcessJob | undefined;
-    this.logger.error(
+    // Logged at error by the job wrapper (common/logging/job-instrumentation.ts).
+    this.logger.debug(
       `${job?.name} job=${job?.id} event=${data?.webhookEventId} ` +
         `FAILED (attempt ${job?.attemptsMade}): ${err?.message}`,
     );

@@ -1,0 +1,44 @@
+# Loki ruler (LogQL) alerts. Directory `fake/` = Loki's single-tenant id when
+# auth_enabled is false. Rules here cover what ONLY logs can answer (per-IP
+# failed logins, a service that stopped logging, fatal crashes). Rates, ratios,
+# latency and job/provider failures come from Prometheus metrics instead
+# (observability/prometheus/rules/ziyaratech.yml) — native counters are more
+# reliable than counting log lines.
+groups:
+  - name: ziyaratech-logs
+    interval: 1m
+    rules:
+      - alert: ZiyaraTechFailedLoginsFromOneSource
+        expr: |
+          sum by (env, client_ip) (
+            count_over_time({service="ziyaratech-api"} | json | event="auth.login.failed" [5m])
+          ) >= 10
+        labels:
+          severity: warning
+        annotations:
+          summary: '>= 10 failed logins in 5 min from {{ $labels.client_ip }} ({{ $labels.env }})'
+          runbook: 'LOGGING.md §Runbooks — failed-login burst. Check the reason field; consider a WAF block.'
+
+      - alert: ZiyaraTechApiLogsSilent
+        expr: absent_over_time({service="ziyaratech-api"} | json | event="app.heartbeat" [10m])
+        labels:
+          severity: critical
+        annotations:
+          summary: 'No heartbeat from ziyaratech-api for 10 minutes'
+          runbook: 'LOGGING.md §Runbooks — missing logs. The API is down/hung or its logs are not reaching Loki (check Alloy).'
+
+      - alert: ZiyaraTechWorkerLogsSilent
+        expr: absent_over_time({service="ziyaratech-worker"} | json | event="app.heartbeat" [10m])
+        labels:
+          severity: critical
+        annotations:
+          summary: 'No heartbeat from ziyaratech-worker for 10 minutes'
+          runbook: 'LOGGING.md §Runbooks — missing logs. Reminders/emails/WhatsApp are not being processed.'
+
+      - alert: ZiyaraTechFatalError
+        expr: sum by (service, env) (count_over_time({level="fatal"}[5m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.service }} logged a fatal error and restarted ({{ $labels.env }})'
+          runbook: 'LOGGING.md §Runbooks — fatal crash. Read the process.* line: error.stack, request_id / job_id.'

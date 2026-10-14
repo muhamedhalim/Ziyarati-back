@@ -53,7 +53,8 @@ export class IntegrationImportProcessor extends WorkerHost {
   @OnWorkerEvent('failed')
   async onFailed(job: Job, err: Error) {
     const data = job?.data as IntegrationImportJobData | undefined;
-    this.logger.error(
+    // Logged at error by the job wrapper (common/logging/job-instrumentation.ts).
+    this.logger.debug(
       `integration.import job=${job?.id} import=${data?.importJobId} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`,
     );
   }

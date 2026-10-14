@@ -2,6 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
 
 import type { AuthAbuseLimiterScope } from '../modules/auth/auth-abuse.constants';
+import { setLogMetricsSink } from '../common/logging/structured-logger';
+import { setJobMetricsSink, type JobOutcome } from '../common/logging/job-instrumentation';
+import {
+  setProviderMetricsSink,
+  type ProviderOutcome,
+} from '../common/logging/provider-instrumentation';
 
 /**
  * Minimum-viable observability (gap-closure — see
@@ -286,11 +292,89 @@ export class MetricsService {
     registers: [this.registry],
   });
 
+  /**
+   * Logging & observability (LOGGING.md). Every label is a closed set — no
+   * route, tenant, user, job id or host can reach a label value.
+   *  - `log_events_total{level}`: log volume by level per process, so an error
+   *    spike or a process that went silent is visible without reading logs.
+   *  - `logger_write_failures_total`: lines the logger could not serialize.
+   *  - `bullmq_job_duration_seconds{queue,outcome}` / `bullmq_job_attempts_total`:
+   *    recorded IN-PROCESS by the replica that ran the job (job-instrumentation.ts),
+   *    so `sum()` across worker replicas is correct — unlike `bullmq_jobs_total`,
+   *    which every replica's QueueEvents listener counts (use `max()` on that one).
+   *  - `external_requests_total` / `external_request_duration_seconds`
+   *    `{provider,outcome}`: every outbound fetch (provider-instrumentation.ts).
+   */
+  private readonly logEvents = new Counter({
+    name: 'log_events_total',
+    help: 'Log lines written by this process, by level.',
+    labelNames: ['level'] as const,
+    registers: [this.registry],
+  });
+
+  private readonly loggerWriteFailures = new Counter({
+    name: 'logger_write_failures_total',
+    help: 'Log lines that could not be serialized and were replaced by a logger.write_failed marker.',
+    registers: [this.registry],
+  });
+
+  private readonly jobDuration = new Histogram({
+    name: 'bullmq_job_duration_seconds',
+    help: 'BullMQ processor run time per attempt, by queue and outcome (completed, retry, failed, deferred).',
+    labelNames: ['queue', 'outcome'] as const,
+    buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300],
+    registers: [this.registry],
+  });
+
+  private readonly jobAttempts = new Counter({
+    name: 'bullmq_job_attempts_total',
+    help: 'BullMQ processor attempts, by queue and outcome, counted by the replica that ran them.',
+    labelNames: ['queue', 'outcome'] as const,
+    registers: [this.registry],
+  });
+
+  private readonly externalRequests = new Counter({
+    name: 'external_requests_total',
+    help: 'Outbound HTTP requests to third-party providers, by provider and outcome.',
+    labelNames: ['provider', 'outcome'] as const,
+    registers: [this.registry],
+  });
+
+  private readonly externalRequestDuration = new Histogram({
+    name: 'external_request_duration_seconds',
+    help: 'Outbound HTTP request duration to response headers (or failure), by provider and outcome.',
+    labelNames: ['provider', 'outcome'] as const,
+    buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60],
+    registers: [this.registry],
+  });
+
   constructor() {
     // Standard Node/process metrics (event-loop lag, heap, CPU, handles) —
     // present in §14's gap table under "Workers: CPU, memory, event-loop
     // lag" (❌ before this pass), free to collect via prom-client itself.
     collectDefaultMetrics({ register: this.registry });
+
+    // The logging instrumentation runs outside Nest DI (logger, undici
+    // channel, BullMQ processor wrapper); hand it this registry's recorders.
+    setLogMetricsSink({
+      onLog: (level) => this.logEvents.inc({ level }),
+      onWriteFailure: () => this.loggerWriteFailures.inc(),
+    });
+    setJobMetricsSink({ observeJob: (queue, outcome, seconds) => this.observeJob(queue, outcome, seconds) });
+    setProviderMetricsSink({
+      observeProviderRequest: (provider, outcome, seconds) =>
+        this.observeProviderRequest(provider, outcome, seconds),
+    });
+  }
+
+  observeJob(queue: string, outcome: JobOutcome, durationSeconds: number): void {
+    this.jobAttempts.inc({ queue, outcome });
+    this.jobDuration.observe({ queue, outcome }, durationSeconds);
+  }
+
+  observeProviderRequest(provider: string, outcome: ProviderOutcome, durationSeconds: number): void {
+    this.externalRequests.inc({ provider, outcome });
+    this.externalRequestDuration.observe({ provider, outcome }, durationSeconds);
   }
 
   recordJobEvent(

@@ -103,3 +103,6 @@ ziyaratech.backup
 # raw per-run monitor series can be large; the merged results + manifests stay trackable
 /tests/load/reports/*.monitor.ndjson
 /app.json
+
+# Observability stack: generated scrape token (never commit)
+/observability/.secrets/

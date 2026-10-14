@@ -1,0 +1,15 @@
+# No notification channel is assumed. Alerts are grouped and visible in the
+# Alertmanager UI (http://127.0.0.1:9093) and in Grafana, but go nowhere until
+# a receiver is configured. To notify, add a receiver (email_configs,
+# slack_configs, webhook_configs, …) with its credentials supplied from a
+# secret file — never committed — and point `route.receiver` at it.
+# See LOGGING.md §Alerts → "Notification channels (manual setup)".
+route:
+  receiver: unrouted
+  group_by: ['alertname', 'env', 'service']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: unrouted

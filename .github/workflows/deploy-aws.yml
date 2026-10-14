@@ -136,7 +136,9 @@ jobs:
           # --provenance=false --sbom=false: recent Docker emits an OCI image INDEX (image +
           # attestation manifest) by default. ECR basic scanning cannot scan an index, which
           # makes scripts/ecs-deploy.sh's vulnerability gate fail. Push a single-manifest image.
-          docker build --provenance=false --sbom=false -t "backend:${GITHUB_SHA}" .
+          # APP_REVISION: the commit the image was built from, stamped into every log
+          # line (`version`), the /health body and the X-App-Revision header.
+          docker build --provenance=false --sbom=false --build-arg "APP_REVISION=${GITHUB_SHA}" -t "backend:${GITHUB_SHA}" .
           # The image must not contain environment files.
           if docker run --rm --entrypoint sh "backend:${GITHUB_SHA}" -c 'ls -a /app | grep -E "^\.env"'; then
             echo "::error::.env file found inside the image"; exit 1

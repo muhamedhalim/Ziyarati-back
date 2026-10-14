@@ -41,6 +41,35 @@ export function getCurrentRequestRoute(): string | null {
   return tenantContextAls.getStore()?.route ?? null;
 }
 
+/** The trusted identity fields a log line may carry — see {@link getTenantLogContext}. */
+export interface TenantLogContext {
+  requestId: string | null;
+  userId: string | null;
+  tenantId: string | null;
+  platformAdmin: boolean;
+}
+
+/**
+ * DI-free reader for the structured logger (`common/logging`), for the same
+ * module-graph reason as `getCurrentRequestRoute`. Only reads what
+ * authentication (or `runInTenantContext`, after its authorization check)
+ * already put in the store — never a header or a body — so a log line can
+ * never carry a tenant id the caller merely claimed. Returns `null` outside a
+ * request or job.
+ */
+export function getTenantLogContext(): TenantLogContext | null {
+  const store = tenantContextAls.getStore();
+  if (!store) return null;
+  const user = store.user;
+  return {
+    requestId: store.correlationId,
+    userId: user?.id ?? null,
+    tenantId: user?.tenantId ?? null,
+    platformAdmin:
+      !!user && user.tenantId === null && (user.roles ?? []).includes(ROLE.SUPER_ADMIN),
+  };
+}
+
 /**
  * Single source of truth for "which tenant is this request running under?".
  *

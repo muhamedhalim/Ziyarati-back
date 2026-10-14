@@ -221,7 +221,7 @@ describe('PaymentsProcessor', () => {
         );
       });
 
-      it('stays quiet (one ordinary error line) while retries remain', () => {
+      it('stays quiet (no error line at all; the job wrapper owns the per-attempt failure line) while retries remain', () => {
         const { processor } = build('token');
         const logger = (processor as any).logger as { error: jest.Mock };
         logger.error = jest.fn();
@@ -237,7 +237,9 @@ describe('PaymentsProcessor', () => {
           new Error('transient'),
         );
 
-        expect(logger.error).toHaveBeenCalledTimes(1);
+        // The ordinary per-attempt failure line is written by the job wrapper
+        // (common/logging/job-instrumentation.ts), not by this handler.
+        expect(logger.error).not.toHaveBeenCalled();
         expect(logger.error).not.toHaveBeenCalledWith(
           expect.stringContaining('ALERT'),
         );
@@ -259,7 +261,9 @@ describe('PaymentsProcessor', () => {
           new Error('x'),
         );
 
-        expect(logger.error).toHaveBeenCalledTimes(1);
+        // The ordinary per-attempt failure line is written by the job wrapper
+        // (common/logging/job-instrumentation.ts), not by this handler.
+        expect(logger.error).not.toHaveBeenCalled();
       });
     });
   });

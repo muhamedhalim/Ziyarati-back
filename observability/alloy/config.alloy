@@ -1,0 +1,87 @@
+// Grafana Alloy — ships the stdout/stderr of labelled containers to Loki.
+//
+// Opt-in per container with the label `com.ziyaratech.logs=true` (see
+// observability/docker-compose.app.yml), so nothing else on the host is read.
+//
+// Labels: ONLY service / env / level (low cardinality). request_id, user_id,
+// tenant_id, trace_id, job_id … stay inside the JSON line and are queried
+// with `| json`; they are never labels.
+//
+// Buffering & loss (LOGGING.md §Pipeline failure modes): Alloy keeps a read
+// position per container (alloy_data volume) and retries pushes with backoff.
+// While Loki is down, lines wait in Docker's own json-file log, which is
+// bounded by the app containers' max-size/max-file — lines rotated out before
+// Loki recovers are lost. The app never waits on any of this.
+
+discovery.docker "app" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+
+  filter {
+    name   = "label"
+    values = ["com.ziyaratech.logs=true"]
+  }
+}
+
+// Fallback `service` for lines that are not JSON (e.g. a Node warning printed
+// before the logger exists): the compose service name. JSON lines overwrite
+// it with their own `service` field below.
+discovery.relabel "app" {
+  targets = discovery.docker.app.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+}
+
+loki.source.docker "app" {
+  host             = "unix:///var/run/docker.sock"
+  targets          = discovery.relabel.app.output
+  relabel_rules    = discovery.relabel.app.rules
+  refresh_interval = "5s"
+  forward_to       = [loki.process.app.receiver]
+}
+
+loki.process "app" {
+  stage.json {
+    expressions = {
+      level     = "level",
+      service   = "service",
+      env       = "env",
+      timestamp = "timestamp",
+    }
+  }
+
+  // Use the application's own timestamp (UTC, ms precision).
+  stage.timestamp {
+    source = "timestamp"
+    format = "RFC3339Nano"
+  }
+
+  stage.labels {
+    values = {
+      level   = "",
+      service = "",
+      env     = "",
+    }
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+
+    // Bounded retry: ~10 attempts with exponential backoff up to 5 min, then
+    // the batch is dropped (counted in loki_write_dropped_entries_total, which
+    // Prometheus alerts on).
+    min_backoff_period  = "500ms"
+    max_backoff_period  = "5m"
+    max_backoff_retries = 10
+    batch_size          = "1MiB"
+    batch_wait          = "1s"
+    remote_timeout      = "10s"
+  }
+}

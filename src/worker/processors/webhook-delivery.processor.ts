@@ -224,7 +224,8 @@ export class WebhookDeliveryProcessor extends WorkerHost {
   @OnWorkerEvent('failed')
   async onFailed(job: Job, err: Error) {
     const data = job?.data as WebhookDeliverJob | undefined;
-    this.logger.error(
+    // Logged at error by the job wrapper (common/logging/job-instrumentation.ts).
+    this.logger.debug(
       `webhooks.deliver job=${job?.id} delivery=${data?.webhookDeliveryId} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`,
     );
 

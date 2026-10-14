@@ -43,6 +43,8 @@ import {
   AUTH_ABUSE_LIMITER_SCOPE,
   AUTH_ABUSE_ENDPOINT_WIDE_SUBJECT,
 } from './auth-abuse.constants';
+import { LOG_EVENT } from '../../common/logging/log-events';
+import { formatClientIp } from '../../common/logging/http-access-log';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -386,7 +388,17 @@ export class AuthService {
     // never touches.
     await this.users.update({ id: user.id }, { last_login_at: new Date() });
 
-    return this.issueAuthResult(user.id, context);
+    const result = await this.issueAuthResult(user.id, context);
+    // Ids only — never the email, password or any token material. Failures are
+    // logged by AllExceptionsFilter (`auth.login.failed`, uniform reason).
+    this.logger.log({
+      event: LOG_EVENT.AUTH_LOGIN_SUCCEEDED,
+      message: 'Login succeeded',
+      user_id: result.user.id,
+      tenant_id: result.user.tenantId ?? undefined,
+      client_ip: formatClientIp(context?.ipAddress, 'full'),
+    });
+    return result;
   }
 
   /**
@@ -880,6 +892,12 @@ export class AuthService {
   ): Promise<void> {
     await this.revokeFamily(stored.family_id);
     this.metrics.recordRefreshRotationEvent('reuse_detected');
+    this.logger.warn({
+      event: LOG_EVENT.AUTH_REFRESH_REUSE_DETECTED,
+      message: 'Rotated refresh token replayed; its token family was revoked',
+      user_id: stored.user?.id,
+      client_ip: formatClientIp(context?.ipAddress, 'full'),
+    });
     await this.auditRefreshReuseEvent(stored, context);
   }
 
@@ -944,6 +962,11 @@ export class AuthService {
       { id: payload.jti, revoked_at: IsNull() },
       { revoked_at: new Date() },
     );
+    this.logger.log({
+      event: LOG_EVENT.AUTH_LOGOUT_SUCCEEDED,
+      message: 'Logout succeeded',
+      user_id: payload.sub,
+    });
   }
 
   /** Revokes every active refresh token for a user (global logout). */
@@ -981,6 +1004,12 @@ export class AuthService {
    * refuses to boot if the flag is left on (see env.validation.ts).
    */
   async forgotPassword(dto: ForgotPasswordDto): Promise<{ message: string }> {
+    // Uniform: no identity, no outcome — the log must not reveal whether an
+    // account exists any more than the response does.
+    this.logger.log({
+      event: LOG_EVENT.AUTH_PASSWORD_RESET_REQUESTED,
+      message: 'Password reset requested',
+    });
     // 009-auth-abuse-resistance (ZT-006) — enforced as the FIRST statement,
     // before tenant resolution, the account lookup, token generation, the
     // row write and dispatch (FR-061a). Subject is the normalized email plus
@@ -1269,6 +1298,11 @@ export class AuthService {
     });
 
     await this.revokeAllForUser(reset.user.id);
+    this.logger.log({
+      event: LOG_EVENT.AUTH_PASSWORD_RESET_COMPLETED,
+      message: 'Password reset completed; all sessions revoked',
+      user_id: reset.user.id,
+    });
   }
 
   /** Changes the password for an authenticated user after re-verifying it. */
@@ -1296,6 +1330,11 @@ export class AuthService {
     user.password_hash = await bcrypt.hash(dto.newPassword, BCRYPT_ROUNDS);
     await this.users.save(user);
     await this.revokeAllForUser(userId);
+    this.logger.log({
+      event: LOG_EVENT.AUTH_PASSWORD_CHANGED,
+      message: 'Password changed; all sessions revoked',
+      user_id: userId,
+    });
   }
 
   // ----------------------------------------------------------------------- //

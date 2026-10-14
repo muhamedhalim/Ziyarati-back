@@ -1,0 +1,62 @@
+# Overlay for ../docker-compose.prod.yml: runs the REAL production image
+# (built from this tree) with its logs collected by the observability stack.
+# Disposable: its own TLS Postgres + Redis volumes, no shared database.
+#
+#   docker compose -f docker-compose.prod.yml -f observability/docker-compose.app.yml up -d --build
+#
+# Paths are relative to the project directory (Ziyarati-back/), because the
+# first -f file lives there. Requires the observability stack to be up (it
+# owns the `ziyaratech-observability` network).
+x-observed: &observed
+  labels:
+    com.ziyaratech.logs: 'true' # opt-in for Alloy's Docker discovery
+  logging:
+    # Bounded on-host buffer: what Alloy reads from, and what survives a Loki
+    # outage until rotation (LOGGING.md §Pipeline failure modes).
+    driver: json-file
+    options:
+      max-size: 20m
+      max-file: '5'
+  networks: [default, observability]
+
+x-observed-env: &observed-env
+  APP_ENV: local-verify
+  LOG_LEVEL: info
+  # A token generated for this stack by the verification script — the
+  # Prometheus scrape reads the same value from observability/.secrets.
+  METRICS_TOKEN: ${OBS_METRICS_TOKEN:?run scripts/observability/verify-log-ingestion.mjs or set OBS_METRICS_TOKEN}
+  OTEL_ENABLED: 'true'
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4318
+  OTEL_TRACES_SAMPLER_ARG: '1'
+
+services:
+  migrate:
+    <<: *observed
+    build:
+      context: .
+      args:
+        APP_REVISION: ${APP_REVISION:-}
+    environment:
+      <<: *observed-env
+  api:
+    <<: *observed
+    build:
+      context: .
+      args:
+        APP_REVISION: ${APP_REVISION:-}
+    environment:
+      <<: *observed-env
+  worker:
+    <<: *observed
+    build:
+      context: .
+      args:
+        APP_REVISION: ${APP_REVISION:-}
+    environment:
+      <<: *observed-env
+      WORKER_ROLE: all
+
+networks:
+  observability:
+    external: true
+    name: ziyaratech-observability
