@@ -26,7 +26,7 @@ describe('UsageService', () => {
   let access: { isEnforced: jest.Mock; assertAccess: jest.Mock };
   let limitOverrides: { getActive: jest.Mock; getActiveMap: jest.Mock };
   let ledger: { capacityMap: jest.Mock };
-  let credits: { tryDebit: jest.Mock; balanceMap: jest.Mock };
+  let credits: { tryDebit: jest.Mock; balanceMap: jest.Mock; settle: jest.Mock; refundReservation: jest.Mock };
   let platformSettings: { getTyped: jest.Mock };
 
   /** The platform's standard access-denied error, as `assertAccess` raises it. */
@@ -64,6 +64,8 @@ describe('UsageService', () => {
     // `?? 0`), so every pre-existing test's expected numbers are unchanged.
     ledger = { capacityMap: jest.fn().mockResolvedValue(new Map()) };
     credits = {
+      settle: jest.fn().mockResolvedValue({ debitedUnits: 0, overshootUnits: 0 }),
+      refundReservation: jest.fn().mockResolvedValue(0),
       tryDebit: jest.fn().mockResolvedValue(false),
       balanceMap: jest.fn().mockResolvedValue(new Map()),
     };
@@ -1086,5 +1088,27 @@ describe('UsageService', () => {
         ).rejects.toThrow(/reporting-only/);
       },
     );
+  });
+
+  describe('FIN-011 — credit-funded reservations', () => {
+    it('settleCreditRemainder debits the remainder from the credit balance', async () => {
+      await service.settleCreditRemainder('t1', USAGE_METRIC.AI_TOKENS, 499);
+      expect(credits.settle).toHaveBeenCalledWith('t1', USAGE_METRIC.AI_TOKENS, 499);
+    });
+
+    it('settleCreditRemainder is a no-op for a non-positive remainder', async () => {
+      await service.settleCreditRemainder('t1', USAGE_METRIC.AI_TOKENS, 0);
+      expect(credits.settle).not.toHaveBeenCalled();
+    });
+
+    it('release gives a CREDIT-funded reservation back to the credit balance', async () => {
+      await service.release('t1', USAGE_METRIC.AI_TOKENS, 1, 'credit');
+      expect(credits.refundReservation).toHaveBeenCalledWith('t1', USAGE_METRIC.AI_TOKENS, 1);
+    });
+
+    it('release of a plan-funded reservation never touches credits', async () => {
+      await service.release('t1', USAGE_METRIC.AI_TOKENS, 1);
+      expect(credits.refundReservation).not.toHaveBeenCalled();
+    });
   });
 });

@@ -43,7 +43,12 @@ describe('PaymentService.create (booking payments)', () => {
     dataSource = createMockDataSource(manager);
     // Appointment lookups go through dataSource.getRepository(Appointment).
     dataSource.getRepository.mockImplementation((entity: unknown) =>
-      entity === Appointment ? appointments : createMockRepository(),
+      entity === Appointment ? appointments : (() => {
+            // FIN-006: the tenant-ownership check counts rows; default to "owned".
+            const r = createMockRepository();
+            r.count.mockResolvedValue(1);
+            return r;
+          })(),
     );
     gateway = {
       name: 'noop',
@@ -449,6 +454,39 @@ describe('PaymentService.create (booking payments)', () => {
   // — never a status — so the client structurally cannot supply the
   // resulting state; every transition here is driven by
   // `gateways.resolve().verifyPayment()`, a real server-to-server call.
+  describe('FIN-006 — customer / branch must belong to the tenant', () => {
+    const notOwned = () => {
+      const r = createMockRepository();
+      r.count.mockResolvedValue(0);
+      dataSource.getRepository.mockImplementation(() => r);
+    };
+
+    it('rejects a foreign-tenant customerId with 404 before anything is persisted', async () => {
+      notOwned();
+      await expect(
+        service.create(TENANT, {
+          amount: 10,
+          currency: 'SAR',
+          customerId: '00000000-0000-4000-8000-000000000001',
+        } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      expect(payments.save).not.toHaveBeenCalled();
+      expect(gateway.createPayment).not.toHaveBeenCalled();
+    });
+
+    it('rejects a foreign branchId with 404', async () => {
+      notOwned();
+      await expect(
+        service.create(TENANT, {
+          amount: 10,
+          currency: 'SAR',
+          branchId: '00000000-0000-4000-8000-000000000002',
+        } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      expect(payments.save).not.toHaveBeenCalled();
+    });
+  });
+
   describe('confirm (VER-011 — server-side status verification, FR-B012)', () => {
     function pendingPayment(overrides: Record<string, unknown> = {}) {
       return {
@@ -489,6 +527,43 @@ describe('PaymentService.create (booking payments)', () => {
       await expect(service.confirm(TENANT, 'pay-1', {})).rejects.toMatchObject({
         code: ErrorCode.UNPROCESSABLE_ENTITY,
       });
+    });
+
+    it('FIN-008: a REAL gateway that reports no captured amount is rejected, never booked PAID', async () => {
+      gateway.name = 'tap';
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.findOne.mockResolvedValue(pendingPayment());
+      gateway.verifyPayment.mockResolvedValueOnce({ status: 'paid', raw: {} });
+
+      await expect(service.confirm(TENANT, 'pay-1', {})).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+      expect(paymentRepo.save).not.toHaveBeenCalledWith(
+        expect.objectContaining({ status: PaymentStatus.PAID }),
+      );
+    });
+
+    it('FIN-003: a caller-supplied gatewayPaymentId is NOT linked to a payment of a real gateway', async () => {
+      gateway.name = 'tap';
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.findOne.mockResolvedValue(pendingPayment({ gateway_payment_id: null }));
+
+      await expect(
+        service.confirm(TENANT, 'pay-1', { gatewayPaymentId: 'chg_foreign' }),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+      expect(gateway.verifyPayment).not.toHaveBeenCalled();
+      expect(paymentRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('FIN-003: the Noop simulator (dev/test) still accepts a caller-supplied id', async () => {
+      gateway.name = 'noop';
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.findOne.mockResolvedValue(pendingPayment({ gateway_payment_id: null }));
+      paymentRepo.save.mockImplementation(async (p: any) => p);
+      gateway.verifyPayment.mockResolvedValueOnce({ status: 'pending', raw: {} });
+
+      await service.confirm(TENANT, 'pay-1', { gatewayPaymentId: 'sim-1' });
+      expect(gateway.verifyPayment).toHaveBeenCalledWith('sim-1');
     });
 
     it('PENDING → FAILED: books FAILED when the gateway verifies failure', async () => {

@@ -226,6 +226,15 @@ describe('SubscriptionService', () => {
         expect(emitted(SubscriptionTrialStartedEvent)).toHaveLength(1);
       });
 
+      it('FIN-005: a second trial for a tenant with any prior subscription is refused', async () => {
+        plans.findOne.mockResolvedValueOnce(plan());
+        subscriptions.count.mockResolvedValueOnce(1);
+        await expect(
+          service.create(TENANT, { planId: 'p1', startTrial: true } as any),
+        ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+        expect(subscriptions.save).not.toHaveBeenCalled();
+      });
+
       it('a FREE plan needs no payment: ACTIVE at once, as before', async () => {
         plans.findOne.mockResolvedValueOnce(plan({ price: 0 }));
         created(SubscriptionStatus.ACTIVE);

@@ -34,6 +34,7 @@ import {
 import { TapSandbox, settle } from './utils/tap-e2e';
 import { TapApiClient } from '../src/modules/payments/providers/tap/tap-api.client';
 import { ResourcePriceCatalog } from '../src/entities/ResourcePricing/ResourcePriceCatalog';
+import { RefundService } from '../src/modules/payments/refund.service';
 import { ResourcePurchase } from '../src/entities/ResourcePricing/ResourcePurchase';
 import { Payment } from '../src/entities/Payments/Payment';
 import { PaymentStatus } from '../src/entities/enums';
@@ -197,11 +198,13 @@ describe('Add-on entitlement over TAP — webhook redelivery & terminal-status g
     expect(await capacity(owner.tenantId)).toBe(1);
 
     // Full refund through the real refund path (Tap answers REFUNDED synchronously).
-    await request(e2e.app.getHttpServer())
-      .post(`${API}/refunds`)
-      .set(...authHeader(owner.token))
-      .send({ paymentId: purchase.payment!.id })
-      .expect(201);
+    // FIN-001: platform-initiated (a clinic can no longer refund add-ons via POST /refunds).
+    await e2e.app.get(RefundService).create(
+      owner.tenantId,
+      { paymentId: purchase.payment!.id } as never,
+      undefined,
+      { platformInitiated: true },
+    );
     await settle();
     expect((await purchaseOf(purchase.id)).status).toBe('refunded');
     expect(await capacity(owner.tenantId)).toBe(0);

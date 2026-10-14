@@ -177,6 +177,26 @@ export class PaymentService {
       authoritative?.currency ?? dto.currency ?? DEFAULT_PAYMENT_CURRENCY;
     const customerId = dto.customerId ?? authoritative?.customerId;
 
+    // FIN-006: a customer / branch named by the caller must belong to THIS
+    // tenant. They were stored as bare FKs, so another tenant's customer id was
+    // accepted and later leaked through the payment list's customer relation.
+    if (dto.customerId) {
+      const ok = await this.dataSource
+        .getRepository(Customer)
+        .count({ where: { id: dto.customerId, tenant: { id: tenantId } } });
+      if (!ok) {
+        throw new AppError(ErrorCode.NOT_FOUND, { message: 'Customer not found' });
+      }
+    }
+    if (dto.branchId) {
+      const ok = await this.dataSource
+        .getRepository(Branch)
+        .count({ where: { id: dto.branchId, tenant: { id: tenantId } } });
+      if (!ok) {
+        throw new AppError(ErrorCode.NOT_FOUND, { message: 'Branch not found' });
+      }
+    }
+
     // The SERVER chooses the gateway (PAYMENT_PROVIDER). A client-supplied
     // `dto.gateway` is ignored: honoring it would let a caller steer a charge
     // onto a provider the platform did not intend.
@@ -619,7 +639,16 @@ export class PaymentService {
         });
       }
 
-      if (dto.gatewayPaymentId && !payment.gateway_payment_id) {
+      // FIN-003: a client-supplied charge id is NEVER linked to a payment of a
+      // real gateway — it would let a payment be settled by an unrelated charge.
+      // The id comes from the server's own gateway call (or the webhook /
+      // reconciliation). Only the Noop simulator (dev/test; refused when
+      // payments are live) still accepts a caller-supplied id.
+      if (
+        dto.gatewayPaymentId &&
+        !payment.gateway_payment_id &&
+        this.gateways.resolve(payment.gateway).name === 'noop'
+      ) {
         payment.gateway_payment_id = dto.gatewayPaymentId;
         await repo.save(payment);
       }
@@ -682,7 +711,12 @@ export class PaymentService {
           // what it actually captured, it MUST match our expected amount/currency
           // before we book it PAID. No-op when the provider can't report it, so the
           // Noop/dev flow is unaffected.
-          this.assertCapturedMatches(payment, result);
+          this.assertCapturedMatches(
+            payment,
+            result,
+            // FIN-008: a real gateway must REPORT what it captured.
+            this.gateways.resolve(prep.gateway).name !== 'noop',
+          );
           payment.status = PaymentStatus.PAID;
           payment.paid_at = new Date();
           this.financials.applyOnPaid(
@@ -741,13 +775,26 @@ export class PaymentService {
    * Throws (leaving the payment PENDING for review) on any mismatch — stops an
    * underpaid / overpaid / amount-tampered gateway charge from being booked PAID
    * (e.g. a client-created charge linked via `confirm` for a different amount).
-   * A no-op when the provider does not report the captured figures.
+   * With `requireFigures` (every real gateway) absent figures are a rejection;
+   * only the Noop simulator may omit them.
    */
   private assertCapturedMatches(
     payment: Payment,
     result: { capturedMinorUnits?: number; capturedCurrency?: string },
+    requireFigures = false,
   ): void {
     const expectedC = Math.round(Number(payment.amount) * 100);
+    if (
+      requireFigures &&
+      (result.capturedMinorUnits == null || !result.capturedCurrency)
+    ) {
+      this.logger.error(
+        `Payment ${payment.id} confirm rejected: gateway did not report the captured amount/currency`,
+      );
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'The gateway did not report the captured amount; payment cannot be confirmed yet',
+      });
+    }
     if (
       result.capturedMinorUnits != null &&
       result.capturedMinorUnits !== expectedC

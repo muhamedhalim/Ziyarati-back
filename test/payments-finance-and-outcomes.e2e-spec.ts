@@ -55,6 +55,7 @@ import { blockingConnectionOptions } from '../src/queue/redis.config';
 import { FeatureKey } from '../src/modules/subscription-billing/feature-registry';
 
 import { Payment } from '../src/entities/Payments/Payment';
+import { RefundService } from '../src/modules/payments/refund.service';
 import { Settlement } from '../src/entities/Payments/Settlement';
 import { OutboxJob } from '../src/entities/Campaigns/OutboxJob';
 import { ResourcePriceCatalog } from '../src/entities/ResourcePricing/ResourcePriceCatalog';
@@ -732,11 +733,13 @@ describe('Payments â€” finance classification & durable outcomes (Tap Phase 2) â
         .spyOn(ResourceEntitlementListener.prototype, 'onRefundRecorded')
         .mockResolvedValue(undefined);
       try {
-        await request(e2e.app.getHttpServer())
-          .post(`${API}/refunds`)
-          .set(...authHeader(owner.token))
-          .send({ paymentId: purchase.payment!.id })
-          .expect(201);
+        // FIN-001: platform-initiated; a clinic can no longer refund add-ons over HTTP.
+        await e2e.app.get(RefundService).create(
+          owner.tenantId,
+          { paymentId: purchase.payment!.id } as never,
+          undefined,
+          { platformInitiated: true },
+        );
         await settle();
       } finally {
         spy.mockRestore();

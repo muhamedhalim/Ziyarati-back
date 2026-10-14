@@ -8,6 +8,24 @@
  */
 export const DEFAULT_PAYMENT_CURRENCY = 'SAR';
 
+/**
+ * FIN-007 — currencies a payment / settlement may be denominated in (ISO 4217,
+ * upper-case). Free text used to reach the gateway and the settlement sums.
+ */
+export const SUPPORTED_PAYMENT_CURRENCIES = [
+  'SAR',
+  'AED',
+  'KWD',
+  'BHD',
+  'OMR',
+  'QAR',
+  'JOD',
+  'EGP',
+  'USD',
+  'EUR',
+  'GBP',
+] as const;
+
 /** Number of random bytes used to mint a public, unguessable payment-link token. */
 export const PAYMENT_LINK_TOKEN_BYTES = 24;
 

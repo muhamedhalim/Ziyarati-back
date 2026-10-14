@@ -3,6 +3,8 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { DataSource } from 'typeorm';
 
 import { BillingUpgradeRequest } from '../../entities/BillingUpgrades/BillingUpgradeRequest';
+import { FeatureFlag } from '../../entities/SaaS-Core/FeatureFlag';
+import { TenantUsageLimitOverride } from '../../entities/SaaS-Core/TenantUsageLimitOverride';
 import { FeatureFlagSource } from '../../entities/SaaS-Core/FeatureFlag';
 import { AppError, ErrorCode } from '../../common/errors';
 import {
@@ -171,6 +173,87 @@ export class BillingUpgradeEntitlementListener {
           toValue: BILLING_UPGRADE_STATUS.PAYMENT_FAILED,
           note: 'Payment failed or was declined — no entitlement was applied.',
           metadata: { paymentId },
+        },
+        manager,
+      );
+    });
+  }
+
+
+  /**
+   * FIN-002 — a FULLY refunded upgrade payment takes its entitlement back.
+   * Idempotent and throwing (the durable `payments.outcome` consumer retries).
+   *
+   * Conservative on purpose: a feature flag is switched off only while it is
+   * still the flag THIS upgrade wrote (source BILLING_UPGRADE) and no other
+   * completed upgrade request for the same feature stands behind it; a usage
+   * override is deactivated only when it was granted by this request.
+   */
+  async applyRefund(paymentId: string): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      const request = await lockRequestByPayment(manager, paymentId, {
+        tenant: true,
+      });
+      if (!request) return; // not a billing-upgrade payment
+      if (request.status !== BILLING_UPGRADE_STATUS.COMPLETED) return;
+
+      let revoked = false;
+      if (
+        request.type === BILLING_UPGRADE_TYPE.FEATURE &&
+        request.feature_key &&
+        isFeatureKey(request.feature_key)
+      ) {
+        const flag = await manager.getRepository(FeatureFlag).findOne({
+          where: {
+            tenant: { id: request.tenant.id },
+            feature_key: request.feature_key,
+          },
+        });
+        const otherGrant = await manager
+          .getRepository(BillingUpgradeRequest)
+          .createQueryBuilder('r')
+          .where('r."tenantId" = :tenantId', { tenantId: request.tenant.id })
+          .andWhere('r.feature_key = :key', { key: request.feature_key })
+          .andWhere('r.status = :status', {
+            status: BILLING_UPGRADE_STATUS.COMPLETED,
+          })
+          .andWhere('r.id <> :id', { id: request.id })
+          .getCount();
+        if (
+          flag &&
+          flag.is_enabled &&
+          flag.source === FeatureFlagSource.BILLING_UPGRADE &&
+          otherGrant === 0
+        ) {
+          await this.featureFlags.set(
+            request.tenant.id,
+            request.feature_key,
+            false,
+            { source: FeatureFlagSource.BILLING_UPGRADE, manager },
+          );
+          revoked = true;
+        }
+      } else if (request.type === BILLING_UPGRADE_TYPE.USAGE_LIMIT) {
+        const res = await manager
+          .getRepository(TenantUsageLimitOverride)
+          .createQueryBuilder()
+          .update()
+          .set({ is_active: false })
+          .where('"sourceRequestId" = :id AND is_active = true', {
+            id: request.id,
+          })
+          .execute();
+        revoked = (res.affected ?? 0) > 0;
+      }
+      if (!revoked) return;
+
+      await this.history.record(
+        {
+          requestId: request.id,
+          type: BILLING_UPGRADE_EVENT_TYPE.NOTE_ADDED,
+          note: 'Payment fully refunded — entitlement revoked.',
+          metadata: { paymentId },
+          internalOnly: true,
         },
         manager,
       );

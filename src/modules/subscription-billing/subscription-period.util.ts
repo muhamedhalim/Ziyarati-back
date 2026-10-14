@@ -14,6 +14,23 @@ import { BillingCycle, CustomCycleUnit } from '../../entities/enums';
  * fixed-day-count math, so a monthly cycle starting on the 31st correctly
  * rolls to the last day of a shorter month instead of drifting.
  */
+/**
+ * FIN-009 — add whole months in UTC, CLAMPING to the last day of the target
+ * month. `setUTCMonth(+1)` on Jan 31 overflows to Mar 3, which silently
+ * lengthened the period (and the doc comment above promised the clamp).
+ * Mutates and returns `date`.
+ */
+function addUtcMonthsClamped(date: Date, months: number): Date {
+  const day = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() + months);
+  const lastDay = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0),
+  ).getUTCDate();
+  date.setUTCDate(Math.min(day, lastDay));
+  return date;
+}
+
 export function computeNextPeriodEnd(
   start: Date,
   plan: SubscriptionPlan,
@@ -21,7 +38,7 @@ export function computeNextPeriodEnd(
   const end = new Date(start);
   switch (plan.billing_cycle) {
     case BillingCycle.YEARLY:
-      end.setUTCFullYear(end.getUTCFullYear() + 1);
+      addUtcMonthsClamped(end, 12);
       break;
     case BillingCycle.CUSTOM: {
       // Both columns are required together at the DTO level; a plan with
@@ -33,18 +50,18 @@ export function computeNextPeriodEnd(
           end.setUTCDate(end.getUTCDate() + value);
           break;
         case CustomCycleUnit.YEAR:
-          end.setUTCFullYear(end.getUTCFullYear() + value);
+          addUtcMonthsClamped(end, 12 * value);
           break;
         case CustomCycleUnit.MONTH:
         default:
-          end.setUTCMonth(end.getUTCMonth() + value);
+          addUtcMonthsClamped(end, value);
           break;
       }
       break;
     }
     case BillingCycle.MONTHLY:
     default:
-      end.setUTCMonth(end.getUTCMonth() + 1);
+      addUtcMonthsClamped(end, 1);
       break;
   }
   return end;

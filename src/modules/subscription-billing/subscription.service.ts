@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -16,6 +16,7 @@ import {
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { BillingService } from './billing.service';
+import { BillingModeService } from './billing-mode.service';
 import { computeNextPeriodEnd } from './subscription-period.util';
 import { AccessControlService } from './access-control.service';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
@@ -130,6 +131,7 @@ export class SubscriptionService {
     private readonly platformSettings: SystemSettingService,
     private readonly emitter: EventEmitter2,
     private readonly config: ConfigService,
+    @Optional() private readonly billingMode?: BillingModeService,
   ) {}
 
   // ───────────────────────────── Plans ───────────────────────────────────── //
@@ -169,6 +171,25 @@ export class SubscriptionService {
       throw new AppError(ErrorCode.CONFLICT, {
         message: 'This tenant already has an active subscription',
       });
+    }
+
+    if (dto.startTrial) {
+      // FIN-005: one trial per tenant. A cancelled subscription no longer blocks
+      // creating a new one, so cancel → create could restart the trial forever.
+      // Derived from history (including soft-deleted rows), so it also covers
+      // tenants that trialled before this rule existed — no new column.
+      const previous = await this.subscriptions.count({
+        where: { tenant: { id: tenantId } },
+        withDeleted: true,
+      });
+      if (previous > 0) {
+        throw new AppError(ErrorCode.CONFLICT, {
+          message:
+            'A free trial has already been used by this tenant. Please choose a plan.',
+        });
+      }
+    } else {
+      await this.assertPaidPlanChargeable(plan);
     }
 
     const startsAt = new Date();
@@ -314,6 +335,7 @@ export class SubscriptionService {
     const newPlan = await this.getActivePlan(dto.planId);
 
     if (!this.billing.supportsCheckout) {
+      await this.assertPaidPlanChargeable(newPlan);
       return this.changePlanImmediately(tenantId, current, newPlan);
     }
     return this.changePlanWithPayment(tenantId, current, newPlan);
@@ -379,6 +401,7 @@ export class SubscriptionService {
     }
 
     if (!this.billing.supportsCheckout || !this.isPaid(subscription.plan)) {
+      await this.assertPaidPlanChargeable(subscription.plan);
       return this.reactivateImmediately(tenantId, subscription);
     }
     return this.reactivateWithPayment(tenantId, subscription);
@@ -830,6 +853,25 @@ export class SubscriptionService {
 
   private isPaid(plan: SubscriptionPlan): boolean {
     return Number(plan.price) > 0;
+  }
+
+  /**
+   * FIN-004 — in PRODUCTION, with platform billing in PAID mode, a paid plan
+   * must never go ACTIVE without a payment: when no provider can take a
+   * checkout (`RecurringUnavailableProvider`) the "legacy immediate" paths
+   * would hand the plan over with an unpaid invoice. Dev/test keep the legacy
+   * behaviour (decisions D2/D4), as does FREE billing mode, where plans are not
+   * charged by design.
+   */
+  private async assertPaidPlanChargeable(plan: SubscriptionPlan): Promise<void> {
+    if (!this.isPaid(plan) || this.billing.supportsCheckout) return;
+    const env = this.config.get<string>('NODE_ENV') ?? process.env.NODE_ENV;
+    if (env !== 'production') return;
+    if (!(await this.billingMode?.isPaidMode())) return;
+    throw new AppError(ErrorCode.SERVICE_UNAVAILABLE, {
+      message:
+        'Online payment is not available right now, so this paid plan cannot be activated. Please contact support.',
+    });
   }
 
   private view(subscription: Subscription): SubscriptionView {

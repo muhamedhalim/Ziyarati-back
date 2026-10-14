@@ -34,6 +34,8 @@ import { ResourcePriceCatalog } from '../src/entities/ResourcePricing/ResourcePr
 import { ResourcePurchase } from '../src/entities/ResourcePricing/ResourcePurchase';
 import { Payment } from '../src/entities/Payments/Payment';
 import { PaymentStatus } from '../src/entities/enums';
+import { RefundService } from '../src/modules/payments/refund.service';
+import { RefundService } from '../src/modules/payments/refund.service';
 
 const API = '/api/v1';
 
@@ -104,11 +106,46 @@ describe('Add-on refund reversal over TAP (plan §14/§24) — real Postgres', (
     return purchase;
   }
 
-  const refund = (token: string, paymentId: string, amount?: number) =>
-    request(e2e.app.getHttpServer())
+  // FIN-001: a clinic can no longer refund platform revenue through POST /refunds
+  // (guard test below). The entitlement-reversal machinery is exercised through
+  // the platform-initiated service path, which is what a platform action calls.
+  const refund = async (
+    _token: string,
+    paymentId: string,
+    amount?: number,
+    idempotencyKey?: string,
+  ) => {
+    const rows = await e2e.dataSource.query(
+      `SELECT "tenantId" FROM payments WHERE id = $1`,
+      [paymentId],
+    );
+    return e2e.app.get(RefundService).create(
+      rows[0].tenantId as string,
+      {
+        paymentId,
+        ...(amount != null ? { amount } : {}),
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      } as never,
+      undefined,
+      { platformInitiated: true },
+    );
+  };
+
+  it('FIN-001: a clinic owner cannot refund an add-on payment through POST /refunds', async () => {
+    const owner = await createSubscribedOwnerFixture(e2e, 'tap-refund-block', {
+      max_branches: 5,
+    });
+    const purchase = await createAndPay(owner.token, 2);
+    await request(e2e.app.getHttpServer())
       .post(`${API}/refunds`)
-      .set(...authHeader(token))
-      .send({ paymentId, ...(amount != null ? { amount } : {}) });
+      .set(...authHeader(owner.token))
+      .send({ paymentId: purchase.payment!.id })
+      .expect(403);
+    expect(await capacityFor(owner.tenantId)).toBe(2);
+    expect((await paymentOf(purchase.payment!.id)).status).toBe(
+      PaymentStatus.PAID,
+    );
+  });
 
   it('a full refund through POST /refunds fully revokes the granted capacity', async () => {
     const owner = await createSubscribedOwnerFixture(e2e, 'tap-refund-full', {
@@ -117,7 +154,7 @@ describe('Add-on refund reversal over TAP (plan §14/§24) — real Postgres', (
     const purchase = await createAndPay(owner.token, 3);
     expect(await capacityFor(owner.tenantId)).toBe(3);
 
-    await refund(owner.token, purchase.payment!.id).expect(201);
+    await refund(owner.token, purchase.payment!.id);
     await settle();
 
     expect(await capacityFor(owner.tenantId)).toBe(0);
@@ -133,7 +170,7 @@ describe('Add-on refund reversal over TAP (plan §14/§24) — real Postgres', (
     });
     const purchase = await createAndPay(owner.token, 2);
 
-    await refund(owner.token, purchase.payment!.id).expect(201);
+    await refund(owner.token, purchase.payment!.id);
 
     const body = tap.refundRequests[tap.refundRequests.length - 1];
     expect(body.charge_id).toBe(purchase.payment!.gateway_payment_id);
@@ -155,7 +192,7 @@ describe('Add-on refund reversal over TAP (plan §14/§24) — real Postgres', (
     expect(await capacityFor(owner.tenantId)).toBe(4);
 
     // Refund 50.00 of 200.00 (25%) ⇒ targetRevoked = floor(4 × 5000 / 20000) = 1.
-    await refund(owner.token, purchase.payment!.id, 50).expect(201);
+    await refund(owner.token, purchase.payment!.id, 50);
     await settle();
 
     expect(await capacityFor(owner.tenantId)).toBe(3);
@@ -175,11 +212,11 @@ describe('Add-on refund reversal over TAP (plan §14/§24) — real Postgres', (
     const purchase = await createAndPay(owner.token, 10);
     expect(await capacityFor(owner.tenantId)).toBe(10);
 
-    await refund(owner.token, purchase.payment!.id, 200).expect(201); // 40% ⇒ target 4
+    await refund(owner.token, purchase.payment!.id, 200); // 40% ⇒ target 4
     await settle();
     expect(await capacityFor(owner.tenantId)).toBe(6);
 
-    await refund(owner.token, purchase.payment!.id, 300).expect(201); // 100% cumulative ⇒ target 10
+    await refund(owner.token, purchase.payment!.id, 300); // 100% cumulative ⇒ target 10
     await settle();
     expect(await capacityFor(owner.tenantId)).toBe(0);
 
@@ -202,12 +239,9 @@ describe('Add-on refund reversal over TAP (plan §14/§24) — real Postgres', (
     const idempotencyKey = randomUUID();
 
     const send = () =>
-      request(e2e.app.getHttpServer())
-        .post(`${API}/refunds`)
-        .set(...authHeader(owner.token))
-        .send({ paymentId: purchase.payment!.id, idempotencyKey });
-    await send().expect(201);
-    await send().expect(201); // replay returns the same refund
+      refund(owner.token, purchase.payment!.id, undefined, idempotencyKey);
+    await send();
+    await send(); // replay returns the same refund
     await settle();
 
     expect(await capacityFor(owner.tenantId)).toBe(0);
@@ -235,7 +269,7 @@ describe('Add-on refund reversal over TAP (plan §14/§24) — real Postgres', (
     const purchase = await createAndPay(owner.token, 2);
     tap.refundStatus = 'PENDING';
 
-    const res = await refund(owner.token, purchase.payment!.id).expect(201);
+    const res = { body: await refund(owner.token, purchase.payment!.id) };
     await settle();
 
     expect(res.body.status).toBe('PENDING'); // accepted, not done

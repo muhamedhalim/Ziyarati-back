@@ -52,6 +52,7 @@ describe('PaymentService.create — gateway seams (Tap Phase 1)', () => {
   beforeEach(async () => {
     payments = createMockRepository();
     customers = createMockRepository();
+    customers.count.mockResolvedValue(1); // FIN-006 ownership check
     tenants = createMockRepository();
     manager = createMockEntityManager();
     dataSource = createMockDataSource(manager);
@@ -60,7 +61,12 @@ describe('PaymentService.create — gateway seams (Tap Phase 1)', () => {
         ? customers
         : entity === Tenant
           ? tenants
-          : createMockRepository(),
+          : (() => {
+            // FIN-006: the tenant-ownership check counts rows; default to "owned".
+            const r = createMockRepository();
+            r.count.mockResolvedValue(1);
+            return r;
+          })(),
     );
     gateway = {
       name: 'tap',

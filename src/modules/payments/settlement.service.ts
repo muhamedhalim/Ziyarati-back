@@ -143,10 +143,11 @@ export class SettlementService {
       const netCollectibleC = grossC - refundedC - claw.totalCents;
       // Extra batch-level percent fee only on positive collectible; never on a
       // clawback-negative batch.
-      const percentFeeC =
-        netCollectibleC > 0
-          ? Math.round((netCollectibleC * (dto.feePercent ?? 0)) / 100)
-          : 0;
+      // FIN-010: the platform fee is frozen per payment at capture
+      // (`platform_fee`, from server config). A caller-chosen percent has no
+      // legitimate use and is ignored; `feePercent` stays on the DTO only so
+      // existing clients keep validating.
+      const percentFeeC = 0;
       const feeC = frozenFeesC + percentFeeC;
       const netC = netCollectibleC - feeC;
       const currency =

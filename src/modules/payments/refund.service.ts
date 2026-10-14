@@ -15,7 +15,11 @@ import { TransactionService } from './transaction.service';
 import { RefundCompletionService, RefundCompletion } from './refund-completion.service';
 import { CreateRefundDto } from './dto/create-refund.dto';
 import { QueryRefundsDto } from './dto/query-refunds.dto';
-import { REFUND_STATUS, TRANSACTION_TYPE } from './payments.constants';
+import {
+  PAYMENT_PURPOSE,
+  REFUND_STATUS,
+  TRANSACTION_TYPE,
+} from './payments.constants';
 
 /** Single, bounded major-units → integer-cents conversion (no float arithmetic downstream). */
 const toCents = (v: number | string): number => Math.round(Number(v) * 100);
@@ -76,6 +80,7 @@ export class RefundService {
     tenantId: string,
     dto: CreateRefundDto,
     userId?: string,
+    opts: { platformInitiated?: boolean } = {},
   ): Promise<Refund> {
     // C1: fast-path replay.
     if (dto.idempotencyKey) {
@@ -87,7 +92,7 @@ export class RefundService {
     let intent: RefundIntent;
     try {
       intent = await this.dataSource.transaction((m) =>
-        this.persistIntent(m, tenantId, dto, userId),
+        this.persistIntent(m, tenantId, dto, userId, opts.platformInitiated),
       );
     } catch (err) {
       // C1: lost the unique race → another request already created it; return it.
@@ -231,6 +236,7 @@ export class RefundService {
     tenantId: string,
     dto: CreateRefundDto,
     userId?: string,
+    platformInitiated = false,
   ): Promise<RefundIntent> {
     const payment = await m.getRepository(Payment).findOne({
       where: { id: dto.paymentId, tenant: { id: tenantId } },
@@ -238,6 +244,20 @@ export class RefundService {
     });
     if (!payment) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Payment not found' });
+    }
+    // FIN-001: add-on and billing-upgrade payments are PLATFORM revenue (settled
+    // to the platform's own account, not the clinic's). A clinic must not refund
+    // them from this tenant-facing route. Platform-initiated callers (never the
+    // clinic controller) opt in with `platformInitiated`.
+    if (
+      !platformInitiated &&
+      (payment.purpose === PAYMENT_PURPOSE.ADDON ||
+        payment.purpose === PAYMENT_PURPOSE.BILLING_UPGRADE)
+    ) {
+      throw AppError.forbidden(
+        ErrorCode.FORBIDDEN,
+        'Platform purchases cannot be refunded from the clinic account',
+      );
     }
     if (
       payment.status !== PaymentStatus.PAID &&

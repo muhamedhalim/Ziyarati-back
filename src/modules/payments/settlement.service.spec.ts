@@ -136,7 +136,7 @@ describe('SettlementService.generate (VER-010)', () => {
     expect(adjustments.markApplied).toHaveBeenCalledWith(manager, ['adj-1'], 'settlement-clawback');
   });
 
-  it('the percent fee applies ONLY to a positive collectible total — never amplifies a clawback-negative batch', async () => {
+  it('FIN-010: a caller-supplied feePercent is ignored — only the frozen per-payment fees are deducted', async () => {
     claimedPayments([]);
     adjustments.lockOpen.mockResolvedValueOnce({ ids: ['adj-1'], totalCents: 1000 });
     const settlementRepo = manager.getRepository(Settlement);
@@ -145,7 +145,6 @@ describe('SettlementService.generate (VER-010)', () => {
 
     await service.generate(TENANT, { feePercent: 10 });
 
-    // net collectible = -10; percent fee must be 0 (not -1), so fee_amount stays 0 and net stays -10.
     expect(settlementRepo.save).toHaveBeenCalledWith(expect.objectContaining({ fee_amount: 0, net_amount: -10 }));
   });
 

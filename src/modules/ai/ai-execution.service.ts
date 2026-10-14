@@ -380,6 +380,7 @@ export class AiExecutionService {
     let requestClaimed = false;
     let providerStarted = false;
     let quotaReserved = false;
+    let quotaFundedBy: 'plan' | 'credit' | 'none' = 'plan';
     const channel = transport;
     let logicalChannel = 'API';
     let routeForMetric = 'ai.chat.api';
@@ -526,6 +527,7 @@ export class AiExecutionService {
         });
       }
       quotaReserved = true;
+      quotaFundedBy = admission.fundedBy;
       // From this point onward the turn can persist input, buy a RAG embedding,
       // or execute a provider/tool. A crash has an unknown replay outcome.
       await this.requests.markProviderStarted(tenantId, requestKey);
@@ -857,6 +859,12 @@ export class AiExecutionService {
         USAGE_METRIC.AI_TOKENS,
         totalTokens - 1,
       );
+      if (quotaFundedBy === 'credit') {
+        // FIN-011: the credit-funded turn pays its real cost, not 1 unit.
+        await this.usage
+          .settleCreditRemainder(tenantId, USAGE_METRIC.AI_TOKENS, totalTokens - 1)
+          .catch(() => undefined);
+      }
 
       // Mirror the bot reply into the unified timeline (after the assistant row is
       // committed, so its timestamp follows the customer turn).
@@ -931,7 +939,7 @@ export class AiExecutionService {
         // reservation above was never topped up or consumed — release it.
         // Best-effort: a release failure must not mask the real error.
         await this.usage
-          .release(tenantId, USAGE_METRIC.AI_TOKENS, 1)
+          .release(tenantId, USAGE_METRIC.AI_TOKENS, 1, quotaFundedBy)
           .catch(() => undefined);
       }
       if (providerStarted) {
@@ -1433,6 +1441,7 @@ export class AiExecutionService {
     let requestClaimed = false;
     let providerStarted = false;
     let quotaReserved = false;
+    let quotaFundedBy: 'plan' | 'credit' | 'none' = 'plan';
     const channel = transport;
     let logicalChannel = 'API';
     let routeForMetric = 'ai.chat.api';
@@ -1580,6 +1589,7 @@ export class AiExecutionService {
         });
       }
       quotaReserved = true;
+      quotaFundedBy = admission.fundedBy;
       await this.requests.markProviderStarted(tenantId, requestKey);
       providerStarted = true;
 
@@ -2076,6 +2086,12 @@ export class AiExecutionService {
         USAGE_METRIC.AI_TOKENS,
         totalTokens - 1,
       );
+      if (quotaFundedBy === 'credit') {
+        // FIN-011: the credit-funded turn pays its real cost, not 1 unit.
+        await this.usage
+          .settleCreditRemainder(tenantId, USAGE_METRIC.AI_TOKENS, totalTokens - 1)
+          .catch(() => undefined);
+      }
       let mirroredMessageId: string | null = null;
       if (linkedConversationId && full) {
         const mirrored = await this.mirrorToTimeline(
@@ -2156,7 +2172,7 @@ export class AiExecutionService {
         // reservation above was never topped up or consumed — release it.
         // Best-effort: a release failure must not mask the real error.
         await this.usage
-          .release(tenantId, USAGE_METRIC.AI_TOKENS, 1)
+          .release(tenantId, USAGE_METRIC.AI_TOKENS, 1, quotaFundedBy)
           .catch(() => undefined);
       }
       if (providerStarted) {

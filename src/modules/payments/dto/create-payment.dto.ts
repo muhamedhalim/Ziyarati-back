@@ -1,4 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
+import { SUPPORTED_PAYMENT_CURRENCIES } from '../payments.constants';
 import {
   IsNumber,
   IsOptional,
@@ -6,6 +8,7 @@ import {
   IsString,
   IsUUID,
   MaxLength,
+  IsIn,
 } from 'class-validator';
 
 /**
@@ -34,8 +37,10 @@ export class CreatePaymentDto {
     default: 'SAR',
   })
   @IsOptional()
-  @IsString()
-  @MaxLength(3)
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toUpperCase() : value,
+  )
+  @IsIn([...SUPPORTED_PAYMENT_CURRENCIES])
   currency?: string;
 
   @ApiPropertyOptional({

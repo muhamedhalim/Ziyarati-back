@@ -337,4 +337,110 @@ describe('BillingUpgradeEntitlementListener', () => {
       ).resolves.toBeUndefined();
     });
   });
+
+  describe('applyRefund (FIN-002)', () => {
+    const build = (opts: {
+      request: any;
+      flag?: any;
+      otherGrants?: number;
+      overrideAffected?: number;
+    }) => {
+      const lockQb = createMockQueryBuilder();
+      lockQb.getOne.mockResolvedValue(opts.request);
+      const countQb = createMockQueryBuilder();
+      countQb.getCount.mockResolvedValue(opts.otherGrants ?? 0);
+      const reqRepo = createMockRepository();
+      reqRepo.createQueryBuilder
+        .mockReturnValueOnce(lockQb)
+        .mockReturnValueOnce(countQb);
+      reqRepo.findOne.mockResolvedValue(opts.request);
+      const flagRepo = createMockRepository();
+      flagRepo.findOne.mockResolvedValue(opts.flag ?? null);
+      const execute = jest
+        .fn()
+        .mockResolvedValue({ affected: opts.overrideAffected ?? 0 });
+      const updateQb: any = {};
+      for (const m of ['update', 'set', 'where']) {
+        updateQb[m] = jest.fn(() => updateQb);
+      }
+      updateQb.execute = execute;
+      const overrideRepo: any = { createQueryBuilder: jest.fn(() => updateQb) };
+      const manager: any = {
+        getRepository: (e: unknown) =>
+          e === BillingUpgradeRequest
+            ? reqRepo
+            : (e as { name?: string })?.name === 'FeatureFlag'
+              ? flagRepo
+              : overrideRepo,
+      };
+      const ds: any = { transaction: (cb: any) => cb(manager) };
+      const l = new BillingUpgradeEntitlementListener(
+        ds,
+        featureFlags as any,
+        limitOverrides as any,
+        history as any,
+      );
+      return { l, execute };
+    };
+    const completedFeature = {
+      id: 'req-1',
+      status: BILLING_UPGRADE_STATUS.COMPLETED,
+      type: BILLING_UPGRADE_TYPE.FEATURE,
+      feature_key: FeatureKey.AI_ASSISTANT,
+      tenant: { id: 't1' },
+    };
+
+    it('switches off the flag this upgrade granted', async () => {
+      const { l } = build({
+        request: completedFeature,
+        flag: { is_enabled: true, source: FeatureFlagSource.BILLING_UPGRADE },
+      });
+      await l.applyRefund('pay-1');
+      expect(featureFlags.set).toHaveBeenCalledWith(
+        't1',
+        FeatureKey.AI_ASSISTANT,
+        false,
+        expect.objectContaining({ source: FeatureFlagSource.BILLING_UPGRADE }),
+      );
+      expect(history.record).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves a flag a platform admin took over, or another completed grant', async () => {
+      const a = build({
+        request: completedFeature,
+        flag: { is_enabled: true, source: FeatureFlagSource.PLATFORM_ADMIN },
+      });
+      await a.l.applyRefund('pay-1');
+      const b = build({
+        request: completedFeature,
+        flag: { is_enabled: true, source: FeatureFlagSource.BILLING_UPGRADE },
+        otherGrants: 1,
+      });
+      await b.l.applyRefund('pay-1');
+      expect(featureFlags.set).not.toHaveBeenCalled();
+      expect(history.record).not.toHaveBeenCalled();
+    });
+
+    it('is a no-op for a request that never completed', async () => {
+      const { l } = build({
+        request: { ...completedFeature, status: BILLING_UPGRADE_STATUS.PAYMENT_PROCESSING },
+      });
+      await l.applyRefund('pay-1');
+      expect(featureFlags.set).not.toHaveBeenCalled();
+    });
+
+    it('deactivates the usage override granted by the request', async () => {
+      const { l, execute } = build({
+        request: {
+          ...completedFeature,
+          type: BILLING_UPGRADE_TYPE.USAGE_LIMIT,
+          feature_key: undefined,
+        },
+        overrideAffected: 1,
+      });
+      await l.applyRefund('pay-1');
+      expect(execute).toHaveBeenCalled();
+      expect(history.record).toHaveBeenCalledTimes(1);
+    });
+  });
 });

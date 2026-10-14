@@ -1,4 +1,6 @@
 import { Type } from 'class-transformer';
+import { Transform } from 'class-transformer';
+import { SUPPORTED_PAYMENT_CURRENCIES } from '../payments.constants';
 import {
   IsISO8601,
   IsNumber,
@@ -8,6 +10,7 @@ import {
   Max,
   MaxLength,
   Min,
+  IsIn,
 } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -46,7 +49,9 @@ export class GenerateSettlementDto {
 
   @ApiPropertyOptional({ description: 'Settlement currency. Defaults to SAR.', example: 'SAR' })
   @IsOptional()
-  @IsString()
-  @MaxLength(3)
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toUpperCase() : value,
+  )
+  @IsIn([...SUPPORTED_PAYMENT_CURRENCIES])
   currency?: string;
 }

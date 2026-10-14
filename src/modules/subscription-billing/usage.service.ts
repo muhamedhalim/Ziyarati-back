@@ -120,9 +120,31 @@ export class UsageService {
     tenantId: string,
     metric: UsageMetric,
     amount = 1,
+    fundedBy: UsageFundedBy = 'plan',
   ): Promise<void> {
     if (amount <= 0) return;
     await this.applyDelta(this.usage, tenantId, metric, amount, 'subtract');
+    // FIN-011: a reservation that was funded by a prepaid CREDIT also took
+    // units out of the credit balance — give them back, or a failed turn burns
+    // the tenant's purchased credit.
+    if (fundedBy === 'credit') {
+      await this.credits.refundReservation(tenantId, metric, amount);
+    }
+  }
+
+  /**
+   * FIN-011 — settle the remainder of a turn that was admitted on prepaid
+   * credit. Admission reserves 1 unit; the real cost lands afterwards, so the
+   * remainder must also leave the credit balance (clamped at the balance, never
+   * negative). Without this a credit-funded turn only ever debited 1 unit.
+   */
+  async settleCreditRemainder(
+    tenantId: string,
+    metric: UsageMetric,
+    remainder: number,
+  ): Promise<void> {
+    if (remainder <= 0) return;
+    await this.credits.settle(tenantId, metric, remainder);
   }
 
   /**
