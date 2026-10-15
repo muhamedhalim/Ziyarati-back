@@ -149,7 +149,8 @@ module "rds" {
   max_connections          = var.db.max_connections
   allocated_storage_gb     = var.db.allocated_storage_gb
   max_allocated_storage_gb = var.db.max_allocated_storage_gb
-  backup_retention_days    = var.db.backup_retention_days
+  backup_retention_days    = var.db.backup_enabled ? var.db.backup_retention_days : 0
+  apply_immediately        = var.db.apply_immediately
   deletion_protection      = var.deletion_protection
   log_retention_days       = var.log_retention_days
   tags                     = local.tags
@@ -295,7 +296,7 @@ module "account_baseline" {
 
 module "backup" {
   source = "../backup"
-  count  = var.dr_backup_region != "" ? 1 : 0
+  count  = var.db.backup_enabled && var.dr_backup_region != "" ? 1 : 0
   providers = {
     aws    = aws
     aws.dr = aws.dr

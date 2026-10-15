@@ -69,6 +69,12 @@ variable "backup_retention_days" {
   default     = 14
 }
 
+variable "apply_immediately" {
+  description = "Apply modifications now instead of in the next maintenance window"
+  type        = bool
+  default     = false
+}
+
 variable "backup_window" {
   description = "UTC backup window (22:00 UTC = 01:00 KSA)"
   type        = string

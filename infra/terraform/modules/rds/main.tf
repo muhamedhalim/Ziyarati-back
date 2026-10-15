@@ -140,7 +140,7 @@ resource "aws_db_instance" "this" {
 
   auto_minor_version_upgrade  = true
   allow_major_version_upgrade = false
-  apply_immediately           = false
+  apply_immediately           = var.apply_immediately
 
   performance_insights_enabled          = true
   performance_insights_kms_key_id       = var.kms_key_arn

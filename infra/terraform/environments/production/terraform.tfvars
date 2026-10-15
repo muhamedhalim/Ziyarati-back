@@ -51,15 +51,17 @@ api_db_pool_max    = 10
 worker_db_pool_max = 10
 
 db = {
-  engine_major_version = "17"            # must be >= the Railway major (MIGRATION.md M0)
-  instance_class       = "db.t4g.medium" # Graviton, same 2 vCPU / 4 GB as db.t3.medium; $0.149/h vs $0.168/h Multi-AZ (Pricing API, 2026-10-15).
+  engine_major_version = "17"          # must be >= the Railway major (MIGRATION.md M0)
+  instance_class       = "db.t3.small" # TRIAL-PHASE cost cut 2026-10-16 (was db.t3.medium live; db.t4g.medium was proposed, never applied). 2 vCPU burstable / 2 GB.
   # 2026-10-08 note said t4g.medium was not orderable here; DescribeOrderableDBInstanceOptions (PostgreSQL 17.9, gp3, Multi-AZ,
   # eu-central-1a/b/c) lists it on 2026-10-15. The modify call fails fast, before any change, if the account still cannot order it.
   multi_az                 = true
   max_connections          = 300
   allocated_storage_gb     = 50
   max_allocated_storage_gb = 200
-  backup_retention_days    = 14
+  backup_retention_days    = 14    # value used when backup_enabled = true (official launch)
+  backup_enabled           = false # TRIAL: set false to turn automated backups off. See docs/DB-TRIAL-COST-CUT.md
+  apply_immediately        = false # was true for the 2026-10-16 changes (applied); keep false
 }
 
 redis = {

@@ -197,6 +197,10 @@ variable "db" {
     allocated_storage_gb     = number
     max_allocated_storage_gb = number
     backup_retention_days    = number
+    # Phase switch. false = trial phase: automated backups OFF (RDS retention 0,
+    # no AWS Backup plan) while backup_retention_days is kept for re-enable.
+    backup_enabled    = optional(bool, true)
+    apply_immediately = optional(bool, false) # true = apply RDS class/retention changes now, not in the maintenance window
   })
 }
 
