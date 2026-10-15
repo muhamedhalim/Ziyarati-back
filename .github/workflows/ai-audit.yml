@@ -153,6 +153,9 @@ jobs:
       JWT_REFRESH_SECRET: ai-audit-ci-refresh-secret-not-for-production-use
       PAYMENT_PROVIDER: noop
       EMAIL_PROVIDER: noop
+      # The `secrets` context is not allowed in step `if:` (the workflow file was rejected
+      # as invalid); a job-level env flag carries "is the key configured" without exposing it.
+      OPENAI_KEY_PRESENT: ${{ secrets.OPENAI_API_KEY != '' }}
       OPENAI_LIVE_TESTS: "true"
       # Manual dispatch can pick Terra for a one-off comparison; the nightly
       # schedule always falls through to the default (Luna — report Phase 5).
@@ -160,38 +163,38 @@ jobs:
 
     steps:
       - name: Skip if no live-suite key is configured
-        if: ${{ secrets.OPENAI_API_KEY == '' }}
+        if: ${{ env.OPENAI_KEY_PRESENT != 'true' }}
         run: |
           echo "::notice::OPENAI_API_KEY is not set as a repo/org secret — skipping the live AI-audit suite."
           exit 0
 
       - uses: actions/checkout@v4
-        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        if: ${{ env.OPENAI_KEY_PRESENT == 'true' }}
 
       - uses: actions/setup-node@v4
-        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        if: ${{ env.OPENAI_KEY_PRESENT == 'true' }}
         with:
           node-version: 20
           cache: npm
 
       - name: Install dependencies
-        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        if: ${{ env.OPENAI_KEY_PRESENT == 'true' }}
         run: npm ci
 
       - name: Build
-        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        if: ${{ env.OPENAI_KEY_PRESENT == 'true' }}
         run: npm run build
 
       - name: Provision database from the migration chain
-        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        if: ${{ env.OPENAI_KEY_PRESENT == 'true' }}
         run: node node_modules/typeorm/cli.js migration:run -d dist/src/config/data-source.js
 
       - name: Seed system RBAC catalogue and platform admin
-        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        if: ${{ env.OPENAI_KEY_PRESENT == 'true' }}
         run: npm run seed
 
       - name: Live AI-audit suite (live-*.spec.ts — real model, capped calls)
-        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        if: ${{ env.OPENAI_KEY_PRESENT == 'true' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: npm run test:ai-audit:live
@@ -200,7 +203,7 @@ jobs:
       # this is where the model id actually run and its per-scenario transcript
       # get recorded for a nightly run, without checking real output into git.
       - name: Upload live-run transcripts (model id + transcripts)
-        if: ${{ secrets.OPENAI_API_KEY != '' && always() }}
+        if: ${{ env.OPENAI_KEY_PRESENT == 'true' && always() }}
         uses: actions/upload-artifact@v4
         with:
           name: ai-audit-live-results-${{ github.run_id }}

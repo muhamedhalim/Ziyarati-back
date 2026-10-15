@@ -30,6 +30,9 @@ on:
       - "compliance/**"
       - "docs/**"
       - "**/*.md"
+      # Sibling workflows are not part of the backend image.
+      - ".github/workflows/terraform.yml"
+      - ".github/workflows/ai-audit.yml"
   push:
     branches: [master]
     paths-ignore:
@@ -37,6 +40,9 @@ on:
       - "compliance/**"
       - "docs/**"
       - "**/*.md"
+      # Sibling workflows are not part of the backend image.
+      - ".github/workflows/terraform.yml"
+      - ".github/workflows/ai-audit.yml"
   workflow_dispatch:
     inputs:
       image_tag:
