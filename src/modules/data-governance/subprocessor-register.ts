@@ -171,8 +171,9 @@ export const SUBPROCESSORS: readonly Subprocessor[] = [
   proc({
     id: 'cloudflare-r2',
     name: 'Cloudflare R2',
-    purpose: 'Object storage today (patient documents, attachments)',
-    state: 'active',
+    purpose:
+      'Former object storage (patient documents, attachments); code path removed',
+    state: 'legacy',
     dataClasses: ['D2', 'D4'],
     flows: ['F7'],
     healthData: true,
@@ -180,7 +181,7 @@ export const SUBPROCESSORS: readonly Subprocessor[] = [
     region: 'VC',
     retention: 'Indefinite (no lifecycle policy)',
     control:
-      'To be replaced by S3 in the approved Region; deletion evidence required afterwards',
+      'Replaced by S3; app no longer connects. Deletion evidence still required',
   }),
   proc({
     id: 'railway',

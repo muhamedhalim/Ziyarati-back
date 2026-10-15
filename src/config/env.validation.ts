@@ -872,22 +872,10 @@ export const validate = (config: Record<string, unknown>) => {
     // RAG uses keyword fallback.
     AI_PGVECTOR_ENABLED: Joi.string().valid('true', 'false').default('true'),
 
-    // ── Cloudflare R2 object storage (S3-compatible, PRIVATE bucket) ──────
-    // Tenant verification documents (and any other private files) live here.
+    // ── Object storage (Amazon S3, PRIVATE bucket, runtime IAM role) ──────
     // Optional in the schema so the app boots without storage configured, BUT
-    // the /uploads routes fail CLOSED with 503 until all four are present.
-    // R2_PUBLIC_URL is unused for private buckets and kept only for parity.
-    R2_ACCOUNT_ID: Joi.string().allow('', null),
-    R2_ACCESS_KEY_ID: Joi.string().allow('', null),
-    R2_SECRET_ACCESS_KEY: Joi.string().allow('', null),
-    R2_BUCKET: Joi.string().allow('', null),
-    // R2 is region-agnostic; the SDK requires a region string — 'auto' is correct.
-    R2_REGION: Joi.string().default('auto'),
-    // Unused for private buckets (we serve signed URLs). Kept for parity.
-    R2_PUBLIC_BASE_URL: Joi.string().allow('', null),
-    // AWS migration: `s3` = Amazon S3 via the runtime IAM role (no keys);
-    // `r2` (default) keeps the Cloudflare path above selectable for rollback.
-    STORAGE_PROVIDER: Joi.string().valid('r2', 's3').default('r2'),
+    // the /uploads routes fail CLOSED until S3_BUCKET and a region are present.
+    STORAGE_PROVIDER: Joi.string().valid('s3'),
     S3_BUCKET: Joi.string().allow('', null),
     S3_REGION: Joi.string().allow('', null),
     // Per-file upload cap in bytes (default 10 MB). Enforced by the multer
@@ -1530,9 +1518,9 @@ export const validate = (config: Record<string, unknown>) => {
   }
 
   // ── Object storage fail-fast (production, S3 explicitly selected) ─────────
-  // R2 stays fail-soft (upload routes answer 503) for backward compatibility,
-  // but choosing STORAGE_PROVIDER=s3 without a bucket/region is an explicit,
-  // detectable misconfiguration — every clinic document upload would fail.
+  // Storage stays fail-soft when unconfigured, but choosing
+  // STORAGE_PROVIDER=s3 without a bucket/region is an explicit, detectable
+  // misconfiguration — every clinic document upload would fail.
   if (
     value.NODE_ENV === 'production' &&
     value.STORAGE_PROVIDER === 's3' &&

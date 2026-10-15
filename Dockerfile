@@ -103,8 +103,8 @@ RUN apk upgrade --no-cache \
  && mkdir -p /app/certs && chmod 0755 /app/certs
 
 # Non-root. The `node` user (uid/gid 1000) ships with the base image. Nothing in
-# the app writes to disk at runtime — uploads go to object storage (S3, or R2
-# until cutover) — so the tree can stay read-only (ECS: readonlyRootFilesystem
+# the app writes to disk at runtime — uploads go to object storage (S3) —
+# so the tree can stay read-only (ECS: readonlyRootFilesystem
 # with a writable /tmp).
 COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=build     --chown=node:node /app/dist         ./dist

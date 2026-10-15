@@ -20,11 +20,8 @@ jest.mock('@aws-sdk/s3-request-presigner', () => ({
 /** Fully configured so `isConfigured()` is true and the real S3 call path (mocked above) runs. */
 function makeService(): StorageService {
   const values: Record<string, string> = {
-    R2_ACCOUNT_ID: 'test-account',
-    R2_ACCESS_KEY_ID: 'test-key',
-    R2_SECRET_ACCESS_KEY: 'test-secret',
-    R2_BUCKET: 'test-bucket',
-    R2_REGION: 'auto',
+    S3_BUCKET: 'test-bucket',
+    S3_REGION: 'eu-central-1',
   };
   const config = {
     get: (name: string) => values[name],
@@ -88,15 +85,11 @@ describe('StorageService — STORAGE_PROVIDER=s3 (AWS migration)', () => {
 
   beforeEach(() => (S3Client as jest.Mock).mockClear());
 
-  it('uses the default credential chain: region only, no R2 endpoint, no static keys', async () => {
+  it('uses the default credential chain: region only, no custom endpoint, no static keys', async () => {
     const service = makeS3Service({
       STORAGE_PROVIDER: 's3',
       S3_BUCKET: 'zt-production-uploads-123456789012',
       AWS_REGION: 'me-central-1',
-      // Leftover R2 values must be ignored in S3 mode.
-      R2_ACCOUNT_ID: 'old',
-      R2_ACCESS_KEY_ID: 'old',
-      R2_SECRET_ACCESS_KEY: 'old',
     });
     expect(service.isConfigured()).toBe(true);
     await service.deleteObject(`${TENANT_A}/docs/x.pdf`, TENANT_A);
@@ -132,16 +125,4 @@ describe('StorageService — STORAGE_PROVIDER=s3 (AWS migration)', () => {
     ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
   });
 
-  it('defaults to R2 when STORAGE_PROVIDER is unset (rollback path)', async () => {
-    const service = makeS3Service({
-      R2_ACCOUNT_ID: 'acct',
-      R2_ACCESS_KEY_ID: 'k',
-      R2_SECRET_ACCESS_KEY: 's',
-      R2_BUCKET: 'b',
-    });
-    await service.deleteObject(`${TENANT_A}/docs/x.pdf`, TENANT_A);
-    expect(S3Client).toHaveBeenCalledWith(
-      expect.objectContaining({ endpoint: 'https://acct.r2.cloudflarestorage.com' }),
-    );
-  });
 });

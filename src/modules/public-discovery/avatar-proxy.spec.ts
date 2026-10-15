@@ -59,11 +59,8 @@ function makeStorageService(
   sendImpl: (cmd: unknown) => unknown,
 ): StorageService {
   const values: Record<string, string> = {
-    R2_ACCOUNT_ID: 'a',
-    R2_ACCESS_KEY_ID: 'k',
-    R2_SECRET_ACCESS_KEY: 's',
-    R2_BUCKET: 'b',
-    R2_REGION: 'auto',
+    S3_BUCKET: 'b',
+    S3_REGION: 'eu-central-1',
   };
   const config = {
     get: (name: string) => values[name],

@@ -39,11 +39,8 @@ const OTHER = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 
 function make(): StorageService {
   const values: Record<string, string> = {
-    R2_ACCOUNT_ID: 'a',
-    R2_ACCESS_KEY_ID: 'k',
-    R2_SECRET_ACCESS_KEY: 's',
-    R2_BUCKET: 'bucket',
-    R2_REGION: 'auto',
+    S3_BUCKET: 'bucket',
+    S3_REGION: 'eu-central-1',
   };
   return new StorageService({
     get: (n: string) => values[n],
@@ -115,7 +112,7 @@ describe('StorageService.purgeObject', () => {
     expect(sent).toHaveLength(0);
   });
 
-  it('falls back to a plain delete only when the provider has no version API (R2)', async () => {
+  it('falls back to a plain delete only when the provider has no version API (non-versioned store)', async () => {
     handler = (c) => {
       if (c.__t === 'listVersions')
         throw Object.assign(new Error('x'), { name: 'NotImplemented' });

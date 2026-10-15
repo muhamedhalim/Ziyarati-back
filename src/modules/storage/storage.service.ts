@@ -46,13 +46,10 @@ export interface StoredObject {
 }
 
 /**
- * Private object-storage gateway (AWS SDK v3). `STORAGE_PROVIDER` selects:
- *  - `s3` — Amazon S3. No endpoint and no static keys: credentials come from
- *    the SDK default chain, i.e. the ECS task role in AWS. Bucket default
- *    encryption (SSE-KMS) applies, so nothing here names a key.
- *  - `r2` (default, kept for rollback during the migration) — Cloudflare R2
- *    through its S3-compatible endpoint with static keys.
- * Keys are identical in both, so objects copy across without a DB rewrite.
+ * Private object-storage gateway (AWS SDK v3) backed by Amazon S3. No endpoint
+ * and no static keys: credentials come from the SDK default chain, i.e. the
+ * ECS task role in AWS. Bucket default encryption (SSE-KMS) applies, so
+ * nothing here names a key.
  *
  * The bucket is PRIVATE: we store only object keys (never public URLs), and
  * reads are served through short-lived presigned GET URLs. The S3 client is
@@ -68,33 +65,14 @@ export class StorageService {
   private readonly logger = new Logger(StorageService.name);
   private client: S3Client | null = null;
 
-  private readonly provider: 'r2' | 's3';
-  private readonly accountId: string;
-  private readonly accessKeyId: string;
-  private readonly secretAccessKey: string;
   private readonly bucket: string;
   private readonly region: string;
   private readonly signedUrlTtl: number;
 
   constructor(config: ConfigService) {
-    this.provider =
-      config.get<string>('STORAGE_PROVIDER') === 's3' ? 's3' : 'r2';
-    if (this.provider === 's3') {
-      this.accountId = '';
-      this.accessKeyId = '';
-      this.secretAccessKey = '';
-      this.bucket = config.get<string>('S3_BUCKET') ?? '';
-      this.region =
-        config.get<string>('S3_REGION') ||
-        config.get<string>('AWS_REGION') ||
-        '';
-    } else {
-      this.accountId = config.get<string>('R2_ACCOUNT_ID') ?? '';
-      this.accessKeyId = config.get<string>('R2_ACCESS_KEY_ID') ?? '';
-      this.secretAccessKey = config.get<string>('R2_SECRET_ACCESS_KEY') ?? '';
-      this.bucket = config.get<string>('R2_BUCKET') ?? '';
-      this.region = config.get<string>('R2_REGION') || 'auto';
-    }
+    this.bucket = config.get<string>('S3_BUCKET') ?? '';
+    this.region =
+      config.get<string>('S3_REGION') || config.get<string>('AWS_REGION') || '';
     this.signedUrlTtl =
       config.get<number>('SIGNED_URL_EXPIRES_SECONDS') ??
       DEFAULT_SIGNED_URL_TTL_SECONDS;
@@ -107,10 +85,7 @@ export class StorageService {
 
   /** Whether storage is configured. Routes guard on this for a clean 503. */
   isConfigured(): boolean {
-    if (this.provider === 's3') return Boolean(this.bucket && this.region);
-    return Boolean(
-      this.accountId && this.accessKeyId && this.secretAccessKey && this.bucket,
-    );
+    return Boolean(this.bucket && this.region);
   }
 
   private getClient(): S3Client {
@@ -120,24 +95,12 @@ export class StorageService {
       // clear message surfaces the real cause to operators.
       throw new AppError(ErrorCode.INTERNAL_ERROR, {
         message:
-          this.provider === 's3'
-            ? 'File storage is not configured. Set S3_BUCKET and AWS_REGION (or S3_REGION).'
-            : 'File storage is not configured. Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET.',
+          'File storage is not configured. Set S3_BUCKET and AWS_REGION (or S3_REGION).',
       });
     }
     if (!this.client) {
-      this.client =
-        this.provider === 's3'
-          ? // Default credential chain → ECS task role. No keys to leak.
-            new S3Client({ region: this.region })
-          : new S3Client({
-              region: this.region,
-              endpoint: `https://${this.accountId}.r2.cloudflarestorage.com`,
-              credentials: {
-                accessKeyId: this.accessKeyId,
-                secretAccessKey: this.secretAccessKey,
-              },
-            });
+      // Default credential chain → ECS task role. No keys to leak.
+      this.client = new S3Client({ region: this.region });
     }
     return this.client;
   }
@@ -348,8 +311,8 @@ export class StorageService {
    * document survives `deleteObject` in full. This lists the key's versions and
    * removes each one.
    *
-   * Providers without version listing (Cloudflare R2) answer the list call with
-   * an error; those buckets have no versions, so the fallback is the plain
+   * A store that does not implement version listing answers the list call with
+   * an error; such a bucket has no versions, so the fallback is the plain
    * delete — which IS permanent there.
    */
   async purgeObject(

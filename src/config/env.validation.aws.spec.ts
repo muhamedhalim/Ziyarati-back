@@ -29,15 +29,16 @@ const awsProduction = {
 };
 
 describe('env.validation — AWS migration (SES / S3)', () => {
-  it('accepts the production environment the ECS task definition provides — no Resend or R2 keys needed', () => {
+  it('accepts the production environment the ECS task definition provides — no Resend keys needed', () => {
     const value = validate({ ...awsProduction });
     expect(value.EMAIL_PROVIDER).toBe('ses');
     expect(value.STORAGE_PROVIDER).toBe('s3');
   });
 
-  it('defaults STORAGE_PROVIDER to r2 (existing deployments unchanged)', () => {
-    const { STORAGE_PROVIDER: _omit, ...rest } = awsProduction;
-    expect(validate(rest).STORAGE_PROVIDER).toBe('r2');
+  it('rejects the removed r2 storage provider', () => {
+    expect(() => validate({ ...awsProduction, STORAGE_PROVIDER: 'r2' })).toThrow(
+      /Env validation error/,
+    );
   });
 
   it('rejects an unknown EMAIL_PROVIDER', () => {
@@ -47,8 +48,8 @@ describe('env.validation — AWS migration (SES / S3)', () => {
   });
 
   it('refuses to boot with SES and no region', () => {
-    const { AWS_REGION: _omit, ...rest } = awsProduction;
-    expect(() => validate({ ...rest, STORAGE_PROVIDER: 'r2' })).toThrow(
+    const { AWS_REGION: _omit, STORAGE_PROVIDER: _storage, ...rest } = awsProduction;
+    expect(() => validate(rest)).toThrow(
       /EMAIL_PROVIDER=ses.*SES_REGION or AWS_REGION/s,
     );
   });
