@@ -8,6 +8,7 @@ locals {
   tags = merge(var.tags, { Component = "alb" })
 }
 
+
 # ── TLS certificate ──────────────────────────────────────────────────────────
 resource "aws_acm_certificate" "api" {
   domain_name       = var.api_domain
