@@ -1,6 +1,6 @@
 # Data classification
 
-Residency plan section 5. A **technical inventory**: it says which controls apply to which data, not what the law permits (that is `LC`, see `PDPL-COMPLIANCE.md`).
+Residency plan section 5. A **technical inventory**: it says which controls apply to which data, not what the law permits (that is `LC`, see `Ziyarati-back/infra/docs/DATA-RESIDENCY.md (Part E)`).
 
 | Class | Meaning | In the Saudi boundary (target) | May leave |
 |---|---|---|---|

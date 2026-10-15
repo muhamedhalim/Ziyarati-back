@@ -17,7 +17,7 @@ Companion to `SECURITY.md` (the phased control design, IAM, WAF, tenancy) and to
 | ECR: no replication (source scan; a test cannot assert a resource is absent) | `scripts/region-gate.sh` | CI `static` |
 | Organisation SCPs (region boundary, data-copy guard, audit guard) | `modules/org-guardrails` + `environments/org-guardrails` | `policies.tftest.hcl`, `org-guardrails.tftest.hcl`, `scp-semantics.test.cjs` |
 | CloudWatch Logs data-protection policy (mask e-mail, Saudi mobile and national-ID patterns, JWTs, pre-signed signatures) on every log group the stack owns; backstop behind application scrubbing; `enable_log_data_protection`, default on | `modules/log-protection`, wired in `modules/platform` | `log-protection.tftest.hcl`, `platform.tftest.hcl` |
-| AWS API calls over PrivateLink instead of NAT (off by default; cost in `COST-MODEL.md` section 6) | `modules/network/interface_endpoints.tf` | `network.tftest.hcl` |
+| AWS API calls over PrivateLink instead of NAT (off by default; cost in `Ziyarati-back/infra/docs/COST.md (Part B)` section 6) | `modules/network/interface_endpoints.tf` | `network.tftest.hcl` |
 | Production release gate | `compliance/production-gate.yaml`, `scripts/production-gate.cjs` | `production-gate.test.cjs` |
 
 ## 2. Detective

@@ -13,7 +13,7 @@ Residency plan sections 16, 19, 23. **A scaffold.** The technical steps use cont
 | Clinic (controller) notification: contact per tenant, deadline from the contract | |
 | Processor contacts (OpenAI, Meta, Tap, Vercel, e-mail provider, AWS) | |
 | Where incident records are kept (access-restricted) | |
-| Out-of-hours alert route | `docs/SECURITY_ALERTING_HANDOFF.md` |
+| Out-of-hours alert route | `Ziyarati-back/LOGGING.md (Part F)` |
 
 ## 2. Detect
 
@@ -22,7 +22,7 @@ Sources that exist: GuardDuty findings and IAM Access Analyzer (`modules/account
 ## 3. Triage (first hour)
 
 1. Open an incident record: time, reporter, what was seen. Do not paste patient data into tickets, chat or support cases.
-2. Decide scope with facts: which tenants, which data classes (`DATA-CLASSIFICATION.md`), which flow (`DATA-FLOW.md`), which processor (`SUBPROCESSORS.md`).
+2. Decide scope with facts: which tenants, which data classes (`DATA-CLASSIFICATION.md`), which flow (`Ziyarati-back/infra/docs/DATA-RESIDENCY.md (Part D)`), which processor (`SUBPROCESSORS.md`).
 3. Classify for internal priority only (this is not a legal classification):
    - **P1** — confirmed or probable exposure of D2-D6 data, or loss of integrity of clinical records.
    - **P2** — attempted or contained exposure; credential or secret exposure with no evidence of use.
@@ -34,7 +34,7 @@ Sources that exist: GuardDuty findings and IAM Access Analyzer (`modules/account
 | Situation | Action | Reference |
 |---|---|---|
 | Credentials or tokens leaked | rotate the secret; revoke sessions; for tenant provider credentials rotate and re-encrypt | `DISASTER-RECOVERY.md` DR-7 |
-| A channel is leaking content | disable that channel per tenant (WhatsApp, e-mail via provider switch `noop`), or the AI feature | `TRANSFER-IMPACT-ASSESSMENT.md` off-switch column |
+| A channel is leaking content | disable that channel per tenant (WhatsApp, e-mail via provider switch `noop`), or the AI feature | `Ziyarati-back/infra/docs/DATA-RESIDENCY.md (Part F)` off-switch column |
 | A tenant account is abused | suspend the tenant (offboarding requires it inactive anyway) | `tenant-offboarding.service.ts` |
 | A bad release | roll back by image tag | `deploy-aws.yml`, `DEPLOYMENT.md` |
 | AWS account suspected compromised | revoke the apply / deploy roles, rotate the KMS-protected secrets, preserve CloudTrail first | `SECURITY.md` section 2 |
@@ -57,7 +57,7 @@ Ziyarati acts as a processor for clinic data and may be a controller for some fl
 
 ## 7. Recover and close
 
-Restore from backup only after the entry path is closed (`DISASTER-RECOVERY.md` DR-1..DR-6). Record root cause, data classes and tenants affected, actions taken, deletion evidence where data was removed, and the control that failed. Add a test or a gate for the failure where one is possible. Update `PDPL-COMPLIANCE.md` if an outstanding item changed.
+Restore from backup only after the entry path is closed (`DISASTER-RECOVERY.md` DR-1..DR-6). Record root cause, data classes and tenants affected, actions taken, deletion evidence where data was removed, and the control that failed. Add a test or a gate for the failure where one is possible. Update `Ziyarati-back/infra/docs/DATA-RESIDENCY.md (Part E)` if an outstanding item changed.
 
 ## 8. Exercise
 

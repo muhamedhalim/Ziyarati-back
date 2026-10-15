@@ -30,8 +30,8 @@ UPDATE_COMPLIANCE_DOCS=1 npx jest compliance-docs
 - A provider that is not in the register may not be called from production code (enforced by the egress spec).
 - A field moves off `to_obtain` only by a reviewed change that names the document in `evidence`. The production gate (`compliance/production-gate.yaml`) refuses to mark `dpa-critical-processors`, `scc-or-alternative` or `transfer-inventory-complete` satisfied while the register still lists that evidence as missing (`compliance-docs.spec.ts`).
 - `tenant_configured` rows are destinations a clinic chooses (webhooks, integrations). The clinic is the controller of that transfer; the destination is data, so it cannot be listed.
-- Statuses of `legacy` / `planned` rows are decommissioning and hosting decisions, not endorsements. Railway, Cloudflare R2 and Resend need **deletion evidence** after migration (`runbooks/railway-to-aws-data-migration.md`).
+- Statuses of `legacy` / `planned` rows are decommissioning and hosting decisions, not endorsements. Railway, Cloudflare R2 and Resend need **deletion evidence** after migration (`Ziyarati-back/infra/runbooks/railway-to-aws-migration.md (Part D)`).
 
 ## What to collect per processor (plan section 18)
 
-Purpose and data categories · storage and processing region · DPA · SDAIA SCC or counsel's written alternative · transfer risk assessment where counsel requires one · subprocessor list · retention and deletion terms · breach-notification process · support-access terms · certifications · residency options. Legal questions this feeds: L10, L11 (`PDPL-COMPLIANCE.md`).
+Purpose and data categories · storage and processing region · DPA · SDAIA SCC or counsel's written alternative · transfer risk assessment where counsel requires one · subprocessor list · retention and deletion terms · breach-notification process · support-access terms · certifications · residency options. Legal questions this feeds: L10, L11 (`Ziyarati-back/infra/docs/DATA-RESIDENCY.md (Part E)`).
