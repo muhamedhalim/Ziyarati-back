@@ -93,7 +93,6 @@ const TF_SKIP = terraformAvailable() ? false : 'terraform binary not on PATH';
 
 const BASE = {
   approved_regions: ['me-central-1'],
-  us_east_1_health_check_exception: true,
   audit_exempt_principal_arns: ['arn:aws:iam::123456789012:role/zt-production-tf-apply', 'arn:aws:iam::*:role/zt-break-glass'],
 };
 const APPLY_ROLE = 'arn:aws:sts::123456789012:assumed-role/zt-production-tf-apply/session';
@@ -138,35 +137,24 @@ test('region boundary', { skip: TF_SKIP }, () => {
   check(d, 'ec2 in approved region', { action: 'ec2:RunInstances', context: inRegion('me-central-1') }, 'allow');
   check(d, 'ec2 in another region', { action: 'ec2:RunInstances', context: inRegion('eu-west-1') }, A);
   check(d, 'rds in Frankfurt', { action: 'rds:CreateDBInstance', context: inRegion('eu-central-1') }, A);
-  check(d, 's3 in us-east-1', { action: 's3:GetObject', resource: 'arn:aws:s3:::b/k', context: inRegion('us-east-1') }, 'DenyAllButHealthCheckInExceptionRegion');
+  check(d, 's3 in us-east-1', { action: 's3:GetObject', resource: 'arn:aws:s3:::b/k', context: inRegion('us-east-1') }, A);
   check(d, 'IAM is global', { action: 'iam:CreateRole', context: inRegion('us-east-1') }, 'allow');
   check(d, 'STS is global', { action: 'sts:GetCallerIdentity', context: inRegion('us-east-1') }, 'allow');
   check(d, 'Organizations is global', { action: 'organizations:DescribeOrganization', context: inRegion('us-east-1') }, 'allow');
   check(d, 'Route 53 is global', { action: 'route53:CreateHealthCheck', context: inRegion('us-east-1') }, 'allow');
   check(d, 'Budgets is global', { action: 'budgets:CreateBudget', context: inRegion('us-east-1') }, 'allow');
   check(d, 'KMS is NOT exempt', { action: 'kms:CreateKey', context: inRegion('eu-west-1') }, A);
-  check(d, 'ACM is NOT exempt', { action: 'acm:RequestCertificate', context: inRegion('us-east-1') }, 'DenyAllButHealthCheckInExceptionRegion');
+  check(d, 'ACM is NOT exempt', { action: 'acm:RequestCertificate', context: inRegion('us-east-1') }, A);
 });
 
-test('us-east-1 health-check exception is exactly the alarm and the topic', { skip: TF_SKIP }, () => {
+test('us-east-1 is closed: no alarm, topic or subscription may be created there', { skip: TF_SKIP }, () => {
   const d = render(BASE);
   const ctx = inRegion('us-east-1');
-  for (const action of ['cloudwatch:PutMetricAlarm', 'cloudwatch:DescribeAlarms', 'sns:CreateTopic', 'sns:Subscribe', 'sns:TagResource', 'sns:GetTopicAttributes']) {
-    check(d, action, { action, context: ctx }, 'allow');
+  for (const action of ['cloudwatch:PutMetricAlarm', 'sns:CreateTopic', 'sns:Subscribe', 'sns:Publish', 's3:PutObject', 'ec2:RunInstances']) {
+    check(d, action, { action, context: ctx }, 'DenyOutsideApprovedRegions');
   }
-  for (const action of ['sns:Publish', 'cloudwatch:PutMetricData', 's3:PutObject', 'ec2:RunInstances', 'rds:CreateDBInstance', 'lambda:InvokeFunction', 'logs:PutLogEvents', 'secretsmanager:GetSecretValue']) {
-    check(d, action, { action, context: ctx }, 'DenyAllButHealthCheckInExceptionRegion');
-  }
-  // the exception does not leak into any other region
-  check(d, 'alarm in eu-west-1', { action: 'cloudwatch:PutMetricAlarm', context: inRegion('eu-west-1') }, 'DenyOutsideApprovedRegions');
-  // and an approved region keeps the same actions
+  check(d, 'iam still global', { action: 'iam:GetRole', context: ctx }, 'allow');
   check(d, 'alarm in approved region', { action: 'cloudwatch:PutMetricAlarm', context: inRegion('me-central-1') }, 'allow');
-});
-
-test('without the exception, us-east-1 is closed', { skip: TF_SKIP }, () => {
-  const d = render({ ...BASE, us_east_1_health_check_exception: false });
-  check(d, 'alarm in us-east-1', { action: 'cloudwatch:PutMetricAlarm', context: inRegion('us-east-1') }, 'DenyOutsideApprovedRegions');
-  check(d, 'iam still global', { action: 'iam:GetRole', context: inRegion('us-east-1') }, 'allow');
 });
 
 test('an approved us-east-1 behaves like any approved region', { skip: TF_SKIP }, () => {

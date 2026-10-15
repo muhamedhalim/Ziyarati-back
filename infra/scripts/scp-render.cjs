@@ -5,7 +5,7 @@
 //   node infra/scripts/scp-render.cjs --vars vars.json [--out dir]
 //
 // vars.json holds the module's inputs, e.g.
-//   { "approved_regions": ["xx-north-1"], "us_east_1_health_check_exception": true,
+//   { "approved_regions": ["xx-north-1"],
 //     "audit_exempt_principal_arns": ["arn:aws:iam::123456789012:role/zt-tf-apply"] }
 //
 // Prints { "<policy-name>": <policy document> } as JSON, or writes one

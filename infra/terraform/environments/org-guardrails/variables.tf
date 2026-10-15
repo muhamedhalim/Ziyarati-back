@@ -23,11 +23,6 @@ variable "approved_regions" {
   type        = list(string)
 }
 
-variable "us_east_1_health_check_exception" {
-  description = "Allow the Route 53 health-check alarm + SNS topic in us-east-1 (modules/monitoring). Must be true while the platform's enable_external_health_check is true and us-east-1 is not approved."
-  type        = bool
-}
-
 variable "approved_backup_vault_arns" {
   description = "Vaults AWS Backup may copy into. Empty until the DR scenario is approved in writing (L13)."
   type        = list(string)

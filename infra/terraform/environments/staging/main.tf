@@ -40,16 +40,6 @@ provider "aws" {
   }
 }
 
-# Route 53 health-check metrics exist only in us-east-1.
-provider "aws" {
-  alias               = "us_east_1"
-  region              = "us-east-1"
-  allowed_account_ids = [var.account_id]
-  default_tags {
-    tags = local.default_tags
-  }
-}
-
 # Decision D-1 DR copy region (falls back to the primary region when disabled;
 # nothing is created through it then).
 provider "aws" {
@@ -64,9 +54,8 @@ provider "aws" {
 module "platform" {
   source = "../../modules/platform"
   providers = {
-    aws           = aws
-    aws.us_east_1 = aws.us_east_1
-    aws.dr        = aws.dr
+    aws    = aws
+    aws.dr = aws.dr
   }
 
   environment              = var.environment

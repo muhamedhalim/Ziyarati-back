@@ -11,6 +11,3 @@ misconfigurations:
   - id: AVD-AWS-0132
     paths: ["modules/network/flow_logs.tf"]
     statement: "REJECT-only flow logs hold IPs/ports/byte counts, no payload or PHI; SSE-S3 avoids a second key policy for delivery.logs.amazonaws.com. Revisit if flow logs ever widen to ACCEPT."
-  - id: AVD-AWS-0095
-    paths: ["modules/monitoring/main.tf"]
-    statement: "us-east-1 alert topic for the Route 53 health-check alarm: CloudWatch cannot publish to AWS-managed-key topics and a CMK there would exist only for this topic. Payload = alarm name/state, no data."

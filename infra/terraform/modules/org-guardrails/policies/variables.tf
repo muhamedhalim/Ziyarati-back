@@ -13,16 +13,6 @@ variable "approved_regions" {
   }
 }
 
-variable "us_east_1_health_check_exception" {
-  description = <<-EOT
-    Allow the narrow set of CloudWatch-alarm and SNS actions the platform's Route 53 health-check alarm needs in
-    us-east-1 (its metric exists only there; modules/monitoring, residency plan A13/F17). Set true while
-    enable_external_health_check is true (the platform default). Everything else in us-east-1 stays denied unless
-    us-east-1 is itself an approved region. No default: it is a decision, not a convenience.
-  EOT
-  type        = bool
-}
-
 variable "approved_backup_vault_arns" {
   description = "Backup vault ARNs AWS Backup may copy INTO. Empty = no backup copy is allowed anywhere. A backup is patient data: add the DR vault only after the DR scenario is approved in writing (L13)."
   type        = list(string)

@@ -29,11 +29,6 @@ variable "approved_regions" {
   }
 }
 
-variable "us_east_1_health_check_exception" {
-  description = "See policies/variables.tf."
-  type        = bool
-}
-
 variable "approved_backup_vault_arns" {
   description = "See policies/variables.tf."
   type        = list(string)

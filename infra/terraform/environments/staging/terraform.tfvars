@@ -13,8 +13,10 @@
 # decision is approved in writing; aws_region below must then be a member.
 approved_regions = []
 
-aws_region            = "me-central-1"
-availability_zone_ids = ["mec1-az1", "mec1-az2"]
+# eu-central-1 is the platform's only region (D-1, 2026-10-08); staging follows production.
+# approved_regions stays empty, so staging still fails closed until it is deliberately approved.
+aws_region            = "eu-central-1"
+availability_zone_ids = ["euc1-az1", "euc1-az2"]
 vpc_cidr              = "10.30.0.0/16"
 nat_gateway_count     = 1
 

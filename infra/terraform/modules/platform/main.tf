@@ -245,8 +245,7 @@ module "ecs" {
 module "monitoring" {
   source = "../monitoring"
   providers = {
-    aws           = aws
-    aws.us_east_1 = aws.us_east_1
+    aws = aws
   }
 
   name                         = local.name

@@ -7,8 +7,7 @@
 # attachments per target:
 #
 #   region-boundary   deny every region that is not approved (global control-plane
-#                     services exempt), the narrow us-east-1 health-check exception,
-#                     and enabling an unapproved opt-in region
+#                     services exempt) and enabling an unapproved opt-in region
 #   data-copy-guard   deny the features that copy data out on their own
 #   audit-guard       deny switching off CloudTrail / GuardDuty / Access Analyzer
 #                     and leaving the organisation
@@ -56,39 +55,7 @@ locals {
   ]
   global_service_actions = distinct(concat(local.base_global_service_actions, var.extra_global_service_actions))
 
-  # What modules/monitoring does in us-east-1 for the Route 53 health-check
-  # alarm: one metric alarm + one SNS topic with e-mail subscriptions. No Publish,
-  # no PutMetricData: the exception cannot carry a payload.
-  health_check_exception_actions = [
-    "cloudwatch:PutMetricAlarm",
-    "cloudwatch:DeleteAlarms",
-    "cloudwatch:DescribeAlarms",
-    "cloudwatch:GetMetricData",
-    "cloudwatch:GetMetricStatistics",
-    "cloudwatch:ListMetrics",
-    "cloudwatch:ListTagsForResource",
-    "cloudwatch:TagResource",
-    "cloudwatch:UntagResource",
-    "sns:CreateTopic",
-    "sns:DeleteTopic",
-    "sns:GetTopicAttributes",
-    "sns:SetTopicAttributes",
-    "sns:ListTagsForResource",
-    "sns:TagResource",
-    "sns:UntagResource",
-    "sns:Subscribe",
-    "sns:Unsubscribe",
-    "sns:GetSubscriptionAttributes",
-    "sns:SetSubscriptionAttributes",
-    "sns:ListSubscriptionsByTopic",
-  ]
-
-  exception_regions = (
-    var.us_east_1_health_check_exception && !contains(var.approved_regions, "us-east-1")
-    ? ["us-east-1"]
-    : []
-  )
-  allowed_regions = concat(var.approved_regions, local.exception_regions)
+  allowed_regions = var.approved_regions
 
   # ── features that copy data on their own (residency plan section 15) ──────
   # Grouped so a reviewer can read what each line is for. Cross-region RDS
@@ -163,15 +130,6 @@ locals {
         NotAction = local.global_service_actions
         Resource  = "*"
         Condition = { StringNotEquals = { "aws:RequestedRegion" = local.allowed_regions } }
-      },
-    ],
-    length(local.exception_regions) == 0 ? [] : [
-      {
-        Sid       = "DenyAllButHealthCheckInExceptionRegion"
-        Effect    = "Deny"
-        NotAction = concat(local.global_service_actions, local.health_check_exception_actions)
-        Resource  = "*"
-        Condition = { StringEquals = { "aws:RequestedRegion" = local.exception_regions } }
       },
     ],
     [

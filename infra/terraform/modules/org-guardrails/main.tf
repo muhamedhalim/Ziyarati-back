@@ -13,12 +13,11 @@
 module "policies" {
   source = "./policies"
 
-  approved_regions                 = var.approved_regions
-  us_east_1_health_check_exception = var.us_east_1_health_check_exception
-  approved_backup_vault_arns       = var.approved_backup_vault_arns
-  audit_exempt_principal_arns      = var.audit_exempt_principal_arns
-  lifted_data_copy_actions         = var.lifted_data_copy_actions
-  extra_global_service_actions     = var.extra_global_service_actions
+  approved_regions             = var.approved_regions
+  approved_backup_vault_arns   = var.approved_backup_vault_arns
+  audit_exempt_principal_arns  = var.audit_exempt_principal_arns
+  lifted_data_copy_actions     = var.lifted_data_copy_actions
+  extra_global_service_actions = var.extra_global_service_actions
 }
 
 data "aws_organizations_organization" "current" {}
@@ -27,7 +26,7 @@ locals {
   tags = merge(var.tags, { Component = "org-guardrails", DataClassification = "infrastructure" })
 
   descriptions = {
-    "region-boundary" = "Deny API calls outside the approved regions (global control-plane services exempt; narrow us-east-1 health-check exception)."
+    "region-boundary" = "Deny API calls outside the approved regions (global control-plane services exempt)."
     "data-copy-guard" = "Deny replication, replicas, exports, multi-region keys, log shipping, CloudFront, Bedrock and unapproved backup copies."
     "audit-guard"     = "Deny disabling CloudTrail/GuardDuty/Access Analyzer except for named principals, and leaving the organisation."
   }

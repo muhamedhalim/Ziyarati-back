@@ -9,11 +9,6 @@ mock_provider "aws" {
 }
 
 mock_provider "aws" {
-  alias  = "us_east_1"
-  source = "../../testing/aws"
-}
-
-mock_provider "aws" {
   alias  = "dr"
   source = "../../testing/aws"
 }

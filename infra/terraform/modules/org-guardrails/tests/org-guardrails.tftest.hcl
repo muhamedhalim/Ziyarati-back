@@ -12,10 +12,9 @@ mock_provider "aws" {
 
 variables {
   # TEST FIXTURE ONLY — this is not an approval of any hosting location.
-  approved_regions                 = ["me-central-1"]
-  us_east_1_health_check_exception = true
-  audit_exempt_principal_arns      = ["arn:aws:iam::123456789012:role/zt-production-tf-apply"]
-  target_ids                       = ["ou-ab12-cdef3456"]
+  approved_regions            = ["me-central-1"]
+  audit_exempt_principal_arns = ["arn:aws:iam::123456789012:role/zt-production-tf-apply"]
+  target_ids                  = ["ou-ab12-cdef3456"]
 }
 
 run "three_service_control_policies_are_created_and_attached" {

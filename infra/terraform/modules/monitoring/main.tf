@@ -5,9 +5,8 @@
 terraform {
   required_providers {
     aws = {
-      source                = "hashicorp/aws"
-      version               = ">= 6.0"
-      configuration_aliases = [aws.us_east_1]
+      source  = "hashicorp/aws"
+      version = ">= 6.0"
     }
   }
 }
@@ -417,8 +416,13 @@ resource "aws_cloudwatch_metric_alarm" "alb_5xx_rate" {
   tags = local.tags
 }
 
-# ── External health check (global checkers; sees a regional outage the
-#    in-region alarms cannot report). Its metric lives only in us-east-1. ────
+# ── External health check (RETAINED, UNALARMED — pending a decision) ─────────
+# Its metric (AWS/Route53 HealthCheckStatus) exists only in us-east-1, and the
+# project keeps NO alert resources outside eu-central-1, so nothing alarms on
+# this check any more (the us-east-1 alarm + SNS topic were removed 2026-10-15).
+# It is kept only so the deletion of the check itself is a separate, explicit
+# decision (infra/docs/DATA-RESIDENCY.md A.2b). With no hosted zone in Route 53
+# nothing else consumes it. Set enable_external_health_check = false to remove it.
 resource "aws_route53_health_check" "api" {
   count             = var.enable_external_health_check ? 1 : 0
   fqdn              = var.api_domain
@@ -428,42 +432,6 @@ resource "aws_route53_health_check" "api" {
   request_interval  = 30
   failure_threshold = 3
   tags              = merge(local.tags, { Name = "${var.name}-api-health" })
-}
-
-# Alarm names/metric only — no data — so this us-east-1 topic is not
-# CMK-encrypted (a CMK would have to be created in us-east-1 just for it).
-resource "aws_sns_topic" "alerts_us_east_1" {
-  count    = var.enable_external_health_check ? 1 : 0
-  provider = aws.us_east_1
-  name     = "${var.name}-alerts-external"
-  tags     = local.tags
-}
-
-resource "aws_sns_topic_subscription" "email_us_east_1" {
-  for_each  = var.enable_external_health_check ? toset(var.alert_emails) : toset([])
-  provider  = aws.us_east_1
-  topic_arn = aws_sns_topic.alerts_us_east_1[0].arn
-  protocol  = "email"
-  endpoint  = each.value
-}
-
-resource "aws_cloudwatch_metric_alarm" "external_health" {
-  count               = var.enable_external_health_check ? 1 : 0
-  provider            = aws.us_east_1
-  alarm_name          = "${var.name}-critical-api-unreachable-from-internet"
-  alarm_description   = "Route 53 global checkers cannot reach https://${var.api_domain}/api/v1/health"
-  namespace           = "AWS/Route53"
-  metric_name         = "HealthCheckStatus"
-  dimensions          = { HealthCheckId = aws_route53_health_check.api[0].id }
-  statistic           = "Minimum"
-  comparison_operator = "LessThanThreshold"
-  threshold           = 1
-  period              = 60
-  evaluation_periods  = 3
-  treat_missing_data  = "breaching"
-  alarm_actions       = [aws_sns_topic.alerts_us_east_1[0].arn]
-  ok_actions          = [aws_sns_topic.alerts_us_east_1[0].arn]
-  tags                = local.tags
 }
 
 # ── Dashboard ────────────────────────────────────────────────────────────────

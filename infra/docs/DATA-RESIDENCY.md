@@ -69,6 +69,43 @@
 | Apply org guardrails (needs an AWS Organization) | **Pending** — [runbook](../runbooks/org-guardrails-rollout.md) |
 | Re-check the Saudi AWS Region availability | **Not Verified** |
 
+### A.2b Region consolidation, 2026-10-15 (verified against the live account, 270370109141)
+
+**Result:** every regional workload resource is in `eu-central-1`. Verified by describing 18 enabled regions
+(CloudWatch, SNS, VPC/EC2, NAT, EIP, RDS, ElastiCache, ECS, KMS, Secrets Manager, Logs, Lambda, GuardDuty,
+Config, Backup, ECR, ACM, WAFv2, SQS, EventBridge, DynamoDB, CloudFormation, SES, SSM) and all 5 S3 buckets
+(`get-bucket-location` = `eu-central-1`). No CloudFront distribution, no hosted zone (DNS is on Vercel).
+
+| Outside `eu-central-1` | Why it stays | Owner in code |
+|---|---|---|
+| Route 53 health check `api.ziyaratech.com` (id `90de36ee-…`, global service) | **Retained, unalarmed — pending your decision.** Its only consumer was the removed us-east-1 alarm (no hosted zone, no failover record). It costs ~$1.5/mo and alerts nobody. Delete with `enable_external_health_check = false` + apply, once you accept the monitoring gap below. | `modules/monitoring/main.tf` `aws_route53_health_check.api` |
+| CloudTrail `zt-production-trail` (home `eu-central-1`, multi-Region) | Deliberate: records API calls in every Region, so use of an unapproved Region is visible | `modules/account-baseline` |
+| Default VPC in each of 17 other Regions | **Deleted 2026-10-15** (each verified empty first; re-creatable with `aws ec2 create-default-vpc`). None remain; verified `describe-vpcs` = 0 in all 17. | none (AWS-created) |
+| `me-south-1` | **Not verifiable**: every endpoint timed out from the operator machine, so no inventory exists for it. | none |
+
+**Guards added:** `infra/scripts/region-gate.sh` now fails if any environment's `aws_region` differs from
+`PLATFORM_REGION` (default `eu-central-1`) and if any `.github/workflows/*.yml` names a region other than the
+single `PLATFORM_REGION` guard; `deploy-aws.yml` refuses a `vars.AWS_REGION` other than `eu-central-1`.
+Staging's `aws_region` was `me-central-1` (not deployed, still not approved); it is now `eu-central-1`.
+
+**Alerts exclusively in `eu-central-1` (2026-10-15):** the us-east-1 alarm `zt-production-critical-api-unreachable-from-internet`,
+the SNS topic `zt-production-alerts-external` and its two subscriptions (both `PendingConfirmation`) were destroyed via
+Terraform (plan: 0 add, 0 change, 4 destroy) and verified: `describe-alarms` = 0 and `list-topics` = 0 in `us-east-1`;
+the Terraform state holds no `us_east_1` / `external_health` address.
+`aws sns list-subscriptions --region us-east-1` still lists the two orphaned `PendingConfirmation` entries (their topic
+no longer exists). AWS expires unconfirmed subscriptions on its own (about 3 days); they cannot be unsubscribed by ARN
+and cannot be confirmed (no topic), so they deliver nothing. Re-check on or after 2026-10-19 that the list is empty. The `us_east_1` provider alias, its module wiring,
+the org-guardrails `us_east_1_health_check_exception` variable/statement and the matching SCP tests were removed.
+`organizations_api_region = "us-east-1"` in `environments/org-guardrails` is the AWS Organizations *API endpoint* (not an
+alert resource) and is retained; the root is not applied (no AWS Organization).
+
+**Monitoring no longer provided:** the external, global-checker probe of `https://api.ziyaratech.com/api/v1/health`.
+It was the only signal that could see a full eu-central-1 outage or an internet-path/DNS failure (in-Region alarms cannot
+report their own Region's loss). Still covered in-Region: ALB healthy/unhealthy targets, 5xx rate, p95 latency, ECS
+running tasks, RDS/Redis/NAT/SES/payment alarms. **Not covered:** regional outage, Vercel-DNS or certificate-path failure
+seen from the internet. A same-Region CloudWatch Synthetics canary would not detect a regional outage either; an
+independent non-AWS uptime monitor on the API health URL is the only equivalent (not set up — your decision).
+
 ### A.3 Related files kept separate (code-checked tables)
 
 `DATA-CLASSIFICATION.md`, `RETENTION-POLICY.md`, `SUBPROCESSORS.md` contain tables **generated from code**
@@ -121,7 +158,7 @@ Classes are defined in `DATA-CLASSIFICATION.md`; processors in `SUBPROCESSORS.md
 | Plan time | Environment regions must sit inside the organisation SCP region list | `region-gate.sh` (`check_org_guardrails`) | CI `static` job |
 | Apply time | A Region must be approved before any plan or apply | `region-gate.sh deploy` | `plan` / `preview` / `apply` jobs |
 | Resource | Single-Region KMS keys; S3 replication denied; RDS no replica / backup replication; Valkey no global datastore; no secret replicas | module tests | `terraform test` per module |
-| Organisation | SCPs: deny unapproved Regions (global control plane exempt; `us-east-1` health-check exception only), deny copy/replication features, deny disabling audit | `modules/org-guardrails`, `environments/org-guardrails` | `policies.tftest.hcl`, `scp-semantics.test.cjs` |
+| Organisation | SCPs: deny unapproved Regions (global control plane exempt; no per-region exception, `us-east-1` is denied like every other unapproved region), deny copy/replication features, deny disabling audit | `modules/org-guardrails`, `environments/org-guardrails` | `policies.tftest.hcl`, `scp-semantics.test.cjs` |
 | Application | Minimiser, vision gate, WhatsApp / e-mail content policy, log and job-payload scrubbing | `src/` (see `Ziyarati-back/infra/docs/DATA-RESIDENCY.md (Part D)`) | `npx jest` |
 | Release | `compliance/production-gate.yaml` must be fully evidenced before a production deploy or apply | `infra/scripts/production-gate.cjs enforce` | `production-gate.test.cjs` |
 
@@ -130,7 +167,7 @@ Classes are defined in `DATA-CLASSIFICATION.md`; processors in `SUBPROCESSORS.md
 - An SCP never restricts the management account or service-linked roles, cannot see the Region of a service-initiated copy, and cannot constrain SNS subscriptions, EventBridge targets or in-account sharing (`runbooks/org-guardrails-rollout.md` section 2).
 - None of the infrastructure controls protects data that is **not** on AWS. Today that is everything: the live data is on Railway / R2 / Resend / Vercel and is governed by the application-layer controls only.
 - Global control-plane services (IAM, billing, support, Route 53) keep working from anywhere. **No patient data in resource names, tags, descriptions or support cases.**
-- The `us-east-1` exception exists only for the Route 53 health-check alarm and its SNS topic. Its text must stay free of tenant or patient fields.
+- There is no `us-east-1` exception any more (removed 2026-10-15): the SCP denies it like any other unapproved region.
 
 ### Decisions that gate real data
 
@@ -166,7 +203,7 @@ Residency plan sections 1, 8, 22. **No AWS Region is inside Saudi Arabia today**
 
 1. **A Region is never changed in place.** Flipping `aws_region` on an existing state makes Terraform destroy and recreate everything. Each Region gets its own state key and its own stack from the same modules; data moves by backup / restore; DNS switches last.
 2. **One allow-list.** `approved_regions` is empty by default. `aws_region` must be a member; `dr_backup_region` must be empty or in `approved_dr_destinations`. The organisation SCP list must be a superset of every environment's regions (`region-gate.sh` checks both directions).
-3. **No region literal in Terraform** except the documented `us-east-1` alias for the Route 53 health-check alarm (`region-gate.sh static`).
+3. **No region literal and no provider alias for another region in Terraform** (`region-gate.sh static`).
 4. **Per-Region recreation:** KMS keys, secrets, certificates, ECR images and SES identities are recreated in each Region; none is replicated.
 5. **Adding a Region** is one reviewed change that touches the environment tfvars **and** the organisation SCP list together; the gate fails if only one moves.
 
@@ -231,7 +268,7 @@ PD personal · SD sensitive identifiers · HD health · AU authentication · PY 
 | F14 | Backend → e-mail provider | recipient, subject, body variables | yes | `resend` / `aws` (SES) | Minimal appointment notices; identifiers redacted from free text (`src/modules/email/email.templates.ts`) | built |
 | F15 | Backend → logs | request metadata, errors, `failedReason` | depends on the Region | host | Redacting logger, log scrubber and exception-filter scrubbing (`src/common/logging/`, `src/common/utils/log-scrubber.util.ts`); no bodies, tokens, prompts or message text | built; `notification_logs.error_message`, the notification `failure_reason` and the queue failedReason are scrubbed at the write seam. DLQ `originalData` is the replay payload and is kept until its stamped expiry (WhatsApp DLQ 6 h; other DLQs hold ids only) |
 | F16 | DB → backups | full database | depends on the Region; DR copy off | host | Backup copy only into `approved_dr_destinations` (Terraform validation) and approved vault ARNs (SCP) | built (IaC, not applied) |
-| F17 | AWS → `us-east-1` | health-check metric, alarm text, SNS e-mail | yes (US) | `aws` | Alarm text built from static strings; SCP allows only the 21 alarm/SNS actions there (`modules/org-guardrails`) | built (not applied) |
+| F17 | AWS → `us-east-1` | ~~health-check metric, alarm text, SNS e-mail~~ | **removed 2026-10-15**: no alarm, topic or subscription exists in `us-east-1` | `aws` | — | closed |
 | F18 | CI → AWS | images, plans, state reads | yes | `github` | OIDC, no patient data in CI; plan artifacts treated as D6 | built; `CV` |
 
 ### Not on the map yet

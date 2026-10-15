@@ -43,10 +43,9 @@ provider "aws" {
 module "org_guardrails" {
   source = "../../modules/org-guardrails"
 
-  target_ids                       = var.target_ids
-  approved_regions                 = var.approved_regions
-  us_east_1_health_check_exception = var.us_east_1_health_check_exception
-  approved_backup_vault_arns       = var.approved_backup_vault_arns
-  audit_exempt_principal_arns      = var.audit_exempt_principal_arns
-  lifted_data_copy_actions         = var.lifted_data_copy_actions
+  target_ids                  = var.target_ids
+  approved_regions            = var.approved_regions
+  approved_backup_vault_arns  = var.approved_backup_vault_arns
+  audit_exempt_principal_arns = var.audit_exempt_principal_arns
+  lifted_data_copy_actions    = var.lifted_data_copy_actions
 }

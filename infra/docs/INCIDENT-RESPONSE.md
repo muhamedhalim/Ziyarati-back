@@ -17,7 +17,7 @@ Residency plan sections 16, 19, 23. **A scaffold.** The technical steps use cont
 
 ## 2. Detect
 
-Sources that exist: GuardDuty findings and IAM Access Analyzer (`modules/account-baseline`), CloudTrail incl. S3 data events on uploads, WAF logs, ALB alarms and the health-check alarm (`modules/monitoring`), application security events and the platform-admin audit trail, `clinical_access_logs` (D4 reads), vendor notices. Not yet in place: AWS Config / Security Hub (deferred), a tested alert route to a human (`CV`).
+Sources that exist: GuardDuty findings and IAM Access Analyzer (`modules/account-baseline`), CloudTrail incl. S3 data events on uploads, WAF logs, ALB alarms (`modules/monitoring`; the external health-check alarm was removed 2026-10-15), application security events and the platform-admin audit trail, `clinical_access_logs` (D4 reads), vendor notices. Not yet in place: AWS Config / Security Hub (deferred), a tested alert route to a human (`CV`).
 
 ## 3. Triage (first hour)
 

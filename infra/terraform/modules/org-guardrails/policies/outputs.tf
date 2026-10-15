@@ -14,6 +14,6 @@ output "data_copy_catalogue" {
 }
 
 output "allowed_regions" {
-  description = "Regions the region deny lets through (approved + the health-check exception region, if any)."
+  description = "Regions the region deny lets through (exactly the approved regions)."
   value       = local.allowed_regions
 }

@@ -12,7 +12,7 @@ Companion to `infra/terraform/modules/org-guardrails` and `infra/terraform/envir
 
 | Policy | Denies | Does not touch |
 |---|---|---|
-| `region-boundary` | any API call whose `aws:RequestedRegion` is not approved, except a short list of **global control-plane** services (IAM, STS, Organizations, Route 53, Budgets, billing, Support, Health, Trusted Advisor, read-only CloudFront, `ec2:DescribeRegions`, `s3:ListAllMyBuckets`); in `us-east-1` only, and only when `us_east_1_health_check_exception = true`, everything except the 21 CloudWatch-alarm / SNS actions the Route 53 health-check alarm needs; `account:EnableRegion` for an unapproved opt-in region | the management account; service-linked roles |
+| `region-boundary` | any API call whose `aws:RequestedRegion` is not approved, except a short list of **global control-plane** services (IAM, STS, Organizations, Route 53, Budgets, billing, Support, Health, Trusted Advisor, read-only CloudFront, `ec2:DescribeRegions`, `s3:ListAllMyBuckets`); `account:EnableRegion` for an unapproved opt-in region | the management account; service-linked roles |
 | `data-copy-guard` | S3 replication and Batch copy; RDS read replicas, automated-backup replication, snapshot sharing and export; KMS key replication and **multi-region key creation**; Secrets Manager replication; ECR replication; ElastiCache global datastore and snapshot copy/export; CloudWatch log destinations, subscription filters and cross-account observability links; DMS, DataSync, **Bedrock**; CloudFront distribution create/update/copy; **AWS Backup copy into any vault that is not listed** in `approved_backup_vault_arns` | everything the application and the platform do today (asserted by the evaluator test) |
 | `audit-guard` | stopping, deleting or re-pointing CloudTrail; deleting or updating GuardDuty detectors and disassociating members; deleting the Access Analyzer; **everyone** leaving the organisation. The first rule exempts the principals in `audit_exempt_principal_arns` | reading anything |
 
@@ -34,7 +34,7 @@ Why some copy APIs are **not** denied by action: a cross-region RDS snapshot cop
 3. The accounts to govern are **member** accounts. Decide the target: a **test OU with a throwaway account first**, production OU second, organisation root last.
 4. `audit_exempt_principal_arns` lists the roles that maintain CloudTrail/GuardDuty/Access Analyzer — the account-baseline apply role and a break-glass role. Write them as the **role ARN** `arn:aws:iam::<account>:role/<name>`; `aws:PrincipalARN` for a role session is the role ARN, not the `assumed-role/.../session` ARN (the evaluator test pins this trap). A look-alike name is not exempt (also tested).
 5. A state bucket in the management account, in an approved region (`backend.hcl.example`). The state holds policy JSON and ids only.
-6. `us_east_1_health_check_exception` is `true` while `enable_external_health_check` is `true` (the platform default) and `us-east-1` is not itself approved. The gate fails the other combination.
+6. There is no `us-east-1` exception: no alarm, topic or subscription may exist there (alerts live in the platform region only).
 
 ## 4. Offline checks (no AWS, any time)
 
@@ -47,7 +47,7 @@ terraform -chdir=infra/terraform/modules/org-guardrails init -backend=false
 terraform -chdir=infra/terraform/modules/org-guardrails test
 ```
 
-`scp-semantics.test.cjs` renders the three documents and evaluates concrete requests against them: an unapproved region, `us-east-1` with and without the exception, each replication API, multi-region key creation, backup copy into an approved and an unapproved vault, a lifted action, the audit exemption (exact ARN, wildcard account, look-alike name, session ARN), and that the exemption does **not** leak into the region or data-copy guards. The evaluator implements only the operators these policies use and follows IAM's missing-key rule for negated operators.
+`scp-semantics.test.cjs` renders the three documents and evaluates concrete requests against them: an unapproved region, `us-east-1` denied like any other unapproved region, each replication API, multi-region key creation, backup copy into an approved and an unapproved vault, a lifted action, the audit exemption (exact ARN, wildcard account, look-alike name, session ARN), and that the exemption does **not** leak into the region or data-copy guards. The evaluator implements only the operators these policies use and follows IAM's missing-key rule for negated operators.
 
 ## 5. Validate the action names against AWS (needs credentials, read-only)
 
@@ -65,7 +65,7 @@ It runs IAM Access Analyzer `validate-policy` with policy type `SERVICE_CONTROL_
 2. **Apply to the test OU / throwaway account only.** Then, in that account:
    - Expected **denied** (each should return an explicit deny from a service control policy): an `ec2 describe-vpcs` in a region that is not approved; `s3api put-bucket-replication` on a scratch bucket; `kms create-key --multi-region`; `rds create-db-instance-read-replica`; `cloudtrail stop-logging` as a non-exempt role.
    - Expected **allowed**: `sts get-caller-identity`; `iam list-roles`; the same `ec2 describe-vpcs` in the approved region; `s3api put-object` on the scratch bucket; the platform stack's own `plan` (staging root pointed at this account).
-   - Apply the **staging platform** into that account and confirm: ECS tasks start and pull the image, secrets inject, the Route 53 health-check alarm and SNS topic are created in `us-east-1`, SES sending works, and the RDS PITR restore path still works. If interface endpoints are enabled (T15), a failing task start is the sign that the endpoint policy or an endpoint service name is wrong — see `Ziyarati-back/infra/docs/COST.md (Part B)` §6.
+   - Apply the **staging platform** into that account and confirm: ECS tasks start and pull the image, secrets inject, SES sending works, and the RDS PITR restore path still works. If interface endpoints are enabled (T15), a failing task start is the sign that the endpoint policy or an endpoint service name is wrong — see `Ziyarati-back/infra/docs/COST.md (Part B)` §6.
    - Keep the policy-simulator / CLI output as evidence (residency plan section 20).
 3. Attach to the **production OU**. Re-check the same positive list against production with a read-only `terraform plan` of the production root: it must show no change and no authorisation error.
 4. Attach to the **organisation root** last, only if every member account should be bound.

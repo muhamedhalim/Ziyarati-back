@@ -16,10 +16,6 @@ target_ids = []
 # Superset of every environment's approved_regions (region-gate.sh enforces it).
 approved_regions = []
 
-# true while enable_external_health_check is true (the platform default) and
-# us-east-1 is not an approved region.
-us_east_1_health_check_exception = true
-
 # Role ARNs, not assumed-role session ARNs. Wildcards allowed in the account id.
 audit_exempt_principal_arns = []
 

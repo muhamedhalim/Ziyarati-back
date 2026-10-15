@@ -121,7 +121,7 @@ alert_emails       = ["alerts@ziyaratech.com", "mohamedhalemm40@gmail.com"]
 monthly_budget_usd = 450 # GROSS usage (credits excluded since 2026-10); was 650 incl. credits, which never alerted
 
 # Decision D-1 — OPEN (DISASTER-RECOVERY.md). Do NOT fill this in without the
-# residency sign-off: the copy moves encrypted patient data out of me-central-1.
+# residency sign-off: the copy moves encrypted patient data out of eu-central-1.
 # Empty = no cross-region copy (region loss => unbounded RPO, accepted only if
 # recorded in writing). Must differ from aws_region.
 dr_backup_region = ""

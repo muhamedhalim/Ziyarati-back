@@ -7,9 +7,8 @@
 
 variables {
   # TEST FIXTURE ONLY — this is not an approval of any hosting location.
-  approved_regions                 = ["me-central-1"]
-  us_east_1_health_check_exception = true
-  audit_exempt_principal_arns      = ["arn:aws:iam::123456789012:role/zt-production-tf-apply"]
+  approved_regions            = ["me-central-1"]
+  audit_exempt_principal_arns = ["arn:aws:iam::123456789012:role/zt-production-tf-apply"]
 }
 
 run "documents_fit_the_scp_limits" {
@@ -55,14 +54,14 @@ run "region_boundary_denies_unapproved_regions" {
   assert {
     condition = (
       jsondecode(output.documents["region-boundary"]).Statement[0].Sid == "DenyOutsideApprovedRegions" &&
-      toset(jsondecode(output.documents["region-boundary"]).Statement[0].Condition.StringNotEquals["aws:RequestedRegion"]) == toset(["me-central-1", "us-east-1"])
+      toset(jsondecode(output.documents["region-boundary"]).Statement[0].Condition.StringNotEquals["aws:RequestedRegion"]) == toset(["me-central-1"])
     )
-    error_message = "Only the approved region plus the health-check exception region may pass the region deny"
+    error_message = "Only the approved region may pass the region deny (us-east-1 included: no exception exists)"
   }
 
   assert {
-    condition     = toset(output.allowed_regions) == toset(["me-central-1", "us-east-1"])
-    error_message = "allowed_regions must be approved + exception"
+    condition     = toset(output.allowed_regions) == toset(["me-central-1"])
+    error_message = "allowed_regions must be exactly the approved regions"
   }
 
   assert {
@@ -83,42 +82,17 @@ run "region_boundary_denies_unapproved_regions" {
   }
 }
 
-run "health_check_exception_is_narrow" {
+run "no_us_east_1_exception_statement_exists" {
   command = plan
-
-  assert {
-    condition = (
-      jsondecode(output.documents["region-boundary"]).Statement[1].Sid == "DenyAllButHealthCheckInExceptionRegion" &&
-      jsondecode(output.documents["region-boundary"]).Statement[1].Condition.StringEquals["aws:RequestedRegion"] == ["us-east-1"]
-    )
-    error_message = "In the exception region everything except the health-check actions stays denied"
-  }
-
-  assert {
-    condition = (
-      !contains(jsondecode(output.documents["region-boundary"]).Statement[1].NotAction, "sns:Publish") &&
-      !contains(jsondecode(output.documents["region-boundary"]).Statement[1].NotAction, "cloudwatch:PutMetricData") &&
-      !contains(jsondecode(output.documents["region-boundary"]).Statement[1].NotAction, "s3:*")
-    )
-    error_message = "The exception must not be able to carry a payload (no Publish, no PutMetricData, no S3)"
-  }
-}
-
-run "exception_off_means_us_east_1_is_denied" {
-  command = plan
-
-  variables {
-    us_east_1_health_check_exception = false
-  }
-
-  assert {
-    condition     = toset(output.allowed_regions) == toset(["me-central-1"])
-    error_message = "With the exception off, only the approved region passes"
-  }
 
   assert {
     condition     = length(jsondecode(output.documents["region-boundary"]).Statement) == 2
-    error_message = "No exception statement may exist when the exception is off"
+    error_message = "region-boundary holds exactly the region deny and the opt-in-region deny: no exception statement"
+  }
+
+  assert {
+    condition     = !strcontains(output.documents["region-boundary"], "HealthCheck")
+    error_message = "The us-east-1 health-check exception was removed (alerts live only in the approved region)"
   }
 }
 
@@ -131,7 +105,7 @@ run "exception_not_duplicated_when_us_east_1_is_approved" {
 
   assert {
     condition     = toset(output.allowed_regions) == toset(["us-east-1"])
-    error_message = "An approved us-east-1 needs no exception"
+    error_message = "An approved us-east-1 behaves like any approved region"
   }
 
   assert {

@@ -15,6 +15,8 @@ set -uo pipefail
 MODE="${1:-}"
 ENVIRONMENT="${2:-}"
 TF_ROOT="${TF_ROOT:-infra/terraform}"
+WORKFLOWS_DIR="${WORKFLOWS_DIR:-.github/workflows}"
+PLATFORM_REGION="${PLATFORM_REGION:-eu-central-1}"
 FAILED=0
 
 fail() { echo "::error::region-gate: $*"; FAILED=1; }
@@ -23,12 +25,11 @@ note() { echo "region-gate: $*"; }
 REGION_RE='\b(us|eu|ap|me|sa|ca|af|il|mx)(-gov)?-(east|west|central|south|north|southeast|southwest|northeast|northwest)-[0-9]\b'
 
 # ── 1. No region literal in Terraform code ──────────────────────────────────
-# Regions come from variables. The ONE documented exception is the Route 53
-# health-check alias provider in the environment roots (its metrics exist only in
-# us-east-1). Tests and mock data are not deployed code, so they are skipped.
-# The organisation-guardrails module and root (SCP documents) talk ABOUT that same
-# region (the health-check exception and its documentation), so the token us-east-1
-# is tolerated in those paths; any other region code there still fails.
+# Regions come from variables; there is NO exception (the us-east-1 Route 53
+# health-check alias was removed 2026-10-15: all project alerts live in the
+# platform region). Tests and mock data are not deployed code, so they are skipped.
+# The organisation-guardrails module and root keep the token us-east-1 in prose only
+# (it is the AWS Organizations API endpoint region); any other region code there fails.
 scan_literals() {
   local hits
   hits=$(grep -rnEI "$REGION_RE" "$TF_ROOT" --include='*.tf' \
@@ -49,6 +50,40 @@ scan_literals() {
   else
     note "no region literals in Terraform code"
   fi
+}
+
+# ── 1c. No provider alias for another region ────────────────────────────────
+scan_aliases() {
+  local hits
+  hits=$(grep -rnEI 'aws\.us_east_1|alias[[:space:]]*=[[:space:]]*"us_east_1"' "$TF_ROOT" --include='*.tf'     --exclude-dir=.terraform --exclude-dir=tests --exclude-dir=testing || true)
+  if [ -n "$hits" ]; then
+    fail "provider alias for us-east-1 found — all alerts and resources live in $PLATFORM_REGION:"
+    echo "$hits"
+  else
+    note "no us-east-1 provider alias in Terraform code"
+  fi
+}
+
+# ── 1a. No region literal in CI workflows ───────────────────────────────────
+# Workflows take the region from vars.AWS_REGION and refuse any value other than
+# the platform region (env PLATFORM_REGION, the one literal allowed per file), so a
+# workflow cannot deploy to or create anything in another region.
+scan_workflows() {
+  [ -d "$WORKFLOWS_DIR" ] || return 0
+  local hits f
+  hits=$(grep -nEI "$REGION_RE" "$WORKFLOWS_DIR"/*.yml 2>/dev/null \
+    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' \
+    | grep -vE "PLATFORM_REGION:[[:space:]]*\"?${PLATFORM_REGION}\"?" || true)
+  if [ -n "$hits" ]; then
+    fail "region literal(s) in CI workflows — use vars.AWS_REGION; only 'PLATFORM_REGION: ${PLATFORM_REGION}' may name a region:"
+    echo "$hits"
+  fi
+  for f in "$WORKFLOWS_DIR"/terraform.yml "$WORKFLOWS_DIR"/deploy-aws.yml; do
+    [ -f "$f" ] || continue
+    grep -qE "PLATFORM_REGION:[[:space:]]*\"?${PLATFORM_REGION}\"?" "$f" \
+      || fail "$f: missing 'PLATFORM_REGION: ${PLATFORM_REGION}' guard"
+  done
+  [ -z "$hits" ] && note "no region literals in CI workflows"
 }
 
 # ── 1b. No construct that copies data out of the region ─────────────────────
@@ -119,6 +154,13 @@ check_env() { # env, enforce(0|1)
     fi
   fi
 
+  # Single-region platform: every environment lives in PLATFORM_REGION. A second
+  # region is a written decision (SECURITY.md §6), changed here and in the
+  # workflows' PLATFORM_REGION together — never by editing one tfvars file.
+  if [ -n "$region" ] && [ "$region" != "$PLATFORM_REGION" ]; then
+    fail "$env: aws_region '$region' is not the platform region '$PLATFORM_REGION' (single-region platform)"
+  fi
+
   # The region the CI credentials point at must be the region being deployed.
   if [ "$enforce" = 1 ] && [ -n "${AWS_REGION:-}" ] && [ -n "$region" ] && [ "$AWS_REGION" != "$region" ]; then
     fail "$env: CI AWS_REGION '$AWS_REGION' differs from aws_region '$region'"
@@ -126,13 +168,12 @@ check_env() { # env, enforce(0|1)
 }
 
 # The organisation SCP must never be narrower than an environment (it would lock
-# the environment out of its own region), and its us-east-1 health-check exception
-# must be on while the platform still creates the Route 53 alarm there.
+# the environment out of its own region).
 check_org_guardrails() {
   local vars="$TF_ROOT/environments/org-guardrails/terraform.tfvars"
   [ -f "$vars" ] || return 0
 
-  local org env_regions env_dr exc r e
+  local org env_regions env_dr r e
   org=$(list "$vars" approved_regions)
   if [ -z "$org" ]; then
     note "org-guardrails: approved_regions is empty (expected until the organisation rollout starts)"
@@ -147,16 +188,13 @@ check_org_guardrails() {
       echo "$org" | in_list "$r" || fail "org-guardrails: $e uses region '$r' which is not in the organisation SCP approved_regions — the SCP would block it"
     done
   done
-
-  exc=$(sed -nE 's/^[[:space:]]*us_east_1_health_check_exception[[:space:]]*=[[:space:]]*(true|false).*/\1/p' "$vars" | head -1)
-  if [ "$exc" != "true" ] && ! echo "$org" | in_list "us-east-1"; then
-    fail "org-guardrails: us_east_1_health_check_exception is not true and us-east-1 is not approved, but modules/monitoring creates the Route 53 health-check alarm and SNS topic in us-east-1 — the SCP would block that apply"
-  fi
 }
 
 case "$MODE" in
   static)
     scan_literals
+    scan_aliases
+    scan_workflows
     scan_forbidden
     for e in staging production; do check_env "$e" 0; done
     check_org_guardrails
@@ -164,6 +202,8 @@ case "$MODE" in
   deploy)
     case "$ENVIRONMENT" in staging|production) ;; *) echo "usage: $0 deploy <staging|production>"; exit 2 ;; esac
     scan_literals
+    scan_aliases
+    scan_workflows
     scan_forbidden
     check_env "$ENVIRONMENT" 1
     check_org_guardrails

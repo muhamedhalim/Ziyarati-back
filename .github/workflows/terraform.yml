@@ -28,6 +28,8 @@ permissions:
 env:
   TF_IN_AUTOMATION: "1"
   AWS_REGION: ${{ vars.AWS_REGION }}
+  # Single-region platform: infra/scripts/region-gate.sh refuses any other region.
+  PLATFORM_REGION: eu-central-1
   TF_VERSION: "1.16.4"
 
 jobs:

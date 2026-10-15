@@ -55,6 +55,8 @@ permissions:
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
+  # Single-region platform: the preflight job refuses any other region.
+  PLATFORM_REGION: eu-central-1
   ECR_REPOSITORY: ziyaratech/backend
 
 jobs:
@@ -76,6 +78,10 @@ jobs:
           [ -n "$V_API_URL" ] || missing="$missing API_URL_PRODUCTION"
           if [ -n "$missing" ]; then
             echo "::error::Missing repository variables:${missing}. Settings → Secrets and variables → Actions → Variables."
+            exit 1
+          fi
+          if [ "$V_REGION" != "$PLATFORM_REGION" ]; then
+            echo "::error::AWS_REGION is '$V_REGION' but the platform runs only in $PLATFORM_REGION. Refusing to deploy."
             exit 1
           fi
           case "$V_API_URL" in https://*) ;; *) echo "::error::API_URL_PRODUCTION must start with https://"; exit 1;; esac

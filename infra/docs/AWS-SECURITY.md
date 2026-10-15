@@ -41,7 +41,7 @@ Verify before treating any as closed: this list comes from a source search, not 
 
 ## 5. What would be proven only by a real account
 
-Task start under the SCPs and the endpoint policy; the health-check alarm and SNS topic in `us-east-1`; RDS PITR restore; SES sending; ECS agent and AWS Backup service-role behaviour under the SCPs; every action name in the SCP data-copy list (`scripts/scp-validate.sh` validates them with Access Analyzer and has not been run). Staging apply is the first real test (`runbooks/org-guardrails-rollout.md` section 6).
+Task start under the SCPs and the endpoint policy; RDS PITR restore; SES sending; ECS agent and AWS Backup service-role behaviour under the SCPs; every action name in the SCP data-copy list (`scripts/scp-validate.sh` validates them with Access Analyzer and has not been run). Staging apply is the first real test (`runbooks/org-guardrails-rollout.md` section 6).
 
 ## 6. Support and operations access
 

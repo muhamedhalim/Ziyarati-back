@@ -85,7 +85,7 @@ variable "api_domain" {
 }
 
 variable "enable_external_health_check" {
-  description = "Route 53 health check + its alarm (health-check metrics exist only in the aws.us_east_1 alias region)"
+  description = "Route 53 health check on the API. Nothing alarms on it: its metric exists only in another region and the project keeps no alert resources outside the platform region (infra/docs/DATA-RESIDENCY.md A.2b)"
   type        = bool
   default     = true
 }
