@@ -3,7 +3,6 @@ import {
   PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
-  Index,
 } from 'typeorm';
 
 @Entity('countries')

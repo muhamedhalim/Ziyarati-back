@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 import { EncryptionService } from '../../../common/crypto/encryption.service';
 import { IntegrationConnection } from '../../../entities/Integration/IntegrationConnection';
@@ -25,7 +25,6 @@ import {
  */
 @Injectable()
 export class IntegrationProviderService {
-  private readonly logger = new Logger(IntegrationProviderService.name);
 
   constructor(private readonly encryption: EncryptionService) {}
 

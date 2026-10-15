@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
 
@@ -61,7 +61,6 @@ export interface RoutedAgent {
  */
 @Injectable()
 export class AgentRouterService {
-  private readonly logger = new Logger(AgentRouterService.name);
 
   constructor(
     @InjectRepository(AiAgent)

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Not, Repository } from 'typeorm';
 
@@ -61,7 +61,6 @@ export interface InboxPage {
  */
 @Injectable()
 export class InternalNotificationReadService {
-  private readonly logger = new Logger('InternalNotificationReadService');
 
   /** Read notifications are purged after this many days. */
   private readonly readRetentionDays = Number(

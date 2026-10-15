@@ -1,5 +1,5 @@
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, ILike, In, Repository } from 'typeorm';
 
@@ -78,7 +78,6 @@ function normalizePersonName(name: string | null | undefined): string {
  */
 @Injectable()
 export class CustomerService {
-  private readonly logger = new Logger('CustomerService');
 
   constructor(
     @InjectRepository(Customer)

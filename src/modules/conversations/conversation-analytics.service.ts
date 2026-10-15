@@ -4,7 +4,6 @@ import { Repository, SelectQueryBuilder } from 'typeorm';
 
 import { Conversation } from '../../entities/Conversations/Conversation';
 import { Message } from '../../entities/Conversations/Message';
-import { AppError, ErrorCode } from '../../common/errors';
 import { ConversationAnalyticsFilterDto } from './dto/conversation-analytics-filter.dto';
 import {
   ACTIVE_CONVERSATION_STATUSES,

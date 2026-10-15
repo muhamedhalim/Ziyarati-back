@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { DataSource, In, Not } from 'typeorm';
 
 import { CampaignRecipient } from '../../entities/Campaigns/CampaignRecipient';
@@ -41,7 +41,6 @@ export type DeliveryResult =
  */
 @Injectable()
 export class RecipientDeliveryService {
-  private readonly logger = new Logger('RecipientDeliveryService');
 
   constructor(private readonly dataSource: DataSource) {}
 

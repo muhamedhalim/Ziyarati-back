@@ -3,7 +3,7 @@ import {
   Controller,
   ForbiddenException,
   Get,
-  Logger,
+  
   Post,
   Query,
   Req,
@@ -32,7 +32,6 @@ import { constantTimeEqual } from '../../common/utils/constant-time.util';
 @ApiExcludeController()
 @Controller('webhooks/notifications/whatsapp')
 export class NotificationWebhookController {
-  private readonly logger = new Logger('NotificationWebhook');
 
   constructor(
     private readonly config: ConfigService,

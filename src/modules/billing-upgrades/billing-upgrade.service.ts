@@ -1,6 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, FindOptionsWhere, In, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { randomUUID } from 'node:crypto';
 
 import { BillingUpgradeRequest } from '../../entities/BillingUpgrades/BillingUpgradeRequest';
@@ -62,7 +62,6 @@ type AcceptPhaseResult =
  */
 @Injectable()
 export class BillingUpgradeService {
-  private readonly logger = new Logger('BillingUpgradeService');
 
   constructor(
     @InjectRepository(BillingUpgradeRequest)

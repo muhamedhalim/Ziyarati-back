@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
 import { AppError, ErrorCode } from '../../common/errors';
@@ -111,7 +111,6 @@ export interface TenantUsageRow {
  */
 @Injectable()
 export class PlatformUsageService {
-  private readonly logger = new Logger(PlatformUsageService.name);
 
   constructor(
     private readonly dataSource: DataSource,

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 import { AppRedisService } from './app-redis.service';
 import { cacheKeyPrefix } from './queue.constants';
@@ -63,7 +63,6 @@ export type RateLimitDecision =
  */
 @Injectable()
 export class TenantRateLimiterService {
-  private readonly logger = new Logger('TenantRateLimiter');
 
   // KEYS: [bucket, dailyCounter, monthlyCounter]
   // ARGV: [capacity, refillPerSec, nowMs, dailyCap, monthlyCap, dailyTtl, monthlyTtl]

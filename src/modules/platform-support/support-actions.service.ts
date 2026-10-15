@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
 import { AppError, ErrorCode } from '../../common/errors';
@@ -61,7 +61,6 @@ import {
  */
 @Injectable()
 export class SupportActionsService {
-  private readonly logger = new Logger(SupportActionsService.name);
 
   constructor(
     private readonly clinics: SupportClinicResolver,

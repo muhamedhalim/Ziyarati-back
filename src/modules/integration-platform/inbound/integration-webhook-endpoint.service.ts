@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { randomBytes } from 'node:crypto';
@@ -43,7 +43,6 @@ const SECRET_BYTES = 32;
  */
 @Injectable()
 export class IntegrationWebhookEndpointService {
-  private readonly logger = new Logger(IntegrationWebhookEndpointService.name);
 
   constructor(
     @InjectRepository(IntegrationWebhookEndpoint)

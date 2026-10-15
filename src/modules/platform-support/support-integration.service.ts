@@ -5,7 +5,6 @@ import { DataSource, Repository } from 'typeorm';
 
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { MerchantAccount } from '../../entities/Payments/MerchantAccount';
-import { TenantAiDeployment } from '../../entities/AI Agent/TenantAiDeployment';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { StorageService } from '../storage/storage.service';
 

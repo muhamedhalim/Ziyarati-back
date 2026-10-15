@@ -9,7 +9,6 @@ import {
   UpdateDateColumn,
   DeleteDateColumn,
   Index,
-  JoinColumn,
 } from 'typeorm';
 
 import { Tenant } from '../SaaS-Core/Tenant';

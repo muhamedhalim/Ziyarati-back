@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Not, Repository } from 'typeorm';
 
@@ -22,7 +22,6 @@ export type DeliveryResultOut =
  */
 @Injectable()
 export class NotificationDeliveryService {
-  private readonly logger = new Logger('NotificationDeliveryService');
 
   constructor(
     @InjectRepository(ScheduledNotification)

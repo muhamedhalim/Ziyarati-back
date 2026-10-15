@@ -4,7 +4,7 @@ import {
   IsString,
   MaxLength,
 } from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   API_SENDABLE_SENDER_TYPES,
   MESSAGE_TYPE,

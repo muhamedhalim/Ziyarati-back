@@ -5,10 +5,10 @@ import {
   IsISO8601,
   IsNumber,
   IsOptional,
-  IsString,
+  
   IsUUID,
   Max,
-  MaxLength,
+  
   Min,
   IsIn,
 } from 'class-validator';

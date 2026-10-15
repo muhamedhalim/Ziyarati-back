@@ -50,14 +50,4 @@ export class BillingUpgradeBootstrap implements OnApplicationBootstrap {
       run: () => this.dataSource.query(sql),
     });
   }
-
-  /** A performance index. Losing one costs latency, not correctness. */
-  private async run(label: string, sql: string): Promise<void> {
-    await this.guards.ensure({
-      owner: 'BillingUpgradeBootstrap',
-      label,
-      criticality: 'optional',
-      run: () => this.dataSource.query(sql),
-    });
-  }
 }

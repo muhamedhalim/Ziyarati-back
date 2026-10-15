@@ -1,5 +1,5 @@
 import { IsIn, IsOptional, IsUUID } from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   CONVERSATION_STATUS,
   CONVERSATION_STATUSES,

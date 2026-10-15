@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, IsNull, Not, Repository } from 'typeorm';
 
@@ -80,7 +80,6 @@ export interface PurchaseResult {
  */
 @Injectable()
 export class ResourcePurchaseService {
-  private readonly logger = new Logger('ResourcePurchaseService');
 
   constructor(
     @InjectRepository(ResourcePurchase)

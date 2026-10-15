@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 import { WorkflowActionSpec } from '../../entities/Workflows/Workflow';
 import { EmailService } from '../email/email.service';
@@ -55,7 +55,6 @@ export interface ActionOutcome {
  */
 @Injectable()
 export class WorkflowActionExecutor {
-  private readonly logger = new Logger('WorkflowActionExecutor');
 
   constructor(
     private readonly email: EmailService,

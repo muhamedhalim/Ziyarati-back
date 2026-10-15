@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, FindOptionsWhere, Repository } from 'typeorm';
 
@@ -63,7 +63,6 @@ interface RefundIntent {
  */
 @Injectable()
 export class RefundService {
-  private readonly logger = new Logger('RefundService');
 
   constructor(
     @InjectRepository(Refund)

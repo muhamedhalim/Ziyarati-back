@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import type { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
@@ -107,7 +107,6 @@ export interface QueueListResult {
  */
 @Injectable()
 export class PatientQueueService {
-  private readonly logger = new Logger('PatientQueueService');
 
   constructor(
     @InjectRepository(QueueEntry)

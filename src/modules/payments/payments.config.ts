@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 /**
@@ -23,7 +23,6 @@ import { ConfigService } from '@nestjs/config';
  */
 @Injectable()
 export class PaymentsConfig {
-  private readonly logger = new Logger('PaymentsConfig');
 
   constructor(private readonly config: ConfigService) {}
 

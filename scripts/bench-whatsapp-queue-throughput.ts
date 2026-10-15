@@ -19,7 +19,7 @@
  */
 import 'dotenv/config';
 import { ConfigService } from '@nestjs/config';
-import { Queue, Worker, Job, UnrecoverableError } from 'bullmq';
+import { Queue, Worker, Job } from 'bullmq';
 
 import { blockingConnectionOptions, producerConnectionOptions } from '../src/queue/redis.config';
 

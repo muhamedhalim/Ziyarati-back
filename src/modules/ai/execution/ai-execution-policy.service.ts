@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import {
@@ -44,7 +44,6 @@ export interface ModeDecision {
  */
 @Injectable()
 export class AiExecutionPolicyService {
-  private readonly logger = new Logger(AiExecutionPolicyService.name);
 
   constructor(private readonly config: ConfigService) {}
 

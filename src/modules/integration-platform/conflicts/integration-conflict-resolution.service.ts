@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 import { AppError, ErrorCode } from '../../../common/errors';
 
@@ -61,7 +61,6 @@ interface StaleCheckable {
  */
 @Injectable()
 export class IntegrationConflictResolutionService {
-  private readonly logger = new Logger(IntegrationConflictResolutionService.name);
 
   constructor(
     private readonly conflicts: IntegrationConflictService,

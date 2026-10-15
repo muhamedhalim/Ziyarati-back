@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, In, MoreThanOrEqual, Repository } from 'typeorm';
 
@@ -164,7 +164,6 @@ export interface MonthlyExtras {
  */
 @Injectable()
 export class AnalyticsAggregationService {
-  private readonly logger = new Logger('AnalyticsAggregationService');
 
   constructor(
     @InjectRepository(Branch)

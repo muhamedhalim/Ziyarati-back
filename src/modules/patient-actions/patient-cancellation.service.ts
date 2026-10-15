@@ -9,7 +9,6 @@ import {
   AppointmentActionOrigin,
   AppointmentStatus,
 } from '../../entities/enums';
-import { AppError, ErrorCode } from '../../common/errors';
 
 import { AppointmentsService } from '../appointment/appointment.service';
 import {

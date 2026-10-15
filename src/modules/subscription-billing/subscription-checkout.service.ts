@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
@@ -56,7 +56,6 @@ export interface CheckoutVerification {
  */
 @Injectable()
 export class SubscriptionCheckoutService {
-  private readonly logger = new Logger('SubscriptionCheckoutService');
 
   constructor(
     @InjectRepository(SubscriptionInvoice)

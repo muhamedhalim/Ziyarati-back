@@ -1,4 +1,4 @@
-import { IsISO8601, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { IsISO8601, IsOptional, IsString, MaxLength } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 /** Filter for WhatsApp analytics (always tenant-scoped, over notification_logs). */

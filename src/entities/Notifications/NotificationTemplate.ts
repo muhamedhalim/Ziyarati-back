@@ -4,7 +4,6 @@ import {
   Column,
   ManyToOne,
   CreateDateColumn,
-  Index,
 } from 'typeorm';
 
 import { Tenant } from '../SaaS-Core/Tenant';

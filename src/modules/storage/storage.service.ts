@@ -12,7 +12,7 @@ import {
   type GetObjectCommandOutput,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
 import { AppError, ErrorCode } from '../../common/errors';
 import {
