@@ -12,7 +12,7 @@ approved_regions = ["eu-central-1"] # D-1 confirmed by the owner in chat, 2026-1
 aws_region            = "eu-central-1"
 availability_zone_ids = ["euc1-az1", "euc1-az2", "euc1-az3"]
 vpc_cidr              = "10.20.0.0/16"
-nat_gateway_count     = 2
+nat_gateway_count     = 1 # 2026-10-16: was 2 (owner-approved cost cut; one-AZ egress SPOF accepted)
 
 domain = "ziyaratech.com"
 # Every browser origin that opens a socket or sends credentialed requests: the marketing/dashboard site
@@ -35,10 +35,11 @@ api = {
   cpu_target    = 60
 }
 
-# Was 512/1024. Measured: CPU avg 3%, memory max 281 MB of 1024 MB (AWS-COST-FORENSICS.md F-5).
-# Memory stays at 1 GB: 0.25 vCPU supports 0.5/1/2 GB and the OOM-kill alarm is at 85%.
+# Kept at 512/1024 (the live value). Avg CPU 3%, but 5-min peaks hit 64-74% of 0.5 vCPU several times a
+# week (2026-10-12..16), which would saturate 0.25 vCPU; the saving was only ~$8.5/mo. Revisit 256/1024
+# once job volume is characterised. Memory max 281 MB of 1024 MB; the OOM-kill alarm is at 85%.
 worker = {
-  cpu           = 256
+  cpu           = 512
   memory        = 1024
   desired_count = 1
   min_count     = 1
@@ -55,12 +56,12 @@ db = {
   instance_class       = "db.t3.small" # TRIAL-PHASE cost cut 2026-10-16 (was db.t3.medium live; db.t4g.medium was proposed, never applied). 2 vCPU burstable / 2 GB.
   # 2026-10-08 note said t4g.medium was not orderable here; DescribeOrderableDBInstanceOptions (PostgreSQL 17.9, gp3, Multi-AZ,
   # eu-central-1a/b/c) lists it on 2026-10-15. The modify call fails fast, before any change, if the account still cannot order it.
-  multi_az                 = true
+  multi_az                 = false # 2026-10-16: owner-approved cost cut (was true)
   max_connections          = 300
   allocated_storage_gb     = 50
   max_allocated_storage_gb = 200
   backup_retention_days    = 14    # value used when backup_enabled = true (official launch)
-  backup_enabled           = false # TRIAL: set false to turn automated backups off. See docs/DB-TRIAL-COST-CUT.md
+  backup_enabled           = true # re-enabled 2026-10-16: retention = backup_retention_days (14); trial phase over
   apply_immediately        = false # was true for the 2026-10-16 changes (applied); keep false
 }
 
