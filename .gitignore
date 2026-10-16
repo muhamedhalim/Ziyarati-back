@@ -84,6 +84,7 @@ infra/docs/*
 !infra/docs/INCIDENT-RESPONSE.md
 !infra/docs/AWS-SECURITY.md
 !infra/docs/AWS-REGION-STRATEGY.md
+!infra/docs/POWER-SWITCH.md
 ziyaratech.backup
 
 # TestSprite backend tests — one file carries a platform-admin login inline
