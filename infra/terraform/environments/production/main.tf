@@ -21,6 +21,7 @@ terraform {
   }
 }
 
+
 locals {
   default_tags = {
     Project     = "ZiyaraTech"
