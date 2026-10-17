@@ -16,7 +16,9 @@ export interface EmailConfig {
 
 /** Non-production fallback sender — production refuses to boot without a real one. */
 const FALLBACK_FROM_ADDRESS = 'no-reply@example.com';
-const DEFAULT_FROM_NAME = 'Ziyarati';
+/** User-facing brand shown in every system email (sender name, header, body). */
+export const EMAIL_BRAND_NAME = 'ZiyaraTech';
+const DEFAULT_FROM_NAME = EMAIL_BRAND_NAME;
 
 /** A bare `local@domain.tld` mailbox — the shape Resend accepts inside `from`. */
 const MAILBOX = /^[^\s<>@",;]+@[^\s<>@",;]+\.[^\s<>@",;]+$/;
@@ -29,7 +31,7 @@ const NAMED_MAILBOX = /^[^<>]*<([^<>]+)>$/;
  *
  * Blank values are treated as UNSET. The previous `EMAIL_FROM ?? fallback`
  * let an empty-string `EMAIL_FROM` through (`??` only replaces null/undefined),
- * producing `Ziyarati <>` — which Resend rejects with a 422 on every send.
+ * producing `ZiyaraTech <>` — which Resend rejects with a 422 on every send.
  * That is exactly how production's worker, whose `EMAIL_FROM` was set to "",
  * failed every email it ever attempted.
  *

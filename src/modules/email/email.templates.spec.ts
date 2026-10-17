@@ -281,3 +281,31 @@ describe('EMAIL_TEMPLATES — minimal appointment notices (residency plan P8)', 
     expect(out.text).toContain('card declined');
   });
 });
+
+describe('EMAIL_TEMPLATES — brand name', () => {
+  const noBrandCtx: RenderContext = { appUrl: 'https://app.test', locale: 'en' };
+
+  it.each(ALL_KEYS)(
+    '%s shows ZiyaraTech and never "Ziyarati" (en + ar)',
+    (key) => {
+      for (const ctx of [noBrandCtx, arCtx]) {
+        const r = renderEmail(key, varsFor(key), ctx);
+        const all = `${r.subject}\n${r.html}\n${r.text}`;
+        expect(all).not.toMatch(/Ziyarati/i);
+        expect(r.html).toContain('ZiyaraTech');
+      }
+    },
+  );
+
+  it('keeps activation and reset links intact', () => {
+    const reset = renderEmail('password_reset', varsFor('password_reset'), enCtx);
+    expect(reset.html).toContain('https://app.test/reset?token=abc');
+    expect(reset.text).toContain('https://app.test/reset?token=abc');
+    const verify = renderEmail(
+      'email_verification',
+      varsFor('email_verification'),
+      enCtx,
+    );
+    expect(verify.text).toContain('https://app.test/verify?token=abc');
+  });
+});

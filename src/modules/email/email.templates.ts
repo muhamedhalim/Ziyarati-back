@@ -10,6 +10,7 @@
  */
 
 import { redactProhibitedIdentifiers } from '../../common/utils/prohibited-content.util';
+import { EMAIL_BRAND_NAME } from './email.config';
 
 export type EmailTemplateKey =
   | 'welcome'
@@ -82,7 +83,7 @@ const t = (ctx: RenderContext, en: string, ar: string): string =>
   isArabic(ctx) ? ar : en;
 
 function layout(title: string, body: string, ctx: RenderContext): string {
-  const brand = esc(ctx.brand ?? 'Ziyarati');
+  const brand = esc(ctx.brand ?? EMAIL_BRAND_NAME);
   const dir = isArabic(ctx) ? 'rtl' : 'ltr';
   const lang = isArabic(ctx) ? 'ar' : 'en';
   const footer = t(
@@ -162,8 +163,8 @@ export const EMAIL_TEMPLATES: Record<
     action(
       t(
         ctx,
-        'Welcome to ' + s(ctx.brand ?? 'Ziyarati'),
-        'مرحبًا بك في ' + s(ctx.brand ?? 'Ziyarati'),
+        'Welcome to ' + s(ctx.brand ?? EMAIL_BRAND_NAME),
+        'مرحبًا بك في ' + s(ctx.brand ?? EMAIL_BRAND_NAME),
       ),
       greet(v, ctx),
       t(

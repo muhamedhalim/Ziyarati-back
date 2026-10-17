@@ -11,15 +11,15 @@ describe('formatFromAddress', () => {
   });
 
   it('defaults the display name when EMAIL_FROM_NAME is unset or blank', () => {
-    expect(formatFromAddress('a@b.co', undefined)).toBe('Ziyarati <a@b.co>');
-    expect(formatFromAddress('a@b.co', '   ')).toBe('Ziyarati <a@b.co>');
+    expect(formatFromAddress('a@b.co', undefined)).toBe('ZiyaraTech <a@b.co>');
+    expect(formatFromAddress('a@b.co', '   ')).toBe('ZiyaraTech <a@b.co>');
   });
 
-  // The production incident: worker EMAIL_FROM was "" → sender "Ziyarati <>".
+  // The production incident: worker EMAIL_FROM was "" → sender "ZiyaraTech <>".
   it.each(['', '   ', null, undefined])(
     'treats a blank EMAIL_FROM (%p) as unusable instead of producing "Name <>"',
     (value) => {
-      expect(formatFromAddress(value as string, 'Ziyarati')).toBeNull();
+      expect(formatFromAddress(value as string, 'ZiyaraTech')).toBeNull();
     },
   );
 
@@ -32,7 +32,7 @@ describe('formatFromAddress', () => {
   it.each(['not-an-email', 'a@b', 'Name <not-an-email>', 'a b@c.co', '<>'])(
     'rejects a malformed sender %p',
     (value) => {
-      expect(formatFromAddress(value, 'Ziyarati')).toBeNull();
+      expect(formatFromAddress(value, 'ZiyaraTech')).toBeNull();
     },
   );
 
@@ -44,9 +44,9 @@ describe('formatFromAddress', () => {
 describe('resolveEmailConfig().from', () => {
   it('never yields an empty mailbox when EMAIL_FROM is an empty string', () => {
     const cfg = resolveEmailConfig(
-      configFrom({ EMAIL_FROM: '', EMAIL_FROM_NAME: 'Ziyarati' }),
+      configFrom({ EMAIL_FROM: '', EMAIL_FROM_NAME: 'ZiyaraTech' }),
     );
-    expect(cfg.from).toBe('Ziyarati <no-reply@example.com>');
+    expect(cfg.from).toBe('ZiyaraTech <no-reply@example.com>');
     expect(cfg.from).not.toContain('<>');
   });
 
@@ -64,6 +64,6 @@ describe('resolveEmailConfig().from', () => {
     const cfg = resolveEmailConfig(
       configFrom({ EMAIL_FROM: '', EMAIL_FROM_NAME: 'a<b' }),
     );
-    expect(cfg.from).toBe('Ziyarati <no-reply@example.com>');
+    expect(cfg.from).toBe('ZiyaraTech <no-reply@example.com>');
   });
 });

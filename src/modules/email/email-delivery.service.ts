@@ -10,7 +10,7 @@ import { EmailLog } from '../../entities/System/EmailLog';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { EmailSendJob } from '../../queue/job-data.interface';
 import { EmailProviderFactory } from './providers/email-provider.factory';
-import { resolveEmailConfig } from './email.config';
+import { EMAIL_BRAND_NAME, resolveEmailConfig } from './email.config';
 import { renderEmail } from './email.templates';
 import { scrubFailureReason } from '../../common/utils/log-scrubber.util';
 
@@ -92,7 +92,7 @@ export class EmailDeliveryService {
     const ctx = {
       appUrl: cfg.appUrl,
       locale: job.locale ?? cfg.defaultLocale,
-      brand: 'Ziyarati',
+      brand: EMAIL_BRAND_NAME,
       // Appointment notices are minimal unless the platform opts in (residency plan P8).
       includeHealthDetail:
         String(this.config.get('EMAIL_INCLUDE_HEALTH_DETAIL', 'false')) === 'true',

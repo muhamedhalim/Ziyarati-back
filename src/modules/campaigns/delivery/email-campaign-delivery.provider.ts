@@ -8,7 +8,7 @@ import {
 } from './campaign-delivery.provider.interface';
 import { CAMPAIGN_CHANNEL } from '../campaign.constants';
 import { EmailProviderFactory } from '../../email/providers/email-provider.factory';
-import { resolveEmailConfig } from '../../email/email.config';
+import { EMAIL_BRAND_NAME, resolveEmailConfig } from '../../email/email.config';
 import { renderEmail } from '../../email/email.templates';
 
 /**
@@ -69,7 +69,7 @@ export class EmailCampaignDeliveryProvider implements CampaignDeliveryProvider {
           body: payload.emailBody,
           ...payload.metadata,
         },
-        { appUrl: cfg.appUrl, locale: cfg.defaultLocale, brand: 'Ziyarati' },
+        { appUrl: cfg.appUrl, locale: cfg.defaultLocale, brand: EMAIL_BRAND_NAME },
       );
 
       const provider = this.providers.resolve();
