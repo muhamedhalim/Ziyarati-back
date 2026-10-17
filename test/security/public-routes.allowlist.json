@@ -253,10 +253,5 @@
     "method": "POST",
     "path": "/public/unsubscribe/:token",
     "reason": "Marketing unsubscribe: suppresses that one address for that one clinic's marketing mail and clears the matching customer's marketing opt-in. Authorised by the stateless HMAC-SHA256 token over (tenantId, email) (UnsubscribeTokenService.verify — constant-time compare, so it cannot be forged or altered); every invalid token is the same uniform 404. Must work without signing in, permanently (FR-E006). Idempotent; takes no body and can affect only the (tenant, address) pair the token encodes. @SkipCsrf because the credential is the token in the URL. Per-IP @Throttle; not JWT (the recipient has no account)."
-  },
-  {
-    "method": "POST",
-    "path": "/public/email/webhooks/resend",
-    "reason": "Resend bounce/complaint feedback webhook — authenticated by an HMAC-SHA256 signature over the exact raw body (EmailWebhookSignatureVerifier: constant-time compare, fail-closed when RESEND_WEBHOOK_SECRET is unset), checked BEFORE any state change; the tenant and address come from our own campaign_recipients row matched by provider_ref, never from the payload, and suppression is idempotent. Per-IP @Throttle (60/min); @SkipCsrf; not JWT."
   }
 ]

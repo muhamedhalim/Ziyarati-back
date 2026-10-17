@@ -23,7 +23,7 @@ const KNOWN_NON_PRODUCTION = new Set(['development', 'test']);
  * comparison. Reached through a normal API/worker boot that is safe, because
  * Joi has already restricted `NODE_ENV` to `development|production|test` and
  * `ConfigService.get` returns the validated value. But `src/migrate.ts` —
- * the documented separate release-step migration runner for Railway / Fly /
+ * the documented separate release-step migration runner for an ECS one-off task / Fly /
  * ECS / Kubernetes Jobs — deliberately reads `process.env` directly and runs
  * NO Joi validation at all. Measured through the compiled factory: `PRODUCTION`,
  * `production ` (trailing space) and `prod` all took the non-production branch

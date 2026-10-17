@@ -1,4 +1,4 @@
-# SES v2 (replaces Resend). DNS is on Vercel DNS, so this module OUTPUTS the
+# SES v2 — the only email provider. DNS is on Vercel DNS, so this module OUTPUTS the
 # DKIM / MAIL FROM / DMARC records; SES verifies asynchronously once they
 # exist. Bounce + complaint events flow SES → SNS → SQS → worker
 # (SesFeedbackConsumer) — no public webhook to forge (ARCHITECTURE.md §7).

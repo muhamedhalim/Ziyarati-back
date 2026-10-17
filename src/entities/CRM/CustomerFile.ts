@@ -21,14 +21,14 @@ export class CustomerFile {
    * Legacy/external URL for rows created before private storage, OR a
    * short-lived signed URL resolved in-memory from `storage_key` for API
    * responses (see `CustomerFileService.withResolvedUrl`) — never both
-   * meaningfully at once. Uploads always go through R2 going forward; this
+   * meaningfully at once. Uploads always go through S3 going forward; this
    * column is only ever read from, never written to, by new code.
    */
   @Column({ type: 'text', nullable: true })
   file_url?: string | null;
 
   /**
-   * Private R2 object key (`<tenantId>/customer-file/<uuid>.<ext>`). Never a
+   * Private S3 object key (`<tenantId>/customer-file/<uuid>.<ext>`). Never a
    * URL. Explicit `type:` avoids TypeORM's `DataTypeNotSupportedError` for
    * union-typed columns.
    */

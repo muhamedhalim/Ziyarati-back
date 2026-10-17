@@ -1,7 +1,7 @@
 import { validate } from './env.validation';
 
 /**
- * AWS migration keys (EMAIL_PROVIDER=ses, STORAGE_PROVIDER=s3). Kept separate
+ * AWS keys (Amazon SES email, STORAGE_PROVIDER=s3). Kept separate
  * from env.validation.spec.ts, which carries known pre-existing failures
  * (see project notes), so these results stand on their own.
  *
@@ -20,7 +20,6 @@ const awsProduction = {
   AUTH_REGISTER_OWNER_ENDPOINT_CEILING: 1000,
   PAYMENT_PROVIDER: 'noop',
   AWS_REGION: 'me-central-1',
-  EMAIL_PROVIDER: 'ses',
   SES_CONFIGURATION_SET: 'zt-production',
   EMAIL_FROM: 'no-reply@ziyaratech.com',
   STORAGE_PROVIDER: 's3',
@@ -29,9 +28,8 @@ const awsProduction = {
 };
 
 describe('env.validation — AWS migration (SES / S3)', () => {
-  it('accepts the production environment the ECS task definition provides — no Resend keys needed', () => {
+  it('accepts the production environment the ECS task definition provides — no email provider keys needed', () => {
     const value = validate({ ...awsProduction });
-    expect(value.EMAIL_PROVIDER).toBe('ses');
     expect(value.STORAGE_PROVIDER).toBe('s3');
   });
 
@@ -41,16 +39,20 @@ describe('env.validation — AWS migration (SES / S3)', () => {
     );
   });
 
-  it('rejects an unknown EMAIL_PROVIDER', () => {
+  it('rejects any EMAIL_PROVIDER other than ses — there is no provider choice any more', () => {
     expect(() => validate({ ...awsProduction, EMAIL_PROVIDER: 'sendgrid' })).toThrow(
-      /Env validation error/,
+      /EMAIL_PROVIDER=sendgrid/,
     );
+    expect(() => validate({ ...awsProduction, EMAIL_PROVIDER: 'resend' })).toThrow(
+      /EMAIL_PROVIDER=resend/,
+    );
+    expect(() => validate({ ...awsProduction, EMAIL_PROVIDER: 'ses' })).not.toThrow();
   });
 
   it('refuses to boot with SES and no region', () => {
     const { AWS_REGION: _omit, STORAGE_PROVIDER: _storage, ...rest } = awsProduction;
     expect(() => validate(rest)).toThrow(
-      /EMAIL_PROVIDER=ses.*SES_REGION or AWS_REGION/s,
+      /Amazon SES.*SES_REGION or AWS_REGION/s,
     );
   });
 
@@ -61,11 +63,14 @@ describe('env.validation — AWS migration (SES / S3)', () => {
     ).not.toThrow();
   });
 
-  it('refuses to boot with SES and a malformed sender (same rule as Resend)', () => {
+  it('refuses to boot with SES and a malformed sender (same sender rule)', () => {
     expect(() => validate({ ...awsProduction, EMAIL_FROM: '' })).toThrow(/EMAIL_FROM/);
   });
 
-  it('does not demand RESEND_API_KEY when the provider is SES', () => {
+  it('refuses a leftover RESEND_API_KEY instead of silently carrying the secret', () => {
+    expect(() => validate({ ...awsProduction, RESEND_API_KEY: 're_x' })).toThrow(
+      /RESEND_API_KEY.*retired email provider/s,
+    );
     expect(() => validate({ ...awsProduction, RESEND_API_KEY: '' })).not.toThrow();
   });
 

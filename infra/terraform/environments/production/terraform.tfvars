@@ -75,7 +75,7 @@ waf_mode  = "count" # switch to "block" after 14 clean days (SECURITY.md §4)
 dmarc_rua = "dmarc@ziyaratech.com"
 
 # Non-secret application config. Fixed platform keys (NODE_ENV, DB_SSL_CA,
-# STORAGE_PROVIDER, EMAIL_PROVIDER, ...) are set by the platform module.
+# STORAGE_PROVIDER, S3_BUCKET, SES_CONFIGURATION_SET, ...) are set by the platform module.
 app_environment = {
   EMAIL_FROM                           = "no-reply@ziyaratech.com"
   EMAIL_FROM_NAME                      = "ZiyaraTech"

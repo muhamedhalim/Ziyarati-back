@@ -59,8 +59,7 @@ describe('SupportIntegrationService', () => {
           provide: ConfigService,
           useValue: createMockConfigService({
             EMAIL_ENABLED: 'true',
-            EMAIL_PROVIDER: 'resend',
-            RESEND_API_KEY: 're_super_secret_value',
+            AWS_REGION: 'eu-central-1',
             ...config,
           }),
         },
@@ -350,7 +349,7 @@ describe('SupportIntegrationService', () => {
     });
 
     it('reports email as not_configured when the platform provider is unset, regardless of clinic history', async () => {
-      service = await build({ RESEND_API_KEY: '' });
+      service = await build({ AWS_REGION: '' });
 
       expect((await service.email(TENANT_ID)).health).toBe('not_configured');
     });

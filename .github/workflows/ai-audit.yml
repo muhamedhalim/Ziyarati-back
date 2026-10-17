@@ -84,7 +84,7 @@ jobs:
       JWT_ACCESS_SECRET: ai-audit-ci-access-secret-not-for-production-use
       JWT_REFRESH_SECRET: ai-audit-ci-refresh-secret-not-for-production-use
       PAYMENT_PROVIDER: noop
-      EMAIL_PROVIDER: noop
+      EMAIL_ENABLED: "false"
       # Deliberately UNSET (H14 finding): the OpenAI provider dials the real
       # API whenever OPENAI_API_KEY is present, key or no OPENAI_LIVE_TESTS
       # flag. The deterministic suite runs on ScriptedAiProvider only — no key
@@ -152,7 +152,7 @@ jobs:
       JWT_ACCESS_SECRET: ai-audit-ci-access-secret-not-for-production-use
       JWT_REFRESH_SECRET: ai-audit-ci-refresh-secret-not-for-production-use
       PAYMENT_PROVIDER: noop
-      EMAIL_PROVIDER: noop
+      EMAIL_ENABLED: "false"
       # The `secrets` context is not allowed in step `if:` (the workflow file was rejected
       # as invalid); a job-level env flag carries "is the key configured" without exposing it.
       OPENAI_KEY_PRESENT: ${{ secrets.OPENAI_API_KEY != '' }}

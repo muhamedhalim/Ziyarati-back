@@ -1,13 +1,11 @@
 import { ConfigService } from '@nestjs/config';
 
 /**
- * Resolved email configuration (env-specific). In production, email is ON when a
- * provider is configured; in development it is OFF unless `EMAIL_ENABLED=true`,
+ * Resolved email configuration (env-specific). In production, email is ON (Amazon SES); in development it is OFF unless `EMAIL_ENABLED=true`,
  * so local runs default to the no-op provider (log only).
  */
 export interface EmailConfig {
   enabled: boolean;
-  provider: string;
   from: string;
   replyTo?: string;
   appUrl: string;
@@ -20,7 +18,7 @@ const FALLBACK_FROM_ADDRESS = 'no-reply@example.com';
 export const EMAIL_BRAND_NAME = 'ZiyaraTech';
 const DEFAULT_FROM_NAME = EMAIL_BRAND_NAME;
 
-/** A bare `local@domain.tld` mailbox — the shape Resend accepts inside `from`. */
+/** A bare `local@domain.tld` mailbox — the shape SES accepts inside `from`. */
 const MAILBOX = /^[^\s<>@",;]+@[^\s<>@",;]+\.[^\s<>@",;]+$/;
 /** An already-formatted `Name <local@domain.tld>` sender. */
 const NAMED_MAILBOX = /^[^<>]*<([^<>]+)>$/;
@@ -31,12 +29,11 @@ const NAMED_MAILBOX = /^[^<>]*<([^<>]+)>$/;
  *
  * Blank values are treated as UNSET. The previous `EMAIL_FROM ?? fallback`
  * let an empty-string `EMAIL_FROM` through (`??` only replaces null/undefined),
- * producing `ZiyaraTech <>` — which Resend rejects with a 422 on every send.
+ * producing `ZiyaraTech <>` — which the provider rejects on every send.
  * That is exactly how production's worker, whose `EMAIL_FROM` was set to "",
  * failed every email it ever attempted.
  *
- * `EMAIL_FROM` may also already be `Name <addr>` (the format Resend's own
- * docs use); it is then taken as-is rather than wrapped a second time into
+ * `EMAIL_FROM` may also already be `Name <addr>` (the common display-name format); it is then taken as-is rather than wrapped a second time into
  * `Name <Name <addr>>`.
  */
 export function formatFromAddress(
@@ -70,9 +67,8 @@ export function resolveEmailConfig(config: ConfigService): EmailConfig {
 
   return {
     enabled,
-    provider: config.get<string>('EMAIL_PROVIDER') ?? 'resend',
     // Production never reaches the fallback: env.validation refuses to boot
-    // when a live Resend sender cannot be formed.
+    // when a live SES sender cannot be formed.
     from:
       formatFromAddress(config.get<string>('EMAIL_FROM'), fromName) ??
       formatFromAddress(FALLBACK_FROM_ADDRESS, fromName) ??

@@ -9,7 +9,6 @@ import { Customer } from '../../entities/CRM/Customer';
 import { EmailService } from './email.service';
 import { EmailDeliveryService } from './email-delivery.service';
 import { EmailProviderFactory } from './providers/email-provider.factory';
-import { ResendProvider } from './providers/resend.provider';
 import { SesProvider } from './providers/ses.provider';
 import { NoopEmailProvider } from './providers/noop-email.provider';
 import { EmailLogController } from './email-log.controller';
@@ -18,8 +17,6 @@ import { EmailSuppressionService } from './email-suppression.service';
 import { UnsubscribeTokenService } from './unsubscribe-token.service';
 import { UnsubscribeService } from './unsubscribe.service';
 import { UnsubscribeController } from './unsubscribe.controller';
-import { EmailWebhookSignatureVerifier } from './webhooks/email-webhook-signature.verifier';
-import { EmailWebhookController } from './webhooks/email-webhook.controller';
 
 import { CampaignsModule } from '../campaigns/campaigns.module';
 
@@ -32,9 +29,10 @@ import { CampaignsModule } from '../campaigns/campaigns.module';
  * EmailProcessor reuses {@link EmailDeliveryService} to deliver queued emails.
  *
  * Phase 11 (US7) additions: the per-tenant suppression list + the public
- * unsubscribe surface (T134) + the bounce/complaint webhook (T136). These
- * import `CampaignsModule` for `RecipientDeliveryService` (resolving a
- * webhook's `provider_ref` back to a recipient) and `CampaignAuditService`
+ * unsubscribe surface (T134). Bounce/complaint feedback arrives through the
+ * SES → SNS → SQS consumer on the worker (there is no public webhook). The
+ * module imports `CampaignsModule` for `RecipientDeliveryService` (resolving
+ * a `provider_ref` back to a recipient) and `CampaignAuditService`
  * (T139) — a ONE-DIRECTION import; `CampaignsModule` never imports
  * `EmailModule` back (it doesn't need to: `EmailModule` is `@Global()`, so
  * `EmailCampaignDeliveryProvider`/`EmailSuppressionService` are already
@@ -46,22 +44,16 @@ import { CampaignsModule } from '../campaigns/campaigns.module';
     TypeOrmModule.forFeature([EmailLog, EmailSuppression, Tenant, Customer]),
     CampaignsModule,
   ],
-  controllers: [
-    EmailLogController,
-    UnsubscribeController,
-    EmailWebhookController,
-  ],
+  controllers: [EmailLogController, UnsubscribeController],
   providers: [
     EmailService,
     EmailDeliveryService,
     EmailProviderFactory,
-    ResendProvider,
     SesProvider,
     NoopEmailProvider,
     EmailSuppressionService,
     UnsubscribeTokenService,
     UnsubscribeService,
-    EmailWebhookSignatureVerifier,
   ],
   exports: [
     EmailService,

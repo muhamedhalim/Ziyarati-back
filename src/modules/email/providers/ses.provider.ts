@@ -43,7 +43,7 @@ const PERMANENT_ERRORS = new Set([
 ]);
 
 /**
- * Amazon SES v2 adapter (AWS migration — replaces Resend).
+ * Amazon SES v2 adapter — the platform's only email delivery provider.
  *
  * No credentials exist in configuration: the SDK default chain resolves the
  * ECS task role, whose policy allows `ses:SendEmail` on this identity and
@@ -53,10 +53,10 @@ const PERMANENT_ERRORS = new Set([
  * Retry layering: the SDK makes exactly ONE attempt (`maxAttempts: 1`) under
  * `SES_HTTP_TIMEOUT_MS`; BullMQ owns retries with backoff. Two retry layers
  * could outlive BullMQ's 30 s job lock and get the job stall-requeued while
- * a send is still in flight — the same reason `RESEND_HTTP_TIMEOUT_MS` is
- * capped.
+ * a send is still in flight — the reason `SES_HTTP_TIMEOUT_MS` is capped
+ * below that lock.
  *
- * SES has no idempotency key (Resend did): `idempotencyKey` is accepted and
+ * SES has no idempotency key: `idempotencyKey` is accepted and
  * ignored. The `email_logs` claim already prevents re-sending a SENT row;
  * the residual duplicate window is a timeout AFTER SES accepted the message.
  */

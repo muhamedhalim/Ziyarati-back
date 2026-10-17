@@ -56,7 +56,7 @@ const UPLOAD_LIMITS: MulterLimitsWithNestingDepth = {
 };
 
 /**
- * Generic private-file gateway backed by Cloudflare R2.
+ * Generic private-file gateway backed by Amazon S3.
  *
  *  - `POST   /uploads`            owner/manager stream a file → returns its key.
  *  - `GET    /uploads/signed-url` short-lived presigned GET for a key they own.
@@ -86,7 +86,7 @@ export class UploadsController {
   @ApiOperation({
     summary: 'Upload a private file to storage (owner/manager)',
     description:
-      'Streams a `multipart/form-data` file to the private R2 bucket and returns its opaque `storageKey` plus metadata (incl. SHA-256). Allowed types: PDF, PNG, JPEG, WEBP. Content is validated by magic bytes — spoofed/corrupt files are rejected. Submit the returned `storageKey` to the consuming resource, never a URL.',
+      'Streams a `multipart/form-data` file to the private S3 bucket and returns its opaque `storageKey` plus metadata (incl. SHA-256). Allowed types: PDF, PNG, JPEG, WEBP. Content is validated by magic bytes — spoofed/corrupt files are rejected. Submit the returned `storageKey` to the consuming resource, never a URL.',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({

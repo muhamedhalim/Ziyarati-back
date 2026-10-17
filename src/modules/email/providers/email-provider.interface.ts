@@ -1,8 +1,7 @@
 /**
  * Email delivery-provider abstraction (strategy pattern) — mirrors the
  * notification-channel abstraction. Business logic depends ONLY on this
- * interface, never on Resend/SES/SMTP SDKs. Swapping providers means adding one
- * adapter and pointing the factory at it — no business-logic change.
+ * interface, never on the AWS SES SDK. Amazon SES is the only delivery provider.
  */
 export const EMAIL_PROVIDER = Symbol('EMAIL_PROVIDER');
 

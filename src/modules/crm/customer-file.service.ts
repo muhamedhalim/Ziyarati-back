@@ -12,7 +12,7 @@ import { CustomerService } from './customer.service';
 import { PaginationQueryDto } from './dto/pagination-query.dto';
 import { StorageService } from '../storage/storage.service';
 
-/** Path segment under the tenant's R2 prefix — see `StorageService.upload`. */
+/** Path segment under the tenant's S3 prefix — see `StorageService.upload`. */
 const CUSTOMER_FILE_DOC_TYPE = 'customer-file';
 
 /** Raw upload bytes + metadata, as received from `FileInterceptor`. */
@@ -26,8 +26,8 @@ export interface UploadCustomerFileInput {
 }
 
 /**
- * Customer files (1:N) — METADATA ONLY. The binary lives in private Cloudflare
- * R2 storage (via the shared `StorageService`, same allow-list/magic-byte/size
+ * Customer files (1:N) — METADATA ONLY. The binary lives in private Amazon
+ * S3 storage (via the shared `StorageService`, same allow-list/magic-byte/size
  * validation as staff avatars and verification documents); this table stores
  * the object key + display metadata + uploader.
  *
@@ -87,7 +87,7 @@ export class CustomerFileService {
         await this.storage.purgeObject(file.storage_key, tenantId);
       } catch (err) {
         this.logger.warn(
-          `Failed to delete R2 object ${file.storage_key}: ${(err as Error)?.message}`,
+          `Failed to delete S3 object ${file.storage_key}: ${(err as Error)?.message}`,
         );
       }
     }

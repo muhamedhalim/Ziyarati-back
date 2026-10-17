@@ -4,10 +4,10 @@
  *
  *   EmailService.sendInvitation → QueueService.enqueueEmail (real producer)
  *   → Redis → BullMQ Worker → EmailDeliveryService.deliver (real)
- *   → ResendProvider.send (real; only `fetch` is stubbed) → job state
+ *   → SesProvider.send (real; only the AWS SESv2 client is stubbed) → job state
  *
- * Pins the 2026-09 production incident: Resend rejected every email with a
- * 422 (worker EMAIL_FROM="") while every BullMQ job reported COMPLETED. The
+ * Pins the 2026-09 production incident: the provider rejected every email
+ * (worker EMAIL_FROM="") while every BullMQ job reported COMPLETED. The
  * `email_logs` claim/record layer is an in-memory stand-in (Postgres is not
  * the subject here — its atomic claim is covered by the unit spec).
  *
@@ -17,6 +17,12 @@
  *
  * Run: npx jest --config test/jest-integration.json email-pipeline
  */
+const sesSendMock = jest.fn();
+jest.mock('@aws-sdk/client-sesv2', () => ({
+  SESv2Client: jest.fn().mockImplementation(() => ({ send: sesSendMock })),
+  SendEmailCommand: jest.fn().mockImplementation((input) => ({ input })),
+}));
+
 import { createHash, randomUUID } from 'node:crypto';
 import IORedis from 'ioredis';
 import { Job, Queue, Worker } from 'bullmq';
@@ -28,7 +34,7 @@ import { QUEUE } from '../../src/queue/queue.constants';
 import { EmailService } from '../../src/modules/email/email.service';
 import { EmailDeliveryService } from '../../src/modules/email/email-delivery.service';
 import { EmailProviderFactory } from '../../src/modules/email/providers/email-provider.factory';
-import { ResendProvider } from '../../src/modules/email/providers/resend.provider';
+import { SesProvider } from '../../src/modules/email/providers/ses.provider';
 import { NoopEmailProvider } from '../../src/modules/email/providers/noop-email.provider';
 import { EmailSendJob } from '../../src/queue/job-data.interface';
 
@@ -41,8 +47,7 @@ const env: Record<string, unknown> = {
   REDIS_URL,
   NODE_ENV: 'test',
   EMAIL_ENABLED: 'true',
-  EMAIL_PROVIDER: 'resend',
-  RESEND_API_KEY: 're_test_key',
+  AWS_REGION: 'eu-central-1',
   EMAIL_FROM: 'no-reply@ziyaratech.com',
   EMAIL_FROM_NAME: 'ZiyaraTech',
   QUEUE_DEFAULT_ATTEMPTS: 3,
@@ -97,18 +102,13 @@ function fakeEmailLogs() {
   return { rows, repo, dataSource };
 }
 
-type FetchReply = { status: number; body: string };
-const reply = ({ status, body }: FetchReply) => ({
-  ok: status >= 200 && status < 300,
-  status,
-  statusText: String(status),
-  text: async () => body,
-  json: async () => JSON.parse(body),
-});
+const awsError = (name: string, status: number) =>
+  Object.assign(new Error(`${name} happened`), {
+    name,
+    $metadata: { httpStatusCode: status },
+  });
 
 describe('Email pipeline — real Redis + BullMQ (production incident regression)', () => {
-  const realFetch = global.fetch;
-  let fetchMock: jest.Mock;
   let producers: ProducerQueues;
   let queueService: QueueService;
   let emailService: EmailService;
@@ -147,14 +147,13 @@ describe('Email pipeline — real Redis + BullMQ (production incident regression
   });
 
   beforeEach(async () => {
-    fetchMock = jest.fn();
-    global.fetch = fetchMock as never;
+    sesSendMock.mockReset();
     await admin.obliterate({ force: true });
     logs = fakeEmailLogs();
     const factory = new EmailProviderFactory(
       config,
-      new ResendProvider(config),
       new NoopEmailProvider(),
+      new SesProvider(config),
     );
     delivery = new EmailDeliveryService(
       logs.repo as never,
@@ -173,7 +172,6 @@ describe('Email pipeline — real Redis + BullMQ (production incident regression
   });
 
   afterEach(async () => {
-    global.fetch = realFetch;
     await worker?.close();
     worker = undefined;
     await producers.onModuleDestroy?.();
@@ -223,13 +221,8 @@ describe('Email pipeline — real Redis + BullMQ (production incident regression
   const expectedJobId = () =>
     `email-invite_${createHash('sha256').update(RAW_TOKEN).digest('hex')}`;
 
-  it('a PERMANENT provider rejection (the production 422) ends the job FAILED after ONE attempt — never "completed"', async () => {
-    fetchMock.mockResolvedValue(
-      reply({
-        status: 422,
-        body: '{"statusCode":422,"name":"validation_error","message":"Invalid `from` field."}',
-      }),
-    );
+  it('a PERMANENT provider rejection (SES MessageRejected) ends the job FAILED after ONE attempt — never "completed"', async () => {
+    sesSendMock.mockRejectedValue(awsError('MessageRejected', 400));
     const w = startWorker();
     const done = settle(w, expectedJobId());
     await invite();
@@ -238,15 +231,15 @@ describe('Email pipeline — real Redis + BullMQ (production incident regression
     const job = await admin.getJob(expectedJobId());
     expect(await job!.getState()).toBe('failed');
     expect(job!.attemptsMade).toBe(1); // attempts=3 configured — no retry of a permanent error
-    expect(job!.failedReason).toContain('HTTP 422');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(job!.failedReason).toContain('MessageRejected');
+    expect(sesSendMock).toHaveBeenCalledTimes(1);
     expect([...logs.rows.values()][0].status).toBe('FAILED');
   });
 
-  it('a TRANSIENT failure (503) is retried and then COMPLETES, reusing the same Idempotency-Key', async () => {
-    fetchMock
-      .mockResolvedValueOnce(reply({ status: 503, body: 'unavailable' }))
-      .mockResolvedValueOnce(reply({ status: 200, body: '{"id":"re_msg_1"}' }));
+  it('a TRANSIENT failure (503) is retried and then COMPLETES', async () => {
+    sesSendMock
+      .mockRejectedValueOnce(awsError('ServiceUnavailable', 503))
+      .mockResolvedValueOnce({ MessageId: 'ses_msg_1' });
     const w = startWorker();
     const done = settle(w, expectedJobId());
     await invite();
@@ -254,21 +247,15 @@ describe('Email pipeline — real Redis + BullMQ (production incident regression
     expect(await done).toBe('completed');
     const job = await admin.getJob(expectedJobId());
     expect(job!.attemptsMade).toBe(2);
-    const keys = fetchMock.mock.calls.map(
-      (c) => c[1].headers['Idempotency-Key'],
-    );
-    expect(keys[0]).toBeDefined();
-    expect(keys[1]).toBe(keys[0]);
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body).from).toBe(
+    expect(sesSendMock).toHaveBeenCalledTimes(2);
+    expect(sesSendMock.mock.calls[1][0].input.FromEmailAddress).toBe(
       'ZiyaraTech <no-reply@ziyaratech.com>',
     );
     expect([...logs.rows.values()][0].status).toBe('SENT');
   });
 
   it('a duplicate enqueue of the same invitation is collapsed — one job, one email', async () => {
-    fetchMock.mockResolvedValue(
-      reply({ status: 200, body: '{"id":"re_msg_1"}' }),
-    );
+    sesSendMock.mockResolvedValue({ MessageId: 'ses_msg_1' });
     await invite();
     await invite(); // double-submit / retried HTTP request
     expect((await admin.getJobCounts('waiting')).waiting).toBe(1);
@@ -276,13 +263,11 @@ describe('Email pipeline — real Redis + BullMQ (production incident regression
     const w = startWorker();
     const done = settle(w, expectedJobId());
     expect(await done).toBe('completed');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sesSendMock).toHaveBeenCalledTimes(1);
   });
 
   it('a job enqueued while NO worker runs is delivered once a worker starts (restart does not lose jobs)', async () => {
-    fetchMock.mockResolvedValue(
-      reply({ status: 200, body: '{"id":"re_msg_1"}' }),
-    );
+    sesSendMock.mockResolvedValue({ MessageId: 'ses_msg_1' });
     await invite();
     expect((await admin.getJobCounts('waiting')).waiting).toBe(1);
 
@@ -291,9 +276,7 @@ describe('Email pipeline — real Redis + BullMQ (production incident regression
   });
 
   it('the raw credential token is absent from Redis key names, the job id and the email_logs key (the job DATA still carries the link — it must, to render the email)', async () => {
-    fetchMock.mockResolvedValue(
-      reply({ status: 200, body: '{"id":"re_msg_1"}' }),
-    );
+    sesSendMock.mockResolvedValue({ MessageId: 'ses_msg_1' });
     await invite();
 
     const redis = new IORedis(REDIS_URL);

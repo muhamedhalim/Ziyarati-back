@@ -264,7 +264,7 @@ PD personal · SD sensitive identifiers · HD health · AU authentication · PY 
 | F11 | Backend → Meta WhatsApp | phone, template variables, session text, media | yes | `meta-whatsapp` | Content policy at both send seams: variable allow-list, prohibited-pattern check, opt-in for marketing | built; consent evidence incomplete (`CV`) |
 | F12 | Meta → backend webhook | inbound messages, media | inbound | `meta-whatsapp` | HMAC verified; classified D4 on arrival, kept inside the boundary | built |
 | F13 | Backend → Tap | payer name/contact, amount; card entered on Tap's page | `VC` | `tap` | Only Tap ids, brand, scheme and last four stored; no card number or CVV. `PAYMENT_PROVIDER=tap`, `TAP_ENV=live` in the running task | live; booking payments flag set false in tfvars |
-| F14 | Backend → e-mail provider | recipient, subject, body variables | yes | `aws` (SES) | `EMAIL_PROVIDER=ses`, domain verified (**Verified**). Resend path remains in code. Minimal appointment notices; identifiers redacted from free text | live; real-inbox delivery not verified |
+| F14 | Backend → e-mail provider | recipient, subject, body variables | yes | `aws` (SES) | `EMAIL_PROVIDER=ses`, domain verified (**Verified**). The Resend code path was removed 2026-10-17 (SES is the only provider). Minimal appointment notices; identifiers redacted from free text | live; real-inbox delivery not verified |
 | F15 | Backend → logs | request metadata, errors, `failedReason` | yes (`eu-central-1`) | `aws` | CloudWatch Logs, KMS, 30-day retention on application groups (**Verified**); redacting logger and scrubbers; no bodies, tokens, prompts or message text. DLQ `originalData` is the replay payload, kept until its stamped expiry (WhatsApp DLQ 6 h; other DLQs ids only) | live |
 | F16 | DB → backups | full database | yes (`eu-central-1`); no DR copy | `aws` | RDS automated snapshots (8 found, **Verified**); no AWS Backup plan; backup copy only into `approved_dr_destinations` (empty) | live; DR open (L13) |
 | F17 | AWS → `us-east-1` | — | — | — | **Removed 2026-10-15**: no alarm, topic or subscription exists in `us-east-1` (**Verified**) | closed |
@@ -391,7 +391,7 @@ DPA, SCC, assessment or legal basis document is held in this repository.
 | F10 embeddings / batch | OpenAI | D2, D4 | possible | | `scrubForEmbedding`; batch seam scrubs chat batches | disable knowledge ingestion / batch jobs | | | | |
 | F11 WhatsApp | Meta | D2 | possible | | content policy at both send seams | disable the WhatsApp channel per tenant | | | | |
 | F13 payments | Tap | D2, D5 | no | | hosted page; no card data stored | disable online payment | | | | |
-| F14 e-mail | AWS SES (Resend path remains in code) | D2 | possible | | minimal notices, free-text redaction | `EMAIL_PROVIDER=noop` | | | | |
+| F14 e-mail | AWS SES (only provider; Resend code removed 2026-10-17) | D2 | possible | | minimal notices, free-text redaction | `EMAIL_ENABLED=false` | | | | |
 | Former hosts | Railway, Cloudflare R2, Resend | D2–D8 (if any data was held) | unknown | | none; **deletion not evidenced** | obtain written deletion confirmation | | | | |
 
 ### Risk-assessment inputs (to hand to counsel)

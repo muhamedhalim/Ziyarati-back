@@ -24,14 +24,14 @@ export class TenantVerificationDocument {
   doc_type!: string;
 
   /**
-   * Legacy/external file URL. Nullable since the R2 flow stores `storage_key`
+   * Legacy/external file URL. Nullable since the S3 flow stores `storage_key`
    * instead and never exposes a public URL. Kept for back-compat with rows
    * created before private storage and for externally-hosted documents.
    */
   @Column({ nullable: true })
   file_url?: string;
 
-  /** Private R2 object key (`<tenantId>/<docType>/<uuid>.<ext>`). Never a URL. */
+  /** Private S3 object key (`<tenantId>/<docType>/<uuid>.<ext>`). Never a URL. */
   @Column({ nullable: true })
   storage_key?: string;
 

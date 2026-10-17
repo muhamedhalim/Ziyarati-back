@@ -1,49 +1,49 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import { EmailProvider } from './email-provider.interface';
-import { ResendProvider } from './resend.provider';
 import { SesProvider } from './ses.provider';
 import { NoopEmailProvider } from './noop-email.provider';
 import { resolveEmailConfig } from '../email.config';
 
 /**
- * Selects the active email provider from configuration. Business logic never
- * sees this decision — it only ever holds an {@link EmailProvider}. Falls back to
- * the no-op provider when email is disabled or the chosen provider is not
- * configured, so the app runs end-to-end in every environment.
+ * Raised when email is enabled but Amazon SES cannot be used. There is NO
+ * fallback to another provider: a misconfigured environment must fail loudly
+ * (and the message names only the missing setting, never a value).
+ */
+export class EmailConfigurationError extends Error {
+  constructor() {
+    super(
+      'Email is enabled but Amazon SES is not configured: set SES_REGION (or AWS_REGION). ' +
+        'Credentials come from the ECS task role. Refusing to send through any other provider.',
+    );
+    this.name = 'EmailConfigurationError';
+  }
+}
+
+/**
+ * Selects the email provider. Amazon SES is the only delivery provider; the
+ * no-op provider exists solely for environments where email is switched off
+ * (`EMAIL_ENABLED=false`, the development/test default) so the app runs
+ * end-to-end without sending. Enabled + SES missing is an error, never a
+ * silent downgrade to no-op.
  */
 @Injectable()
 export class EmailProviderFactory {
-  private readonly logger = new Logger(EmailProviderFactory.name);
-
   constructor(
     private readonly config: ConfigService,
-    private readonly resend: ResendProvider,
     private readonly noop: NoopEmailProvider,
-    // Last so positional test constructions (resend, noop) stay valid.
-    private readonly ses?: SesProvider,
+    private readonly ses: SesProvider,
   ) {}
 
   resolve(): EmailProvider {
-    const cfg = resolveEmailConfig(this.config);
-    if (!cfg.enabled) return this.noop;
-
-    if (cfg.provider === 'resend' && this.resend.isConfigured()) {
-      return this.resend;
-    }
-    if (cfg.provider === 'ses' && this.ses?.isConfigured()) {
-      return this.ses;
-    }
-
-    this.logger.warn(
-      `Email provider "${cfg.provider}" not configured — falling back to no-op`,
-    );
-    return this.noop;
+    if (!resolveEmailConfig(this.config).enabled) return this.noop;
+    if (!this.ses.isConfigured()) throw new EmailConfigurationError();
+    return this.ses;
   }
 
-  /** True when a real (non-noop) provider will be used. */
+  /** True when a real (non-noop) provider will be used. Never throws. */
   isLiveDelivery(): boolean {
-    return this.resolve().name !== 'noop';
+    return resolveEmailConfig(this.config).enabled && this.ses.isConfigured();
   }
 }

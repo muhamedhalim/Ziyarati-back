@@ -102,7 +102,6 @@ describe('subprocessor register ↔ code', () => {
     'modules/ai/providers/openai-client.provider.ts': 'openai',
     'modules/ai/providers/openai-embedding.provider.ts': 'openai',
     'modules/email/feedback/ses-feedback.consumer.ts': 'aws',
-    'modules/email/providers/resend.provider.ts': 'resend',
     'modules/email/providers/ses.provider.ts': 'aws',
     'modules/integration-platform/providers/generic-rest-http-client.ts':
       'tenant-configured',

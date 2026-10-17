@@ -14,7 +14,7 @@ jest.mock('@aws-sdk/client-s3', () => ({
 }));
 
 jest.mock('@aws-sdk/s3-request-presigner', () => ({
-  getSignedUrl: jest.fn().mockResolvedValue('https://r2.example/signed-fake-url'),
+  getSignedUrl: jest.fn().mockResolvedValue('https://s3.example/signed-fake-url'),
 }));
 
 /** Fully configured so `isConfigured()` is true and the real S3 call path (mocked above) runs. */

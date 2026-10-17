@@ -100,30 +100,23 @@ process.env.QUEUE_ENV_PREFIX =
 /**
  * ZT-FINAL-002 — the e2e suite must never reach a live email provider.
  *
- * ROOT CAUSE this closes: `resolveEmailConfig` defaults `EMAIL_PROVIDER` to
- * `'resend'` (email.config.ts:34), and `EmailProviderFactory.resolve()`
- * returns the real ResendProvider whenever that provider is selected AND
- * `isConfigured()` (i.e. a `RESEND_API_KEY` is present). A developer or CI
- * runner whose `.env` carries a live key therefore made REAL outbound calls
- * during e2e — observed directly as repeated
- * `[EmailService] Failed to dispatch email "password_reset" … HTTP 429
- * {"name":"daily_quota_exceeded"}` for synthetic `@example.test` recipients.
- * If that key is shared with production, an e2e run can exhaust the real
+ * ROOT CAUSE this closes: a developer or CI runner whose `.env` carries
+ * live email settings made REAL outbound calls during e2e (observed as a
+ * provider quota error for synthetic `@example.test` recipients). If those
+ * credentials are shared with production, an e2e run can exhaust the real
  * password-reset delivery quota and silently degrade account recovery.
  *
- * Two independent guarantees, so neither alone is load-bearing:
- *   1. `EMAIL_PROVIDER=noop` — selects NoopEmailProvider explicitly. This is
- *      the same override `e2e/csp/playwright.config.ts` already applies for
- *      the same stated reason ("so a developer's local .env cannot smuggle a
- *      live credential in"); this file is simply where the jest e2e path was
- *      missing it.
- *   2. `RESEND_API_KEY=''` — even if the provider default or selection logic
- *      changes, `ResendProvider.isConfigured()` is false, so the factory
- *      cannot resolve a live provider at all.
+ * Amazon SES is the only provider and is selected purely by
+ * `EMAIL_ENABLED`, so:
+ *   1. `EMAIL_ENABLED=false` — `EmailProviderFactory.resolve()` returns the
+ *      NoopEmailProvider no matter which region/credentials are inherited.
+ *   2. `RESEND_API_KEY=''` — the retired provider's key is never carried into
+ *      a test process (nothing reads it any more; this keeps a stale live
+ *      secret out of the environment).
  *
  * Production and development behaviour are untouched: this file is loaded
  * ONLY by `test/jest-e2e.json` / `jest-e2e-integration-platform.json`.
  * `test/security/e2e-env-invariants.spec.ts` asserts both of these.
  */
-process.env.EMAIL_PROVIDER = 'noop';
+process.env.EMAIL_ENABLED = 'false';
 process.env.RESEND_API_KEY = '';

@@ -299,10 +299,14 @@ export class SupportIntegrationService {
    */
   async email(tenantId: string) {
     const enabled = this.config.get<string>('EMAIL_ENABLED') === 'true';
-    const provider = this.config.get<string>('EMAIL_PROVIDER') ?? null;
-    // Presence check only — the key's VALUE is never read into a response, and
-    // never logged. This mirrors how MonitoringService reports the same fact.
-    const providerConfigured = !!this.config.get<string>('RESEND_API_KEY')?.trim();
+    const provider = 'ses';
+    // Presence check only (SES authenticates with the task role, so a region is
+    // the only setting); no value beyond the provider name reaches a response.
+    // Mirrors how MonitoringService reports the same fact.
+    const providerConfigured = !!(
+      this.config.get<string>('SES_REGION') ||
+      this.config.get<string>('AWS_REGION')
+    )?.trim();
 
     const [row] = await this.dataSource.query(
       `

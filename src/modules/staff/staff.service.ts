@@ -767,7 +767,7 @@ export class StaffService {
     }
 
     // Tri-state: omitted = unchanged, null = remove, string = replace. Either
-    // way the OLD object (if any) is best-effort deleted from R2 so replacing
+    // way the OLD object (if any) is best-effort deleted from S3 so replacing
     // or removing an avatar doesn't leak orphaned objects.
     //
     // IMPORTANT: TypeORM's `save()` SKIPS `undefined` properties on UPDATE —
@@ -795,7 +795,7 @@ export class StaffService {
       try {
         await this.storage.deleteObject(previousKey, tenantId);
       } catch {
-        /* best-effort cleanup — never fail the update over a stale R2 object */
+        /* best-effort cleanup — never fail the update over a stale S3 object */
       }
     }
 

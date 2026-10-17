@@ -141,8 +141,8 @@ export const SUBPROCESSORS: readonly Subprocessor[] = [
   proc({
     id: 'resend',
     name: 'Resend',
-    purpose: 'Transactional email (default provider today)',
-    state: 'active',
+    purpose: 'Former transactional email provider; code path removed (Amazon SES is the only provider)',
+    state: 'legacy',
     dataClasses: ['D2'],
     flows: ['F14'],
     healthData: false,
@@ -150,7 +150,7 @@ export const SUBPROCESSORS: readonly Subprocessor[] = [
     region: 'VC',
     retention: 'VC',
     control:
-      'Minimal appointment notices (no service, doctor or reason); identifiers redacted from free text',
+      'Replaced by Amazon SES; the app no longer connects. Account/API-key deletion evidence still required',
   }),
   proc({
     id: 'aws',

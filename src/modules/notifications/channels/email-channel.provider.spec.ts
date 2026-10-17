@@ -1,7 +1,13 @@
+const sesSendMock = jest.fn();
+jest.mock('@aws-sdk/client-sesv2', () => ({
+  SESv2Client: jest.fn().mockImplementation(() => ({ send: sesSendMock })),
+  SendEmailCommand: jest.fn().mockImplementation((input) => ({ input })),
+}));
+
 import { EmailChannelProvider } from './email-channel.provider';
 import { NOTIFICATION_CHANNEL } from '../notification.constants';
 import { EmailProviderFactory } from '../../email/providers/email-provider.factory';
-import { ResendProvider } from '../../email/providers/resend.provider';
+import { SesProvider } from '../../email/providers/ses.provider';
 import { NoopEmailProvider } from '../../email/providers/noop-email.provider';
 
 describe('EmailChannelProvider', () => {
@@ -9,7 +15,7 @@ describe('EmailChannelProvider', () => {
     ({
       isLiveDelivery: jest.fn(() => true),
       resolve: jest.fn(() => ({
-        name: 'resend',
+        name: 'ses',
         isConfigured: () => true,
         send: jest.fn(async () => ({
           success: true,
@@ -60,7 +66,7 @@ describe('EmailChannelProvider', () => {
   it('classifies transient vs permanent per the underlying EmailSendResult', async () => {
     const factory = makeFactory({
       resolve: jest.fn(() => ({
-        name: 'resend',
+        name: 'ses',
         isConfigured: () => true,
         send: jest.fn(async () => ({
           success: false,
@@ -100,7 +106,7 @@ describe('EmailChannelProvider', () => {
     let sentMessage: any;
     const factory = makeFactory({
       resolve: jest.fn(() => ({
-        name: 'resend',
+        name: 'ses',
         isConfigured: () => true,
         send: jest.fn(async (msg: any) => {
           sentMessage = msg;
@@ -122,35 +128,26 @@ describe('EmailChannelProvider', () => {
   });
 });
 
-// Production defect found 2026-09-23: this channel never set `from`, and
-// Resend rejects a message without one. The sender must come from the single
-// shared resolver (resolveEmailConfig), applied by the real ResendProvider.
-describe('EmailChannelProvider → real factory → real ResendProvider (sender)', () => {
-  const realFetch = global.fetch;
-  afterEach(() => {
-    global.fetch = realFetch;
-    jest.restoreAllMocks();
-  });
+// Production defect found 2026-09-23: this channel never set `from`. The sender
+// must come from the single shared resolver (resolveEmailConfig), applied by
+// the real SesProvider.
+describe('EmailChannelProvider → real factory → real SesProvider (sender)', () => {
+  beforeEach(() => sesSendMock.mockReset());
+  afterEach(() => jest.restoreAllMocks());
 
-  it('the outgoing Resend request carries the configured platform sender', async () => {
+  it('the outgoing SES request carries the configured platform sender', async () => {
     const env: Record<string, string> = {
       NODE_ENV: 'production',
-      EMAIL_PROVIDER: 'resend',
-      RESEND_API_KEY: 're_test',
+      AWS_REGION: 'eu-central-1',
       EMAIL_FROM: 'no-reply@ziyaratech.com',
       EMAIL_FROM_NAME: 'ZiyaraTech',
     };
     const config = { get: jest.fn((k: string) => env[k]) } as never;
-    const fetchMock = jest.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ id: 're_1' }),
-    }));
-    global.fetch = fetchMock as never;
+    sesSendMock.mockResolvedValue({ MessageId: 'ses-1' });
     const factory = new EmailProviderFactory(
       config,
-      new ResendProvider(config),
       new NoopEmailProvider(),
+      new SesProvider(config),
     );
 
     const result = await new EmailChannelProvider(factory).send({
@@ -162,11 +159,8 @@ describe('EmailChannelProvider → real factory → real ResendProvider (sender)
     });
 
     expect(result.success).toBe(true);
-    const [, init] = fetchMock.mock.calls[0] as unknown as [
-      string,
-      { body: string },
-    ];
-    const body = JSON.parse(init.body);
-    expect(body.from).toBe('ZiyaraTech <no-reply@ziyaratech.com>');
+    expect(sesSendMock.mock.calls[0][0].input.FromEmailAddress).toBe(
+      'ZiyaraTech <no-reply@ziyaratech.com>',
+    );
   });
 });

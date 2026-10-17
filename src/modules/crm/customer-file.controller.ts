@@ -87,7 +87,7 @@ export class CustomerFileController {
   @ApiOperation({
     summary: 'Upload a file for a customer',
     description:
-      '**Protected — `crm.files.manage`. Clinic active.** Streams a `multipart/form-data` file to private R2 storage (same allow-list/magic-byte validation as staff avatars and verification documents: PDF, PNG, JPEG, WEBP, 10 MB max) and stores its metadata against the customer. The binary is never stored locally or in the database.',
+      '**Protected — `crm.files.manage`. Clinic active.** Streams a `multipart/form-data` file to private S3 storage (same allow-list/magic-byte validation as staff avatars and verification documents: PDF, PNG, JPEG, WEBP, 10 MB max) and stores its metadata against the customer. The binary is never stored locally or in the database.',
   })
   @ApiParam({
     name: 'customerId',
@@ -242,7 +242,7 @@ export class CustomerFileController {
   @ApiOperation({
     summary: 'Delete a file',
     description:
-      '**Protected — `crm.files.manage`. Clinic active.** Removes the metadata record and best-effort deletes the underlying R2 object.',
+      '**Protected — `crm.files.manage`. Clinic active.** Removes the metadata record and best-effort deletes the underlying S3 object.',
   })
   @ApiParam({
     name: 'customerId',

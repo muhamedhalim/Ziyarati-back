@@ -15,7 +15,7 @@ import { join } from 'node:path';
  * real mechanism.
  *
  * WHY A DELIBERATELY HOSTILE PARENT ENVIRONMENT. Each child is spawned with
- * `EMAIL_PROVIDER=resend` and a non-empty `RESEND_API_KEY` already set — the
+ * `EMAIL_ENABLED=true`, an SES region and a non-empty legacy `RESEND_API_KEY` already set — the
  * exact condition that caused ZT-FINAL-002 (a developer or CI runner whose
  * `.env` carries a live key). An assertion that only held for an already-clean
  * environment would be vacuous. The child also loads the real `.env` via the
@@ -30,7 +30,7 @@ const BOOTSTRAP = join(BACKEND_ROOT, 'test', 'jest-e2e.env.js');
 
 /** Keys the bootstrap is responsible for; read back after it has run. */
 const PROBE = [
-  'EMAIL_PROVIDER',
+  'EMAIL_ENABLED',
   'RESEND_API_KEY',
   'QUEUE_ENV_PREFIX',
   'REDIS_URL',
@@ -56,7 +56,9 @@ process.stdout.write(JSON.stringify(${JSON.stringify(PROBE)}.reduce((acc, k) => 
     env: {
       ...process.env,
       // The hostile preconditions ZT-FINAL-002 describes.
-      EMAIL_PROVIDER: 'resend',
+      EMAIL_ENABLED: 'true',
+      AWS_REGION: 'eu-central-1',
+      SES_REGION: 'eu-central-1',
       RESEND_API_KEY: 're_live_key_that_must_never_be_used_by_e2e',
       // Keep the child off any real service; the bootstrap only builds strings.
       DB_PASSWORD: process.env.DB_PASSWORD ?? 'postgres',
@@ -69,13 +71,12 @@ process.stdout.write(JSON.stringify(${JSON.stringify(PROBE)}.reduce((acc, k) => 
 
 describe('e2e environment bootstrap invariants (ZT-FINAL-001, ZT-FINAL-002)', () => {
   describe('ZT-FINAL-002 — the e2e suite can never reach a live email provider', () => {
-    it('forces EMAIL_PROVIDER=noop even when the inherited environment selects resend', () => {
-      expect(runBootstrap().EMAIL_PROVIDER).toBe('noop');
+    it('forces EMAIL_ENABLED=false even when the inherited environment enables SES', () => {
+      expect(runBootstrap().EMAIL_ENABLED).toBe('false');
     });
 
-    it('clears RESEND_API_KEY, so no live provider can be resolved even if the provider default changes', () => {
-      // Empty string (not merely "not the injected value") is what makes
-      // ResendProvider.isConfigured() false in EmailProviderFactory.resolve().
+    it('clears the retired RESEND_API_KEY, so no stale live secret reaches a test process', () => {
+      // Empty string (not merely "not the injected value").
       expect(runBootstrap().RESEND_API_KEY).toBe('');
     });
 

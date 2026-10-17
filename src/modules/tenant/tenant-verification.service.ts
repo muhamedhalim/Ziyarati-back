@@ -25,7 +25,7 @@ import { REQUIRED_DOC_TYPES, labelForDocType } from './verification.constants';
  * Manages clinic verification documents end-to-end.
  *
  *  - One ACTIVE document per `doc_type`: re-submitting a type REPLACES the record
- *    and deletes the previous R2 object (no duplicates, no orphans).
+ *    and deletes the previous S3 object (no duplicates, no orphans).
  *  - SHA-256 dedup: re-uploading byte-identical content for the same type reuses
  *    the existing object and discards the duplicate upload.
  *  - Required-document enforcement: a clinic can only submit-for-review / be
@@ -56,11 +56,11 @@ export class TenantVerificationService {
   /**
    * Records (or replaces) the ACTIVE document for a `doc_type`. Requires exactly
    * one file source:
-   *  - `storageKey` (preferred): must belong to the tenant AND exist in R2.
+   *  - `storageKey` (preferred): must belong to the tenant AND exist in S3.
    *  - `fileUrl` (legacy/external): stored as-is.
    *
    * Replace semantics: if an active document of the same type already exists,
-   * its record is updated in place and its old R2 object is deleted — except
+   * its record is updated in place and its old S3 object is deleted — except
    * when the new file is byte-identical (same SHA-256), in which case the freshly
    * uploaded duplicate object is discarded and the existing object is reused.
    */
@@ -265,7 +265,7 @@ export class TenantVerificationService {
 
   /**
    * Resolves a viewable URL for a document's file (audited as VIEWED). Private
-   * R2 objects yield a short-lived presigned GET; legacy `file_url` rows return
+   * S3 objects yield a short-lived presigned GET; legacy `file_url` rows return
    * their stored URL. `scopeTenantId` is the caller's tenant (null for
    * super-admins) — a mismatch is reported as NOT_FOUND (no cross-tenant leak).
    */
@@ -424,7 +424,7 @@ export class TenantVerificationService {
     return { missing, unapproved };
   }
 
-  /** Deletes an R2 object, swallowing failures (cleanup must not block flow). */
+  /** Deletes an S3 object, swallowing failures (cleanup must not block flow). */
   private async safeDeleteObject(key: string, tenantId: string): Promise<void> {
     try {
       await this.storage.deleteObject(key, tenantId);

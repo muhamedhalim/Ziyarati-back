@@ -6,7 +6,7 @@ import { LOG_EVENT } from './log-events';
 /**
  * Outcome + latency of every outbound HTTP call made with Node's built-in
  * `fetch` (undici) — which is how the Meta Graph / WhatsApp clients, the Tap
- * client, the OpenAI SDK and the Resend provider all talk to their APIs.
+ * client, the OpenAI SDK and the AWS SDK clients all talk to their APIs.
  *
  * Subscribes to undici's public `diagnostics_channel` events, so no client
  * code changes and there is exactly one implementation. It never reads
@@ -45,7 +45,6 @@ const PROVIDERS: Array<[RegExp, string]> = [
   [/(^|\.)api\.openai\.com$/i, 'openai'],
   [/(^|\.)openai\.azure\.com$/i, 'azure_openai'],
   [/(^|\.)api\.anthropic\.com$/i, 'anthropic'],
-  [/(^|\.)api\.resend\.com$/i, 'resend'],
   [/(^|\.)api\.moyasar\.com$/i, 'moyasar'],
 ];
 

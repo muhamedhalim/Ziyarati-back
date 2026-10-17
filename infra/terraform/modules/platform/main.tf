@@ -26,7 +26,6 @@ locals {
     SEED_ON_STARTUP                      = "false"
     STORAGE_PROVIDER                     = "s3"
     S3_BUCKET                            = module.s3_uploads.bucket_name
-    EMAIL_PROVIDER                       = "ses"
     SES_CONFIGURATION_SET                = module.ses.configuration_set_name
     FRONTEND_ORIGIN                      = join(",", var.frontend_origins)
     APP_URL                              = var.app_url

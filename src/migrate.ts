@@ -6,7 +6,7 @@
  * lock) is the safety net that guarantees no process ever serves traffic
  * against an unmigrated schema. It is NOT a deployment step you can observe,
  * gate on, or roll back — it is entangled with application startup. Platforms
- * that offer a release/pre-deploy phase (Railway, Fly, ECS, Kubernetes Jobs)
+ * that offer a release/pre-deploy phase (ECS one-off tasks, Fly, Kubernetes Jobs)
  * want migrations as their OWN unit of work that either succeeds or fails the
  * deploy before a single container starts serving. This file is that unit.
  *

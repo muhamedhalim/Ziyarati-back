@@ -5,7 +5,7 @@ import { RedisOptions } from 'ioredis';
  * Build ioredis connection options from **REDIS_URL only**.
  *
  * Supports `redis://` and `rediss://` (TLS) and parses host/port/credentials/db
- * from the URL — so the exact same code works unchanged against Railway Redis,
+ * from the URL — so the exact same code works unchanged against any managed Redis,
  * Upstash, AWS ElastiCache, or a local Redis. There is no hardcoded host/port
  * and no localhost assumption anywhere.
  *
@@ -38,7 +38,7 @@ function baseOptions(config: ConfigService): RedisOptions {
     db: Number.isFinite(db) ? db : 0,
     enableReadyCheck: true,
     connectTimeout: 10_000,
-    keepAlive: 30_000, // survive NAT/LB idle timeouts (Railway/ElastiCache)
+    keepAlive: 30_000, // survive NAT/LB idle timeouts (NAT/ALB, ElastiCache)
     retryStrategy: (times: number) => Math.min(times * 200, 5000),
     reconnectOnError: (err: Error) => err.message.includes('READONLY'), // failover
   };

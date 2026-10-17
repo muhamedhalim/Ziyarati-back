@@ -29,11 +29,11 @@ const PROD_DB_SSL_CA = '/etc/ssl/certs/db-ca.pem';
 // prodBase-derived object with this field explicitly omitted to exercise the
 // missing-value fail-fast itself.
 const PROD_REGISTER_OWNER_CEILING = 1000;
-// A live Resend sender (email defaults ON in production) — same "boot cleanly
+// A live SES sender (email defaults ON in production) — same "boot cleanly
 // past this check" role as the constants above, for every production-mode
 // test that is not itself about the email sender fail-fast.
 const PROD_EMAIL = {
-  RESEND_API_KEY: 're_test_key',
+  AWS_REGION: 'eu-central-1',
   EMAIL_FROM: 'no-reply@example.com',
 };
 const prodBase = {
@@ -1389,7 +1389,7 @@ describe('env.validation', () => {
   });
 
   // Production incident (2026-09): the worker ran with EMAIL_FROM="" while the
-  // API held a valid value — Resend rejected every email with a 422. Each
+  // API held a valid value — the provider rejected every email. Each
   // process root validates its own environment, so this is where it stops.
   describe('transactional email sender fail-fast (production)', () => {
     const prodEmail = (overrides: Record<string, unknown>) => ({
@@ -1417,16 +1417,41 @@ describe('env.validation', () => {
       );
     });
 
-    it('refuses to boot with RESEND_API_KEY blank', () => {
-      expect(() => validate(prodEmail({ RESEND_API_KEY: '  ' }))).toThrow(
-        /RESEND_API_KEY/,
+    it('refuses to boot without an SES region (no other provider to fall back to)', () => {
+      expect(() =>
+        validate(prodEmail({ AWS_REGION: undefined, SES_REGION: undefined })),
+      ).toThrow(/SES_REGION or AWS_REGION/);
+    });
+
+    it('accepts SES_REGION in place of AWS_REGION', () => {
+      expect(() =>
+        validate(prodEmail({ AWS_REGION: undefined, SES_REGION: 'eu-central-1' })),
+      ).not.toThrow();
+    });
+
+    it('refuses retired Resend settings in production, naming them but not their values', () => {
+      const secret = 're_SECRET_VALUE_123';
+      expect(() => validate(prodEmail({ RESEND_API_KEY: secret }))).toThrow(
+        /RESEND_API_KEY.*retired email provider/s,
       );
+      expect(() =>
+        validate(prodEmail({ RESEND_WEBHOOK_SECRET: secret })),
+      ).toThrow(/RESEND_WEBHOOK_SECRET/);
+      expect(() => validate(prodEmail({ EMAIL_PROVIDER: 'resend' }))).toThrow(
+        /EMAIL_PROVIDER=resend/,
+      );
+      try {
+        validate(prodEmail({ RESEND_API_KEY: secret }));
+        throw new Error('expected validate to throw');
+      } catch (err) {
+        expect((err as Error).message).not.toContain(secret);
+      }
     });
 
     it('names variables only, never values', () => {
-      const secret = 're_SECRET_VALUE_123';
+      const secret = 'SECRET_VALUE_123';
       try {
-        validate(prodEmail({ RESEND_API_KEY: secret, EMAIL_FROM: 'bad' }));
+        validate(prodEmail({ EMAIL_REPLY_TO: secret, EMAIL_FROM: 'bad' }));
         throw new Error('expected validate to throw');
       } catch (err) {
         expect((err as Error).message).not.toContain(secret);
@@ -1446,35 +1471,28 @@ describe('env.validation', () => {
           prodEmail({
             EMAIL_ENABLED: 'false',
             EMAIL_FROM: '',
-            RESEND_API_KEY: '',
+            AWS_REGION: undefined,
           }),
         ),
       ).not.toThrow();
     });
 
-    it('boots without a sender with the noop provider', () => {
-      expect(() =>
-        validate(
-          prodEmail({
-            EMAIL_PROVIDER: 'noop',
-            EMAIL_FROM: '',
-            RESEND_API_KEY: '',
-          }),
-        ),
-      ).not.toThrow();
+    it('no longer accepts the noop provider in production — email off is EMAIL_ENABLED=false', () => {
+      expect(() => validate(prodEmail({ EMAIL_PROVIDER: 'noop' }))).toThrow(
+        /EMAIL_PROVIDER=noop/,
+      );
     });
 
     it('is not enforced outside production', () => {
       expect(() => validate({ ...base, EMAIL_FROM: '' })).not.toThrow();
     });
 
-    it('caps RESEND_HTTP_TIMEOUT_MS below the 30s BullMQ job lock', () => {
-      expect(() =>
-        validate({ ...base, RESEND_HTTP_TIMEOUT_MS: 30000 }),
-      ).toThrow(/RESEND_HTTP_TIMEOUT_MS/);
+    it('caps SES_HTTP_TIMEOUT_MS below the 30s BullMQ job lock', () => {
+      expect(() => validate({ ...base, SES_HTTP_TIMEOUT_MS: 30000 })).toThrow(
+        /SES_HTTP_TIMEOUT_MS/,
+      );
       expect(
-        validate({ ...base, RESEND_HTTP_TIMEOUT_MS: 10000 })
-          .RESEND_HTTP_TIMEOUT_MS,
+        validate({ ...base, SES_HTTP_TIMEOUT_MS: 10000 }).SES_HTTP_TIMEOUT_MS,
       ).toBe(10000);
     });
   });

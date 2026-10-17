@@ -127,9 +127,8 @@ while the API held a valid value, and every email failed for four weeks.
 | `TAP_ENV`, `TAP_MERCHANT_ID`, the active secret key (`TAP_LIVE_SECRET_KEY` when `TAP_ENV=live`, else `TAP_TEST_SECRET_KEY`), `TAP_WEBHOOK_URL` | whenever `NODE_ENV=production` **and** `PAYMENT_PROVIDER=tap` (the default when unset). The boot fails otherwise (`src/config/env.validation.ts`): the key must carry the prefix of its environment (`sk_live_` / `sk_test_`) and the webhook URL must be a public https URL. `TAP_RECURRING_ENABLED` and `TAP_BOOKING_PAYMENTS_ENABLED` default to `false`; the second also needs `TAP_PLATFORM_ID`. Procedure: [`infra/runbooks/tap-payments-rollout.md`](infra/runbooks/tap-payments-rollout.md). |
 | `META_APP_ID`, `META_APP_SECRET`, `META_EMBEDDED_SIGNUP_CONFIG_ID`, `META_WEBHOOK_VERIFY_TOKEN` | all four, or none. A *partial* Meta configuration is a boot error. |
 | `METRICS_TOKEN` | required in practice: with it unset, `/metrics` answers 401 in production. |
-| `RESEND_API_KEY`, `EMAIL_FROM` | whenever `EMAIL_PROVIDER=resend` (the default) and email is enabled (the production default). Boot fails when either is blank or `EMAIL_FROM` is not `addr` / `Name <addr>`. **Set them on the worker** — it is the process that sends. |
 | `S3_BUCKET` + `S3_REGION`/`AWS_REGION` | whenever `STORAGE_PROVIDER=s3` (AWS). No keys: the IAM task role authenticates. Boot fails without them. |
-| `SES_REGION`/`AWS_REGION`, `EMAIL_FROM` | whenever `EMAIL_PROVIDER=ses` (AWS) and email is enabled. No API key: the IAM task role authenticates. `SES_FEEDBACK_QUEUE_URL` (worker) enables bounce/complaint handling. |
+| `SES_REGION`/`AWS_REGION`, `EMAIL_FROM` | whenever email is enabled (the production default). Amazon SES is the only provider; there is no API key (the IAM task role authenticates) and no fallback. Boot fails when the region is missing or `EMAIL_FROM` is blank / not `addr` / `Name <addr>`. **Set them on the worker** — it is the process that sends. `SES_FEEDBACK_QUEUE_URL` (worker) enables bounce/complaint handling. Retired Resend settings (`RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, `RESEND_HTTP_TIMEOUT_MS`, `EMAIL_PROVIDER` other than `ses`) are refused in production — remove them. |
 
 ### Must be false / unset in production
 
@@ -172,7 +171,7 @@ Set these as platform secrets — never in the image, never in the repository:
 `CREDENTIALS_ENCRYPTION_KEY`, `METRICS_TOKEN`, `TAP_LIVE_SECRET_KEY` (production) or
 `TAP_TEST_SECRET_KEY` (staging — each environment carries only its own key; Tap signs
 webhooks with the same key), `TAP_SEGMENT_SECRET_KEY` (only if Tap issues one), `META_APP_SECRET`,
-`META_WEBHOOK_VERIFY_TOKEN`, `RESEND_API_KEY`, `OPENAI_API_KEY`,
+`META_WEBHOOK_VERIFY_TOKEN`, `OPENAI_API_KEY`,
 `DB_SSL_CA_CERT` (or the file
 behind `DB_SSL_CA`), and `ADMIN_PASSWORD` if used for a one-off seed run.
 
@@ -262,7 +261,7 @@ for its forked workers before force-killing).
 
 The AWS target architecture, Terraform, and the Railway → AWS migration runbook
 live in [`infra/`](infra/README.md). On AWS the ECS task definitions set the
-platform variables (`STORAGE_PROVIDER=s3`, `EMAIL_PROVIDER=ses`,
+platform variables (`STORAGE_PROVIDER=s3`, `SES_CONFIGURATION_SET`,
 `DB_SSL_CA=/app/certs/rds-global-bundle.pem` — the RDS CA bundle is baked
 into the image — `REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC=true`, `NO_COLOR=1`)
 and inject secrets from Secrets Manager; see `infra/docs/DEPLOYMENT.md`.

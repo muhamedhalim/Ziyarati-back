@@ -12,7 +12,7 @@
  * without invoking any handler on this Windows machine — a known Node-on-
  * Windows limitation (already documented in this repo's own T014 finding),
  * not something this probe needs to route around: production runs Linux
- * (Railway), where POSIX signal delivery works as designed, and this exact
+ * (ECS on Linux), where POSIX signal delivery works as designed, and this exact
  * `process.on('SIGTERM')` pattern is what the current unclustered app
  * already relies on today.
  *

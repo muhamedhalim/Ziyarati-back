@@ -54,7 +54,7 @@ const UNREACHABLE = 'unreachable';
 const READINESS_TIMEOUT_MS = 1500;
 
 /**
- * Infra health for orchestrators (Railway / load balancers / probes). Mounted at
+ * Infra health for orchestrators (ECS / ALB target groups / probes). Mounted at
  * `system/health` to avoid the raw `/api/v1/health` liveness route in main.ts.
  * Public — probes are unauthenticated.
  */

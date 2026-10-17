@@ -36,7 +36,7 @@ type AlertLevel = 'critical' | 'warning' | 'healthy';
 /**
  * Read-only platform monitoring aggregator for super-admins. Composes existing
  * infrastructure primitives — `QueueService` (Redis/BullMQ), the SQL logs
- * (`api_logs`, `webhook_logs`), `StorageService` (R2), and process/OS metrics —
+ * (`api_logs`, `webhook_logs`), `StorageService` (S3), and process/OS metrics —
  * into one dashboard snapshot. It introduces NO new health checks and never
  * mutates state.
  */
@@ -104,6 +104,7 @@ export class MonitoringService {
       queues: queueRows,
       webhooks,
       alerts,
+      source: this.source(),
       collectedAt: new Date().toISOString(),
     };
   }
@@ -280,10 +281,10 @@ export class MonitoringService {
     const freeMem = os.freemem();
 
     let storage: {
-      r2Configured: boolean;
+      s3Configured: boolean;
       verificationDocs: number;
       verificationBytes: number;
-    } = { r2Configured: this.storage.isConfigured(), verificationDocs: 0, verificationBytes: 0 };
+    } = { s3Configured: this.storage.isConfigured(), verificationDocs: 0, verificationBytes: 0 };
     try {
       const [s] = await this.dataSource.query(
         `SELECT COUNT(*)::int AS docs, COALESCE(SUM(size_bytes),0)::bigint AS bytes
@@ -305,7 +306,7 @@ export class MonitoringService {
       cpu: { loadAvg1: Math.round(os.loadavg()[0] * 100) / 100, cores: os.cpus().length },
       uptimeSeconds: Math.round(process.uptime()),
       // Disk usage is intentionally omitted (no cross-platform primitive without
-      // extra deps). Object storage is reported via the R2 verification-doc proxy.
+      // extra deps). Object storage is reported via the S3 verification-doc proxy.
       storage,
     };
   }
@@ -330,9 +331,56 @@ export class MonitoringService {
       },
       { name: 'AI (OpenAI)', status: has('OPENAI_API_KEY') ? 'configured' : 'not_configured', detail: 'Chat + embeddings' },
       { name: 'Payment Gateway (Tap)', status: has('TAP_LIVE_SECRET_KEY') || has('TAP_TEST_SECRET_KEY') ? 'configured' : 'not_configured', detail: 'Card charges + webhooks' },
-      { name: 'Object Storage (R2)', status: this.storage.isConfigured() ? 'configured' : 'not_configured', detail: 'Verification documents' },
-      { name: 'Email Provider (Resend)', status: has('RESEND_API_KEY') ? 'configured' : 'not_configured', detail: 'Transactional email via EmailService' },
+      { name: 'Object Storage (S3)', status: this.storage.isConfigured() ? 'configured' : 'not_configured', detail: 'Verification documents' },
+      this.emailProviderStatus(has),
     ];
+  }
+
+  /**
+   * Amazon SES is the only email provider. It authenticates through the ECS
+   * task role (no API key), so "configured" means a region is set — a local
+   * configuration fact, not proof that the identity is verified or sending
+   * is permitted.
+   */
+  private emailProviderStatus(has: (k: string) => boolean): {
+    name: string;
+    status: ServiceStatus;
+    detail: string;
+  } {
+    return {
+      name: 'Email Provider (SES)',
+      status: has('SES_REGION') || has('AWS_REGION') ? 'configured' : 'not_configured',
+      // Configuration only: SES credentials (task role), the verified identity
+      // and production-access state are NOT probed here.
+      detail: 'Amazon SES region configured (IAM task role; identity/credentials not probed)',
+    };
+  }
+
+  /**
+   * Where THIS snapshot's numbers come from, so an operator can tell a stale or
+   * wrong-environment reading from a real one. The queue counts, Redis ping and
+   * worker heartbeat all come from the Redis this API process is connected to;
+   * the host is exposed WITHOUT credentials, port or path (super-admin only).
+   */
+  private source() {
+    const get = (k: string) => this.config.get<string>(k)?.trim() || null;
+    let redisHost: string | null = null;
+    try {
+      const url = get('REDIS_URL');
+      redisHost = url ? new URL(url).hostname : null;
+    } catch {
+      redisHost = null;
+    }
+    return {
+      environment: get('NODE_ENV'),
+      deployedOn: process.env.ECS_CONTAINER_METADATA_URI_V4 ? 'aws-ecs' : 'unknown',
+      awsRegion: get('AWS_REGION'),
+      redisHost,
+      queuePrefix: get('QUEUE_ENV_PREFIX'),
+      // BullMQ keeps failed jobs for 7 days (defaultJobOptions.removeOnFail), so
+      // `failedJobs` is a rolling 7-day total, not "jobs failing right now".
+      failedJobRetentionDays: 7,
+    };
   }
 
   // ── WhatsApp / Meta readiness (dev + admin diagnostics) ─────────────────

@@ -5,7 +5,7 @@
  * loudly, fast, and before touching Postgres or Redis.
  *
  * Regression for the 2026-09 incident: the production worker ran for weeks
- * with EMAIL_FROM="" and every email was rejected by Resend.
+ * with EMAIL_FROM="" and every email was rejected by the provider.
  *
  * Needs `npm run build` first. DB/Redis point at a closed local port, and the
  * process runs from an empty temp directory so no `.env` is loaded.
@@ -33,7 +33,7 @@ const productionEnv = (overrides: Record<string, string>) => ({
   DB_SSL_CA_CERT: 'x',
   AUTH_REGISTER_OWNER_ENDPOINT_CEILING: '100',
   PAYMENT_PROVIDER: 'noop',
-  RESEND_API_KEY: 're_test',
+  AWS_REGION: 'eu-central-1',
   EMAIL_FROM: 'no-reply@example.com',
   NO_COLOR: '1',
   ...overrides,
@@ -70,7 +70,8 @@ describe('worker startup with invalid email configuration (compiled dist)', () =
   it.each([
     ['blank (the production state)', { EMAIL_FROM: '' }, /EMAIL_FROM/],
     ['malformed', { EMAIL_FROM: 'no-reply' }, /EMAIL_FROM/],
-    ['missing Resend key', { RESEND_API_KEY: '' }, /RESEND_API_KEY/],
+    ['missing SES region', { AWS_REGION: '' }, /SES_REGION or AWS_REGION/],
+    ['retired Resend key left set', { RESEND_API_KEY: 're_x' }, /RESEND_API_KEY/],
   ])(
     'refuses to start when the sender config is %s — non-zero exit, named variable, no connection attempted',
     (_label, overrides, named) => {

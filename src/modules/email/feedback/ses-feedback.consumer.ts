@@ -32,14 +32,14 @@ interface SesEvent {
 const ERROR_BACKOFF_MS = 5_000;
 
 /**
- * SES bounce / complaint consumer (AWS migration — replaces the Resend
- * webhook for SES traffic). SES configuration set → SNS → SQS (raw delivery)
+ * SES bounce / complaint consumer (the only bounce/complaint feedback path;
+ * there is no public webhook). SES configuration set → SNS → SQS (raw delivery)
  * → this long-poll loop on the WORKER. There is no public endpoint: only the
  * SNS topic may write to the queue (queue policy) and only SES may publish to
  * the topic (topic policy), so authenticity is enforced by IAM instead of a
  * signature header.
  *
- * Acting on an event mirrors `EmailWebhookController` exactly: the SES
+ * Acting on an event: the SES
  * `mail.messageId` is our `provider_ref`; tenant and address come from OUR
  * campaign_recipients row (`recordDeliveryTrusted`), never from the payload.
  * Only PERMANENT bounces and complaints suppress — a transient (soft) bounce

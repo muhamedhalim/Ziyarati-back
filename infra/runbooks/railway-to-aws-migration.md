@@ -74,6 +74,18 @@
 | Billing posture (platform mode defaults to FREE; `subscription_plans` empty) | **Pending** owner decision |
 | Decommission / archive Railway services and the data-migration runbook | **Pending** |
 
+### A.2a Railway dependency inventory (2026-10-17)
+
+Verified by repository search only; the live Railway account and AWS account were **not** inspected (AWS CLI
+timed out against the profile region `me-south-1`; the stack is in `eu-central-1`).
+
+| Class | Where | Decision |
+|---|---|---|
+| Runtime / CI | No `RAILWAY_*` env var is read by `src/`, no `railway` entry in `package.json` or `.github/workflows` | Nothing to replace |
+| Operational docs (updated 2026-10-17) | `.env.example` ("Railway service" → ECS service), comments in `database-ssl.ts`, `health.controller.ts`, `migrate.ts`, `redis.config.ts`, `redis-io.adapter.ts`, `scripts/perf/cluster-shutdown-probe.js` | Reworded; comments only |
+| Kept until decommission | `subprocessor-register.ts` entry `railway` (state `active`: a legal register, change only with deletion evidence); `infra/scripts/railway-migrate-task.sh` (SUPERSEDED, refuses to run without a new decision); `tfvars` / variable descriptions that cite the Railway source | Retained on purpose |
+| Historical / audit | `scripts/incidents/2026-09-email-token-exposure/*` (uses `railway ssh`), this file's Parts B–D, `tests/load/**` reports, load-test deny-lists (`railway.app` is a safety guard) | Never rewritten |
+
 ### A.3 Source documents merged into this file
 
 
@@ -186,8 +198,8 @@ Patient data never goes to staging.
 ### Email: Resend → SES
 
 - Resend has **never delivered** (domain unverified), so there's **no sender reputation to migrate** and no warm-up history. SES will be the first live provider. Warm up by volume: transactional first; hold marketing campaigns until SES bounce/complaint metrics are stable for 2 weeks.
-- Switch is config-only: `EMAIL_PROVIDER=ses` on API **and worker** (the worker sends).
-- The Resend adapter stays in code for one release as rollback (`EMAIL_PROVIDER=resend`).
+- Switch is config-only: a region (`AWS_REGION`) on API **and worker** (the worker sends).
+- ~~The Resend adapter stays in code for one release as rollback.~~ **Superseded 2026-10-17:** the Resend adapter, its webhook and `RESEND_*` / `EMAIL_PROVIDER` settings were removed; Amazon SES is the only provider and there is no rollback path to Resend.
 - Remove the Resend DNS records (if ever added) after 30 days.
 
 ### Storage: R2 → S3

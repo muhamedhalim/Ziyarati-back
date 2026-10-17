@@ -35,7 +35,7 @@ import {
  * W and every subsequent frame flows over that same connection — no further
  * HTTP dispatch/routing occurs, so no worker affinity is required.
  *
- * Rather than introduce sticky-session routing (Railway's ingress does not
+ * Rather than introduce sticky-session routing (this deployment does not configure ALB stickiness and does not
  * provide it, and this project makes a point of never assuming external
  * infrastructure it hasn't verified — see cluster-bootstrap.ts), the smaller
  * and strictly safer fix is to stop offering the transport that needs

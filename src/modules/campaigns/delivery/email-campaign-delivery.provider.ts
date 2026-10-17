@@ -18,7 +18,7 @@ import { renderEmail } from '../../email/email.templates';
  * it owns no HTTP/SDK code of its own. Rendering reuses the SAME
  * `renderEmail`/`campaign_marketing` template `EmailDeliveryService` would use
  * for a transactional send, and sending reuses the SAME `EmailProviderFactory`
- * (Resend adapter) — no parallel provider integration is introduced.
+ * (the SES adapter) — no parallel provider integration is introduced.
  *
  * NOT routed through `EmailService`/`EmailDeliveryService` directly: those are
  * built for FIRE-AND-FORGET transactional mail (queued, best-effort, no

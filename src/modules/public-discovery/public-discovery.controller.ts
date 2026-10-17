@@ -281,7 +281,7 @@ export class PublicDiscoveryController {
   @ApiOperation({
     summary: "A doctor's avatar image",
     description:
-      'Contract C12. STREAMS the private R2 object — never a redirect, never the presigned URL ' +
+      'Contract C12. STREAMS the private S3 object — never a redirect, never the presigned URL ' +
       '(that would hand the private bucket URL to the browser/CDN). Eligibility (clinic ' +
       'APPROVED/active/opted-in, doctor available-for-booking) is re-checked on every request. ' +
       'An ineligible doctor, an unknown slug, and a doctor with no stored avatar are all the ' +

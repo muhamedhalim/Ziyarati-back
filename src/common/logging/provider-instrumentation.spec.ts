@@ -18,7 +18,6 @@ describe('provider instrumentation — pure helpers', () => {
     ['https://api.tap.company', 'tap'],
     ['https://api.openai.com', 'openai'],
     ['https://myres.openai.azure.com', 'azure_openai'],
-    ['https://api.resend.com', 'resend'],
     ['https://tenant-webhook.example.com', 'other'],
     ['not a url', 'other'],
   ])('maps %s to %s', (origin, provider) => {

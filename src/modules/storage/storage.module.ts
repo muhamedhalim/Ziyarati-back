@@ -5,7 +5,7 @@ import { UploadsController } from './uploads.controller';
 import { VerificationAuditModule } from '../verification-audit/verification-audit.module';
 
 /**
- * Private object storage (Cloudflare R2, S3-compatible).
+ * Private object storage (Amazon S3, S3-compatible).
  *
  * Exposes the generic `/uploads` gateway and exports {@link StorageService} so
  * domain modules (e.g. tenant verification) can verify, sign, and delete the

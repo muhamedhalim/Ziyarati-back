@@ -173,7 +173,7 @@ variable "enable_failed_login_ip_rule" {
 variable "alarm_providers" {
   description = "Provider labels (provider-instrumentation.ts) that get a failure alarm."
   type        = list(string)
-  default     = ["meta_graph", "openai", "tap", "resend"]
+  default     = ["meta_graph", "openai", "tap"]
 }
 
 variable "provider_failure_threshold" {

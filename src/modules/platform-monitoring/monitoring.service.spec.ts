@@ -10,7 +10,13 @@
  */
 import { MonitoringService } from './monitoring.service';
 
-function build(options: { cached?: unknown; failOpen?: boolean } = {}) {
+function build(
+  options: {
+    cached?: unknown;
+    failOpen?: boolean;
+    env?: Record<string, string>;
+  } = {},
+) {
   const dataSource = {
     query: jest.fn().mockImplementation((sql: string) => {
       if (sql.includes('api_logs') && sql.includes('error_rate')) {
@@ -38,7 +44,9 @@ function build(options: { cached?: unknown; failOpen?: boolean } = {}) {
     kvGet: jest.fn().mockResolvedValue(null),
   };
 
-  const config = { get: jest.fn().mockReturnValue(undefined) };
+  const config = {
+    get: jest.fn((k: string) => options.env?.[k]),
+  };
   const storage = { isConfigured: jest.fn().mockReturnValue(false) };
 
   const cacheCalls: { ns: string; suffix: string }[] = [];
@@ -130,6 +138,7 @@ describe('MonitoringService — overview() caching', () => {
         'externalServices',
         'infrastructure',
         'queues',
+        'source',
         'system',
         'traffic',
         'webhooks',
@@ -144,5 +153,71 @@ describe('MonitoringService — overview() caching', () => {
     await service.overview();
 
     expect(cacheCalls).toEqual([{ ns: 'platform', suffix: 'overview' }]);
+  });
+});
+
+describe('MonitoringService — AWS-aware provider status and data source', () => {
+  const svc = (result: { externalServices: { name: string; status: string }[] }, name: string) =>
+    result.externalServices.find((s) => s.name.startsWith(name));
+
+  it('email is judged by the SES region alone — no API key is read', async () => {
+    const { service } = build({ env: { AWS_REGION: 'eu-central-1' } });
+    const result = await service.overview({ bypassCache: true });
+    expect(svc(result, 'Email Provider')).toMatchObject({
+      name: 'Email Provider (SES)',
+      status: 'configured',
+    });
+  });
+
+  it('email without an SES region is reported not_configured', async () => {
+    const { service } = build();
+    const result = await service.overview({ bypassCache: true });
+    expect(svc(result, 'Email Provider')?.status).toBe('not_configured');
+  });
+
+  it('a leftover RESEND_API_KEY never makes email look configured', async () => {
+    const result = await build({ env: { RESEND_API_KEY: 'x' } }).service.overview({
+      bypassCache: true,
+    });
+    expect(svc(result, 'Email Provider')).toMatchObject({
+      name: 'Email Provider (SES)',
+      status: 'not_configured',
+    });
+  });
+
+  it('SES_REGION alone is enough (credentials come from the task role)', async () => {
+    const result = await build({ env: { SES_REGION: 'eu-central-1' } }).service.overview({
+      bypassCache: true,
+    });
+    expect(svc(result, 'Email Provider')?.status).toBe('configured');
+  });
+
+  it('labels object storage as S3, not R2', async () => {
+    const result = await build().service.overview({ bypassCache: true });
+    expect(svc(result, 'Object Storage')?.name).toBe('Object Storage (S3)');
+  });
+
+  it('source exposes the Redis host only — never credentials, port or path', async () => {
+    const { service } = build({
+      env: {
+        NODE_ENV: 'production',
+        AWS_REGION: 'eu-central-1',
+        REDIS_URL: 'rediss://default:s3cr3t@zt-prod.cache.amazonaws.com:6379/0',
+      },
+    });
+    const { source } = await service.overview({ bypassCache: true });
+    expect(source).toMatchObject({
+      environment: 'production',
+      awsRegion: 'eu-central-1',
+      redisHost: 'zt-prod.cache.amazonaws.com',
+      failedJobRetentionDays: 7,
+    });
+    expect(JSON.stringify(source)).not.toMatch(/s3cr3t|6379|default:/);
+  });
+
+  it('a malformed REDIS_URL yields a null host instead of throwing', async () => {
+    const { service } = build({ env: { REDIS_URL: 'not a url' } });
+    const { source } = await service.overview({ bypassCache: true });
+    expect(source.redisHost).toBeNull();
   });
 });

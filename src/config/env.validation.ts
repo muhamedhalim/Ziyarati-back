@@ -544,25 +544,16 @@ export const validate = (config: Record<string, unknown>) => {
     // PAYMENTS_RECON_STALE_MIN: Joi.number().min(1).default(15),
     // PAYMENTS_RECON_HARDFAIL_MIN: Joi.number().min(1).default(240),
 
-    // ── Email (Resend by default; provider behind an abstraction) ─────────
+    // ── Email (Amazon SES is the only provider) ───────────────────────────
     // `enabled` defaults to ON in production, OFF in dev (no-op provider) unless
     // EMAIL_ENABLED is set explicitly. EMAIL_SYNC=true delivers inline instead of
     // via the worker (for API-only deployments).
-    EMAIL_PROVIDER: Joi.string()
-      .valid('resend', 'ses', 'noop')
-      .default('resend'),
     EMAIL_ENABLED: Joi.string().valid('true', 'false'),
     EMAIL_SYNC: Joi.string().valid('true', 'false').default('false'),
-    RESEND_API_KEY: Joi.string().allow('', null),
     EMAIL_FROM: Joi.string().allow('', null),
     EMAIL_FROM_NAME: Joi.string().allow('', null),
     EMAIL_REPLY_TO: Joi.string().allow('', null),
     EMAIL_DEFAULT_LOCALE: Joi.string().default('en'),
-    // Per-request timeout for the Resend HTTP call (ResendProvider defaults to
-    // 10000). Capped below BullMQ's default 30s job lock: a send that outlives
-    // the lock gets the job stall-requeued and delivered a second time while
-    // the first request is still in flight.
-    RESEND_HTTP_TIMEOUT_MS: Joi.number().integer().min(1000).max(25000),
     // Base URL used to build links inside emails (falls back to FRONTEND_ORIGIN).
     APP_URL: Joi.string().allow('', null),
     // Phase 11 (US7, T134) — HMAC secret for the stateless unsubscribe token
@@ -570,15 +561,11 @@ export const validate = (config: Record<string, unknown>) => {
     // JWT_ACCESS_SECRET (always required/present) so no new mandatory
     // deployment secret is introduced; set explicitly to use a dedicated key.
     EMAIL_UNSUBSCRIBE_SECRET: Joi.string().allow('', null),
-    // Phase 11 (US7, T136) — HMAC secret configured on the Resend webhook
-    // endpoint. Unset means bounce/complaint feedback is rejected outright
-    // (fail closed), same posture as META_APP_SECRET.
-    RESEND_WEBHOOK_SECRET: Joi.string().allow('', null),
-
-    // ── Amazon SES (EMAIL_PROVIDER=ses — AWS migration) ───────────────────
+    // ── Amazon SES ────────────────────────────────────────────────────────
     // No credentials here: the SDK resolves the runtime IAM role (ECS task
     // role). Region falls back to AWS_REGION. The timeout is capped below
-    // BullMQ's 30 s job lock for the same reason as RESEND_HTTP_TIMEOUT_MS.
+    // BullMQ's 30 s job lock: a send that outlives the lock gets the job
+    // stall-requeued and delivered twice.
     // SES_FEEDBACK_QUEUE_URL turns on the worker's bounce/complaint consumer
     // (SES → SNS → SQS); unset = consumer idle.
     SES_REGION: Joi.string().allow('', null),
@@ -1462,34 +1449,47 @@ export const validate = (config: Record<string, unknown>) => {
   // resolveEmailConfig), and every send happens in whichever process consumes
   // the `email` queue — usually the WORKER, not the API. Production's worker
   // ran for weeks with EMAIL_FROM="" while the API held a valid value: every
-  // email was rejected by Resend (422 invalid `from`), recorded as FAILED, and
+  // email was rejected by the provider (invalid `from`), recorded as FAILED, and
   // the BullMQ job still reported success. Each process root validates its
   // OWN environment here, so the worker can no longer boot in that state.
   // Names variables only, never values.
+  // Amazon SES is the ONLY provider. Retired Resend settings left in an
+  // environment are refused rather than ignored, so a stale API key cannot
+  // linger as a secret nothing uses (names only, never values).
+  if (value.NODE_ENV === 'production') {
+    const legacy = value as Record<string, unknown>;
+    const retired = [
+      'RESEND_API_KEY',
+      'RESEND_WEBHOOK_SECRET',
+      'RESEND_HTTP_TIMEOUT_MS',
+    ].filter((k) => String(legacy[k] ?? '').trim() !== '');
+    const provider = String(legacy.EMAIL_PROVIDER ?? '').trim();
+    if (provider !== '' && provider.toLowerCase() !== 'ses') {
+      retired.push(`EMAIL_PROVIDER=${provider.toLowerCase()}`);
+    }
+    if (retired.length > 0) {
+      throw new Error(
+        `❌ Env validation error: ${retired.join(', ')} refer to a retired ` +
+          `email provider. Amazon SES is the only supported provider — remove ` +
+          `these settings (EMAIL_PROVIDER is no longer read).`,
+      );
+    }
+  }
+
   const emailLive =
-    value.NODE_ENV === 'production' &&
-    value.EMAIL_ENABLED !== 'false' &&
-    (value.EMAIL_PROVIDER === 'resend' || value.EMAIL_PROVIDER === 'ses');
+    value.NODE_ENV === 'production' && value.EMAIL_ENABLED !== 'false';
   if (emailLive) {
     const missing: string[] = [];
-    if (
-      value.EMAIL_PROVIDER === 'resend' &&
-      !String(value.RESEND_API_KEY ?? '').trim()
-    )
-      missing.push('RESEND_API_KEY');
     // SES authenticates with the runtime role; it only needs a region.
-    if (
-      value.EMAIL_PROVIDER === 'ses' &&
-      !String(value.SES_REGION || value.AWS_REGION || '').trim()
-    )
+    if (!String(value.SES_REGION || value.AWS_REGION || '').trim())
       missing.push('SES_REGION or AWS_REGION');
     if (!formatFromAddress(value.EMAIL_FROM, value.EMAIL_FROM_NAME)) {
       missing.push('EMAIL_FROM (and/or EMAIL_FROM_NAME)');
     }
     if (missing.length > 0) {
       throw new Error(
-        `❌ Env validation error: email is enabled in production with ` +
-          `EMAIL_PROVIDER=${value.EMAIL_PROVIDER}, but ${missing.join(', ')} is missing, blank or ` +
+        `❌ Env validation error: email (Amazon SES) is enabled in production, ` +
+          `but ${missing.join(', ')} is missing, blank or ` +
           `malformed. EMAIL_FROM must be "sender@your-verified-domain" or ` +
           `"Name <sender@your-verified-domain>"; EMAIL_FROM_NAME must not contain ` +
           `<, > or ". Set these on EVERY process that consumes the email queue ` +

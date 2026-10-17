@@ -59,7 +59,7 @@ export class StaffProfile {
    * Legacy/external avatar URL for rows created before private storage, OR a
    * short-lived signed URL resolved in-memory from `avatar_storage_key` for
    * API responses (see `StaffService.withResolvedAvatar`) — never both
-   * meaningfully at once. The R2 upload flow never accepts an arbitrary
+   * meaningfully at once. The S3 upload flow never accepts an arbitrary
    * external URL going forward; the app only ever clears this column
    * (`StaffService.update` nulls it whenever `avatarStorageKey` changes), it
    * never writes a new URL into it.
@@ -68,7 +68,7 @@ export class StaffProfile {
   avatar_url?: string | null;
 
   /**
-   * Private R2 object key (`<tenantId>/staff-avatar/<uuid>.<ext>`). Never a
+   * Private S3 object key (`<tenantId>/staff-avatar/<uuid>.<ext>`). Never a
    * URL. Typed as `| null` (not just optional) because TypeORM's `save()`
    * skips `undefined` properties on UPDATE — clearing this column requires
    * assigning `null` explicitly, not `undefined`.

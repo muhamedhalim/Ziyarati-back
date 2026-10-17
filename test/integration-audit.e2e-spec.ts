@@ -13,7 +13,7 @@
  * jest's JSON output can be joined to the recorded observations.
  *
  * SAFETY: isolated migrations-built DB (ziyarati_e2e), disposable Redis,
- * EMAIL_PROVIDER=noop, Meta clients mocked, synthetic tenants only, bounded
+ * EMAIL_ENABLED=false, Meta clients mocked, synthetic tenants only, bounded
  * concurrency (<= 10 parallel), no request ever leaves loopback. The SSRF guard
  * is relaxed for 127.0.0.1 ONLY while E2E_ALLOW_SIM_LOOPBACK=1 (same pattern as
  * integration-outbound-simulation.e2e-spec.ts) and is switched off for every
@@ -305,9 +305,9 @@ describe('Integration API — E2E audit (documented contract vs implementation)'
     runInTenantContext(ctx, authz, job, { tenantId } as never, fn);
 
   beforeAll(async () => {
-    if (process.env.EMAIL_PROVIDER !== 'noop') {
+    if (process.env.EMAIL_ENABLED !== 'false') {
       throw new Error(
-        'Refusing to run: EMAIL_PROVIDER must be noop (the e2e env file forces it).',
+        'Refusing to run: EMAIL_ENABLED must be false (the e2e env file forces it).',
       );
     }
     delete process.env.E2E_ALLOW_SIM_LOOPBACK;
@@ -1735,7 +1735,7 @@ describe('Integration API — E2E audit (documented contract vs implementation)'
         title: 'Side effects',
         route: 'notification_logs / scheduled_notifications',
         expected: '0 rows for the test tenant',
-        actual: { notificationLogs: logs[0].n, scheduledNotifications: sched[0].n, emailProvider: process.env.EMAIL_PROVIDER },
+        actual: { notificationLogs: logs[0].n, scheduledNotifications: sched[0].n, emailEnabled: process.env.EMAIL_ENABLED },
       });
       expect(logs[0].n).toBe(0);
       expect(sched[0].n).toBe(0);
