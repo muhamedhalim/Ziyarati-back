@@ -61,7 +61,7 @@ db = {
   allocated_storage_gb     = 50
   max_allocated_storage_gb = 200
   backup_retention_days    = 14    # value used when backup_enabled = true (official launch)
-  backup_enabled           = true # re-enabled 2026-10-16: retention = backup_retention_days (14); trial phase over
+  backup_enabled           = true  # re-enabled 2026-10-16: retention = backup_retention_days (14); trial phase over
   apply_immediately        = false # was true for the 2026-10-16 changes (applied); keep false
 }
 
