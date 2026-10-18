@@ -88,6 +88,7 @@ describe('TapSubscriptionProvider', () => {
         ok({
           id: 'chg_hosted',
           status: 'INITIATED',
+          merchant: { id: 'merchant_PLATFORM' },
           transaction: { url: 'https://checkout.tap.test/?token=T' },
         }),
       ),
@@ -234,7 +235,7 @@ describe('TapSubscriptionProvider', () => {
 
     it('a 2xx without a hosted page url is UNKNOWN — there is nowhere to send the payer', async () => {
       client.createCharge.mockResolvedValueOnce(
-        ok({ id: 'chg_x', status: 'INITIATED' }),
+        ok({ id: 'chg_x', status: 'INITIATED', merchant: { id: 'merchant_PLATFORM' }, }),
       );
       const out = await build().createCheckout(checkoutRequest());
       expect(out.status).toBe('unknown');
@@ -246,6 +247,7 @@ describe('TapSubscriptionProvider', () => {
         ok({
           id: 'chg_f',
           status: 'DECLINED',
+          merchant: { id: 'merchant_PLATFORM' },
           response: { code: '510', message: 'RAW ISSUER TEXT' },
         }),
       );
@@ -260,6 +262,7 @@ describe('TapSubscriptionProvider', () => {
     const captured = (over: Record<string, unknown> = {}) => ({
       id: 'chg_hosted',
       status: 'CAPTURED',
+      merchant: { id: 'merchant_PLATFORM' },
       amount: 299,
       currency: 'SAR',
       reference: { transaction: INVOICE },
@@ -422,7 +425,7 @@ describe('TapSubscriptionProvider', () => {
 
     it('exchanges the saved card for a single-use token, then charges it as merchant-initiated, non-3DS, under the payment agreement', async () => {
       client.createCharge.mockResolvedValueOnce(
-        ok({ id: 'chg_mit', status: 'CAPTURED' }),
+        ok({ id: 'chg_mit', status: 'CAPTURED', merchant: { id: 'merchant_PLATFORM' }, }),
       );
 
       const res = await build().charge(chargeRequest({ attempt: 2 }));
@@ -457,9 +460,41 @@ describe('TapSubscriptionProvider', () => {
       expect(body.platform).toBeUndefined();
     });
 
+    it('reports the CAPTURED figures (domain cents + currency) so the settle path can check them against the invoice', async () => {
+      client.createCharge.mockResolvedValueOnce(
+        ok({
+          id: 'chg_mit',
+          status: 'CAPTURED',
+          amount: 299,
+          currency: 'SAR',
+          merchant: { id: 'merchant_PLATFORM' },
+        }),
+      );
+      expect(await build().charge(chargeRequest())).toEqual({
+        success: true,
+        status: 'paid',
+        reference: 'chg_mit',
+        capturedMinorUnits: 29900,
+        capturedCurrency: 'SAR',
+      });
+    });
+
+    it('a CAPTURED charge that reports no amount still answers paid but with NO figure — the mandatory check then refuses to book it', async () => {
+      client.createCharge.mockResolvedValueOnce(
+        ok({
+          id: 'chg_mit',
+          status: 'CAPTURED',
+          merchant: { id: 'merchant_PLATFORM' },
+        }),
+      );
+      const res = await build().charge(chargeRequest());
+      expect(res.status).toBe('paid');
+      expect(res.capturedMinorUnits).toBeUndefined();
+    });
+
     it('the idempotency key is STABLE across a retry of the same attempt (a lost response can never become a second capture)', async () => {
       client.createCharge.mockResolvedValue(
-        ok({ id: 'chg_mit', status: 'CAPTURED' }),
+        ok({ id: 'chg_mit', status: 'CAPTURED', merchant: { id: 'merchant_PLATFORM' }, }),
       );
       await build().charge(chargeRequest({ attempt: 0 }));
       await build().charge(chargeRequest({ attempt: 0 }));
@@ -471,7 +506,7 @@ describe('TapSubscriptionProvider', () => {
 
     it('an attempt number that is not supplied is attempt 0', async () => {
       client.createCharge.mockResolvedValueOnce(
-        ok({ id: 'chg_mit', status: 'CAPTURED' }),
+        ok({ id: 'chg_mit', status: 'CAPTURED', merchant: { id: 'merchant_PLATFORM' }, }),
       );
       await build().charge(chargeRequest({ attempt: undefined }));
       expect(client.createCharge.mock.calls[0][0].reference.idempotent).toBe(
@@ -517,7 +552,7 @@ describe('TapSubscriptionProvider', () => {
 
     it('INITIATED / IN_PROGRESS: PENDING with the charge id, so the claim is held and verified later', async () => {
       for (const status of ['INITIATED', 'IN_PROGRESS']) {
-        client.createCharge.mockResolvedValueOnce(ok({ id: 'chg_p', status }));
+        client.createCharge.mockResolvedValueOnce(ok({ id: 'chg_p', status, merchant: { id: 'merchant_PLATFORM' }, }));
         const res = await build().charge(chargeRequest());
         expect(res).toMatchObject({
           success: false,
@@ -580,6 +615,7 @@ describe('TapSubscriptionProvider', () => {
         ok({
           id: 'chg_r',
           status: 'CAPTURED',
+          merchant: { id: 'merchant_PLATFORM' },
           amount: 299,
           currency: 'SAR',
           customer: { id: 'cus_1' },
@@ -614,6 +650,245 @@ describe('TapSubscriptionProvider', () => {
         'unknown',
       );
     });
+  });
+
+  // ───────────── routing proof: revenue must land on ZiyaraTech ───────────── //
+
+  describe('routing proof (subscription revenue is ZiyaraTech\'s own merchant only)', () => {
+    const OTHER = { merchant: { id: 'merchant_OTHER' } };
+    const provider = () => {
+      const p = build();
+      jest.spyOn((p as any).logger, 'error').mockImplementation(() => undefined);
+      return p;
+    };
+
+    it('is NOT configured without ZiyaraTech\'s merchant id, even with a key — its destination could not be proven', () => {
+      cfg.tapMerchantId = undefined;
+      expect(build().isConfigured).toBe(false);
+      cfg.tapMerchantId = '   ';
+      expect(build().isConfigured).toBe(false);
+    });
+
+    it.each([
+      ['another merchant', 'TAP_SUB_MISROUTED', OTHER],
+      ['no merchant', 'TAP_SUB_ROUTING_UNVERIFIED', { merchant: undefined }],
+    ])(
+      'createCheckout: a charge echoed on %s is FAILED with no page and no charge id',
+      async (_l, code, over) => {
+        client.createCharge.mockResolvedValueOnce(
+          ok({
+            id: 'chg_orphan',
+            status: 'INITIATED',
+            transaction: { url: 'https://checkout.tap.test/?token=T' },
+            ...over,
+          }),
+        );
+        const out = await provider().createCheckout(checkoutRequest());
+        expect(out).toEqual({
+          status: 'failed',
+          failureCode: code,
+          failureReason: 'Online payment is not available right now',
+        });
+        expect(out.redirectUrl).toBeUndefined();
+        expect(out.chargeId).toBeUndefined();
+      },
+    );
+
+    it('verifyCheckout: a CAPTURED invoice charge on another merchant is demoted to pending — no amount, no saved card, never paid', async () => {
+      client.getCharge.mockResolvedValueOnce(
+        ok({
+          id: 'chg_hosted',
+          status: 'CAPTURED',
+          amount: 299,
+          currency: 'SAR',
+          reference: { transaction: INVOICE },
+          metadata: { udf1: INVOICE, udf2: 'subscription_invoice' },
+          customer: { id: 'cus_1' },
+          card: { id: 'card_1' },
+          payment_agreement: { id: 'agr_1' },
+          ...OTHER,
+        }),
+      );
+      const v = await provider().verifyCheckout('chg_hosted');
+      expect(v).toEqual({
+        status: 'pending',
+        chargeId: 'chg_hosted',
+        invoiceId: INVOICE,
+      });
+    });
+
+    it('verifyCheckout: a charge with no merchant echo is held too (fail closed)', async () => {
+      client.getCharge.mockResolvedValueOnce(
+        ok({
+          id: 'chg_hosted',
+          status: 'CAPTURED',
+          amount: 299,
+          currency: 'SAR',
+          reference: { transaction: INVOICE },
+          metadata: { udf1: INVOICE, udf2: 'subscription_invoice' },
+        }),
+      );
+      expect((await provider().verifyCheckout('chg_hosted')).status).toBe(
+        'pending',
+      );
+    });
+
+    it('verifyCheckout: only INVOICE charges are judged — a booking payment keeps its own routing', async () => {
+      client.getCharge.mockResolvedValueOnce(
+        ok({
+          id: 'chg_b',
+          status: 'CAPTURED',
+          amount: 299,
+          currency: 'SAR',
+          metadata: { udf1: INVOICE, udf2: 'payment' },
+          merchant: { id: 'clinic_merchant' },
+        }),
+      );
+      expect((await provider().verifyCheckout('chg_b')).status).toBe('paid');
+    });
+
+    it('verifyCheckout: a FAILED charge on another merchant stays failed (nothing to protect)', async () => {
+      client.getCharge.mockResolvedValueOnce(
+        ok({
+          id: 'chg_x',
+          status: 'DECLINED',
+          metadata: { udf1: INVOICE, udf2: 'subscription_invoice' },
+          ...OTHER,
+        }),
+      );
+      expect((await provider().verifyCheckout('chg_x')).status).toBe('failed');
+    });
+
+    it('charge (renewal): a CAPTURED charge on another merchant is PENDING with its id — never paid, never failed (a decline would re-charge)', async () => {
+      client.createCharge.mockResolvedValueOnce(
+        ok({ id: 'chg_mit', status: 'CAPTURED', ...OTHER }),
+      );
+      const res = await provider().charge(chargeRequest());
+      expect(res).toMatchObject({
+        success: false,
+        status: 'pending',
+        reference: 'chg_mit',
+      });
+      expect(res.failureClass).toBeUndefined();
+    });
+
+    it('charge (renewal): a charge with no merchant echo is held the same way', async () => {
+      client.createCharge.mockResolvedValueOnce(
+        ok({ id: 'chg_mit', status: 'CAPTURED' }),
+      );
+      expect((await provider().charge(chargeRequest())).status).toBe('pending');
+    });
+
+    it('verifyCharge: a captured charge on another merchant is PENDING, so the sweep never settles it', async () => {
+      client.getCharge.mockResolvedValueOnce(
+        ok({
+          id: 'chg_r',
+          status: 'CAPTURED',
+          amount: 299,
+          currency: 'SAR',
+          ...OTHER,
+        }),
+      );
+      expect(await provider().verifyCharge(INVOICE, 'chg_r')).toEqual({
+        status: 'pending',
+        reference: 'chg_r',
+      });
+    });
+
+    it('logs an ALERT line (matched by the P-01 critical alarm) and never the secret or payer detail', async () => {
+      const p = build();
+      const err = jest
+        .spyOn((p as any).logger, 'error')
+        .mockImplementation(() => undefined);
+      client.getCharge.mockResolvedValueOnce(
+        ok({ id: 'chg_r', status: 'CAPTURED', amount: 299, ...OTHER }),
+      );
+      await p.verifyCharge(INVOICE, 'chg_r');
+      expect(err).toHaveBeenCalledTimes(1);
+      expect(err.mock.calls[0][0]).toMatch(
+        /^ALERT: subscription charge chg_r was NOT routed to the ZiyaraTech merchant/,
+      );
+    });
+  });
+
+  // ──────────── findCharge: a charge whose id never came back ──────────── //
+
+  describe('findCharge', () => {
+    const live = (over: Record<string, unknown> = {}) => ({
+      id: 'chg_lost',
+      status: 'INITIATED',
+      reference: { transaction: INVOICE },
+      metadata: { udf1: INVOICE, udf2: 'subscription_invoice' },
+      ...over,
+    });
+    const listed = (...charges: unknown[]) =>
+      ok({ charges } as never) as TapResponse;
+    let listCharges: jest.Mock;
+    beforeEach(() => {
+      listCharges = jest.fn();
+      (client as any).listCharges = listCharges;
+    });
+
+    it('asks Tap by OUR reference (the invoice id)', async () => {
+      listCharges.mockResolvedValueOnce(listed(live()));
+      await build().findCharge(INVOICE);
+      expect(listCharges).toHaveBeenCalledWith(
+        expect.objectContaining({ reference: { transaction: [INVOICE] } }),
+      );
+    });
+
+    it('found: exactly one live charge', async () => {
+      listCharges.mockResolvedValueOnce(listed(live()));
+      expect(await build().findCharge(INVOICE)).toEqual({
+        status: 'found',
+        reference: 'chg_lost',
+      });
+    });
+
+    it('found: a CAPTURED charge counts as live', async () => {
+      listCharges.mockResolvedValueOnce(listed(live({ status: 'CAPTURED' })));
+      expect((await build().findCharge(INVOICE)).status).toBe('found');
+    });
+
+    it('not_found: Tap answered with no charge at all', async () => {
+      listCharges.mockResolvedValueOnce(listed());
+      expect(await build().findCharge(INVOICE)).toEqual({ status: 'not_found' });
+    });
+
+    it('not_found: only dead charges (a declined attempt, an abandoned page) are left', async () => {
+      listCharges.mockResolvedValueOnce(
+        listed(
+          live({ id: 'chg_a', status: 'DECLINED' }),
+          live({ id: 'chg_b', status: 'ABANDONED' }),
+        ),
+      );
+      expect((await build().findCharge(INVOICE)).status).toBe('not_found');
+    });
+
+    it('charges that merely share the reference but are not invoice charges are ignored', async () => {
+      listCharges.mockResolvedValueOnce(
+        listed(
+          live({ id: 'chg_booking', metadata: { udf2: 'payment' } }),
+          live({ id: 'chg_other', reference: { transaction: 'someone-else' } }),
+        ),
+      );
+      expect((await build().findCharge(INVOICE)).status).toBe('not_found');
+    });
+
+    it('unknown: several live charges are ambiguous and left to a person', async () => {
+      listCharges.mockResolvedValueOnce(
+        listed(live({ id: 'chg_1' }), live({ id: 'chg_2' })),
+      );
+      expect((await build().findCharge(INVOICE)).status).toBe('unknown');
+    });
+
+    it.each([fail(0), fail(503), fail(403, '1101')])(
+      'unknown: a refusal or an outage is never "nothing was charged"',
+      async (res) => {
+        listCharges.mockResolvedValueOnce(res);
+        expect((await build().findCharge(INVOICE)).status).toBe('unknown');
+      },
+    );
   });
 
   describe('refund / deletePaymentMethod', () => {

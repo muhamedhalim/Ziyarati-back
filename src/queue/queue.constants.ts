@@ -184,6 +184,8 @@ export const JOB = {
   // ANALYTICS_* → QUEUE.ANALYTICS, PLATFORM_* → QUEUE.PLATFORM).
   /** Repeatable daily sweep: bills subscriptions due for recurring renewal (S5). */
   SUBSCRIPTIONS_RENEWAL_BILL: 'subscriptions.renewalBill',
+  /** Daily sweep: cancels a paid-plan subscription that was never paid (PENDING_PAYMENT past its TTL). */
+  SUBSCRIPTIONS_PENDING_PAYMENT_EXPIRY: 'subscriptions.pendingPaymentExpiry',
   /** Async report-export rendering (S13), on the existing analytics queue. */
   ANALYTICS_EXPORT_GENERATE: 'analytics.exportGenerate',
   /** Async invoice PDF rendering (S12), on the existing analytics queue. */

@@ -41,6 +41,8 @@ import {
  * provider about every abandoned checkout forever.
  */
 const CHECKOUT_RECONCILE_WINDOW_MS = 48 * 60 * 60_000;
+/** Tap honours one idempotency key for 24h: an unresolved charge older than that needs a person. */
+const UNRESOLVED_ALERT_MS = 24 * 60 * 60_000;
 
 type Outcome = 'paid' | 'failed' | 'mismatch' | 'stillPending' | 'skipped';
 
@@ -506,8 +508,29 @@ export class PaymentReconciliationService {
     // Phase A: provider truth, OUTSIDE any lock. The charge id (hosted checkout,
     // or a pending merchant-initiated charge) is what lets a real provider look
     // the charge up; without one it can only answer 'unknown'.
-    const reference =
+    let reference =
       invoice.checkout_charge_id ?? invoice.provider_reference ?? undefined;
+
+    // A provider that can look a charge up by our own reference (Tap) must not have a
+    // charge it created but never named dropped: it is adopted when found, and the
+    // claim is only released once the provider CONFIRMS none exists.
+    const lookup = this.subscriptionProvider.findCharge?.bind(
+      this.subscriptionProvider,
+    );
+    let confirmedAbsent = false;
+    if (!reference && lookup && invoice.charge_started_at) {
+      const found = await lookup(invoice.id);
+      if (found.status === 'found') {
+        reference = found.reference;
+        await this.invoices.update(
+          { id: invoice.id, checkout_charge_id: IsNull() },
+          { checkout_charge_id: reference },
+        );
+      } else if (found.status === 'not_found') {
+        confirmedAbsent = true;
+      }
+    }
+
     const verify = await this.subscriptionProvider.verifyCharge(
       invoice.id,
       reference,
@@ -525,6 +548,7 @@ export class PaymentReconciliationService {
         reference: verify.reference ?? reference ?? invoice.id,
         capturedMinorUnits: verify.capturedMinorUnits,
         capturedCurrency: verify.capturedCurrency,
+        amountRequired: this.subscriptionProvider.supportsCheckout,
         savedPaymentMethod: verify.savedPaymentMethod,
       });
       if (settled.outcome === 'rejected') {
@@ -569,6 +593,19 @@ export class PaymentReconciliationService {
       // failed on a guess. A hosted checkout is left alone: the provider may
       // simply be unreachable, and the clinic can still be paying.
       if (!claimed) return 'stillClaimed' as InvoiceOutcome;
+      if (lookup && !confirmedAbsent) {
+        // An UNRESOLVED charge (its id is known, or it could not be looked up): it
+        // may still capture, so the claim stays and nothing new is started on top
+        // of it. Shouting after 24h, when the provider's idempotency window is over.
+        const ageMs = Date.now() - locked.charge_started_at!.getTime();
+        if (ageMs > UNRESOLVED_ALERT_MS) {
+          this.logger.error(
+            `ALERT: subscription invoice ${locked.id} has had an unresolved provider charge for over 24 hours; ` +
+              `the claim is held and no new charge will be started — resolve it with the provider`,
+          );
+        }
+        return 'stillClaimed' as InvoiceOutcome;
+      }
       locked.charge_started_at = null;
       await repo.save(locked);
       return 'released' as InvoiceOutcome;

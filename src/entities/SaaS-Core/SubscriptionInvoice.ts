@@ -7,6 +7,11 @@ import { InvoiceStatus } from '../enums';
 // the full rationale (no period column exists on this table — data-model.md
 // D-4 — so this is deliberately not "tenant + period").
 @Entity('subscription_invoices')
+// One provider charge settles at most one invoice (migration SubscriptionBillingIntegrityIndexes).
+@Index('UQ_sub_invoice_provider_reference', ['provider_reference'], {
+  unique: true,
+  where: `"provider_reference" IS NOT NULL AND "status" <> 'VOID'`,
+})
 @Index('UQ_sub_invoice_open_per_subscription', ['subscription_id'], {
   unique: true,
   where: `"status" = 'OPEN'`,

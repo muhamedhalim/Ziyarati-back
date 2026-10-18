@@ -46,6 +46,8 @@ export const PLATFORM_ADMIN_AUDIT_ACTION = {
   // void/refunded, or the subscription is cancelled/suspended). Money moved;
   // an operator must decide — usually a refund.
   SUBSCRIPTION_PAYMENT_UNAPPLIED: 'subscription.payment_unapplied',
+  // A paid-plan subscription cancelled by the system because its first payment never came.
+  SUBSCRIPTION_PENDING_PAYMENT_EXPIRED: 'subscription.pending_payment_expired',
   // Platform Customer Service staff provisioning (PlatformStaffService).
   STAFF_CREATE: 'platform_admin.staff.create',
   STAFF_UPDATE: 'platform_admin.staff.update',

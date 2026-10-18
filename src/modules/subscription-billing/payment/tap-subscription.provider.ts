@@ -15,12 +15,17 @@ import {
   type TapRefund,
 } from '../../payments/providers/tap/tap.types';
 import { extractSavedPaymentMethod } from '../../payments/providers/tap/tap-saved-method';
+import {
+  subscriptionChargeRouting,
+  subscriptionMisroutedLogLine,
+} from '../../payments/providers/tap/tap-routing';
 import { isUuid } from '../../payments/payments.constants';
 import {
   ChargeRequest,
   ChargeResult,
   CheckoutRequest,
   CheckoutResult,
+  FindChargeResult,
   FAILURE_CLASS_TOKENIZATION_UNAVAILABLE,
   PaymentProvider,
   RefundRequest,
@@ -106,9 +111,13 @@ export class TapSubscriptionProvider implements PaymentProvider {
     return this.config.tapChargeExpiryMinutes ?? 30;
   }
 
-  /** TRUE when a secret key exists for the active `TAP_ENV`. */
+  /**
+   * TRUE when a secret key exists for the active `TAP_ENV` AND ZiyaraTech's own
+   * merchant id is set: without it a subscription charge's destination cannot be
+   * proven (see `misroutedCharge`), so the provider is not offered at all.
+   */
   get isConfigured(): boolean {
-    return this.client.isConfigured;
+    return this.client.isConfigured && !!this.config.tapMerchantId?.trim();
   }
 
   // ───────────────────────────── hosted checkout ──────────────────────────── //
@@ -150,6 +159,17 @@ export class TapSubscriptionProvider implements PaymentProvider {
         status: 'unknown',
         failureCode: 'TAP_NO_CHARGE_ID',
         failureReason: MSG_UNAVAILABLE,
+      };
+    }
+    // Tap accepts an unknown `merchant.id` and books the charge to OUR authenticated
+    // account, so the page is only handed out once Tap says it is ZiyaraTech's. The
+    // orphaned INITIATED charge is not linked or returned; Tap expires it by itself.
+    const misrouted = this.misroutedCharge(charge);
+    if (misrouted) {
+      return {
+        status: 'failed',
+        failureCode: misrouted,
+        failureReason: 'Online payment is not available right now',
       };
     }
     const mapped = mapChargeStatus(charge.status);
@@ -200,6 +220,16 @@ export class TapSubscriptionProvider implements PaymentProvider {
     const echoed = [charge.reference?.transaction, charge.metadata?.udf1].find(
       isUuid,
     );
+    if (status === 'paid' && isInvoice && this.misroutedCharge(charge)) {
+      // Captured, but not on ZiyaraTech's merchant: never booked as subscription
+      // revenue. `pending` keeps the invoice OPEN and the claim held (an operator
+      // resolves it from the ALERT), exactly like a CAPTURED charge with no amount.
+      return {
+        status: 'pending',
+        chargeId: charge.id ?? chargeId,
+        invoiceId: echoed,
+      };
+    }
     return {
       status:
         status === 'paid' && this.amountOf(charge) === undefined
@@ -297,8 +327,25 @@ export class TapSubscriptionProvider implements PaymentProvider {
       };
     }
     const mapped = mapChargeStatus(charge.status);
+    if (mapped !== 'failed' && this.misroutedCharge(charge)) {
+      // Never "paid", and never "failed" either (a decline would re-charge on the
+      // retry schedule): the claim is held with the charge id until an operator
+      // resolves the ALERT.
+      return {
+        success: false,
+        status: 'pending',
+        reference: charge.id,
+        failureReason: MSG_UNAVAILABLE,
+      };
+    }
     if (mapped === 'paid') {
-      return { success: true, status: 'paid', reference: charge.id };
+      return {
+        success: true,
+        status: 'paid',
+        reference: charge.id,
+        capturedMinorUnits: this.amountOf(charge),
+        capturedCurrency: charge.currency,
+      };
     }
     if (mapped === 'failed') {
       return {
@@ -339,6 +386,9 @@ export class TapSubscriptionProvider implements PaymentProvider {
 
     const charge = res.json;
     const status = mapChargeStatus(charge.status);
+    if (status === 'paid' && this.misroutedCharge(charge)) {
+      return { status: 'pending', reference: charge.id ?? reference };
+    }
     return {
       status,
       reference: charge.id ?? reference,
@@ -351,6 +401,31 @@ export class TapSubscriptionProvider implements PaymentProvider {
       savedPaymentMethod:
         status === 'paid' ? this.savedMethodOf(charge) : undefined,
     };
+  }
+
+  /**
+   * The live charge Tap holds for one invoice, found by `reference.transaction` (our
+   * invoice id) — for a renewal whose charge was created but whose id never made it
+   * back. `not_found` only when Tap ANSWERED with no live charge for it; a refusal,
+   * an outage or an ambiguous answer is `unknown`. Charges of other kinds that merely
+   * share the reference (a booking payment, a refund) are ignored.
+   */
+  async findCharge(invoiceId: string): Promise<FindChargeResult> {
+    const res = await this.client.listCharges({
+      reference: { transaction: [invoiceId] },
+      limit: 10,
+    });
+    if (!res.ok) return { status: 'unknown' };
+    const live = (res.json?.charges ?? []).filter(
+      (c) =>
+        c?.id &&
+        c.reference?.transaction === invoiceId &&
+        c.metadata?.udf2 === TAP_INVOICE_MARKER &&
+        mapChargeStatus(c.status) !== 'failed',
+    );
+    if (live.length === 0) return { status: 'not_found' };
+    if (live.length > 1) return { status: 'unknown' };
+    return { status: 'found', reference: live[0].id };
   }
 
   /**
@@ -532,6 +607,23 @@ export class TapSubscriptionProvider implements PaymentProvider {
     if (this.config.tapMerchantId) {
       body.merchant = { id: this.config.tapMerchantId };
     }
+  }
+
+  /**
+   * A failure code when Tap does not say the charge belongs to ZiyaraTech's own
+   * merchant (and an ALERT is logged), otherwise `undefined`. Platform revenue must
+   * never be booked on, or settle to, any other account.
+   */
+  private misroutedCharge(charge: TapCharge): string | undefined {
+    const routing = subscriptionChargeRouting(
+      charge,
+      this.config.tapMerchantId,
+    );
+    if (routing === 'ok') return undefined;
+    this.logger.error(subscriptionMisroutedLogLine(charge.id, routing));
+    return routing === 'misrouted'
+      ? 'TAP_SUB_MISROUTED'
+      : 'TAP_SUB_ROUTING_UNVERIFIED';
   }
 
   private amountOf(charge: TapCharge): number | undefined {

@@ -289,6 +289,8 @@ export type SubscriptionsRenewalCheckJob = BaseJobData;
 /** T082 (spec 014, US5) — `subscriptions.renewalBill`, same queue, already
  *  scheduled by T024; no distinct payload of its own. */
 export type SubscriptionsRenewalBillJob = BaseJobData;
+/** `subscriptions.pendingPaymentExpiry`, same queue; no payload of its own. */
+export type SubscriptionsPendingPaymentExpiryJob = BaseJobData;
 
 // ── Workflow engine ─────────────────────────────────────────────────────────
 /** Kick off a workflow run: fan the run's actions out into delayed action jobs. */

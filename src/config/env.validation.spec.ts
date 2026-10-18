@@ -659,6 +659,61 @@ describe('env.validation', () => {
       });
     });
 
+    describe('a LIVE Tap key outside production (warn, never fail)', () => {
+      let warn: jest.SpyInstance;
+      beforeEach(() => {
+        warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      });
+      afterEach(() => warn.mockRestore());
+
+      const LIVE = 'sk_live_NotARealSecretValue0000';
+
+      it('warns in development, naming the variable and never the value — and still boots', () => {
+        expect(() =>
+          validate({ ...base, NODE_ENV: 'development', TAP_LIVE_SECRET_KEY: LIVE }),
+        ).not.toThrow();
+        expect(warn).toHaveBeenCalledTimes(1);
+        const msg = String(warn.mock.calls[0][0]);
+        expect(msg).toContain('TAP_LIVE_SECRET_KEY');
+        expect(msg).not.toContain(LIVE);
+      });
+
+      it('is silent in production (live keys belong there) and under test', () => {
+        validate({
+          ...prodBase,
+          CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+          PAYMENT_PROVIDER: 'tap',
+          TAP_ENV: 'live',
+          TAP_LIVE_SECRET_KEY: LIVE,
+        });
+        validate({ ...base, NODE_ENV: 'test', TAP_LIVE_SECRET_KEY: LIVE });
+        expect(warn).not.toHaveBeenCalled();
+      });
+
+      it('is silent when no live key is set (a test key alone is fine in development)', () => {
+        validate({
+          ...base,
+          NODE_ENV: 'development',
+          TAP_TEST_SECRET_KEY: 'sk_test_NotARealSecretValue0000',
+        });
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('SUBSCRIPTION_PENDING_PAYMENT_TTL_DAYS', () => {
+      it('defaults to 7 days', () => {
+        expect(validate({ ...base }).SUBSCRIPTION_PENDING_PAYMENT_TTL_DAYS).toBe(7);
+      });
+
+      it('accepts 0 (sweep off) up to a year, and rejects a fraction, a negative, or more', () => {
+        expect(validate({ ...base, SUBSCRIPTION_PENDING_PAYMENT_TTL_DAYS: '0' }).SUBSCRIPTION_PENDING_PAYMENT_TTL_DAYS).toBe(0);
+        expect(validate({ ...base, SUBSCRIPTION_PENDING_PAYMENT_TTL_DAYS: '365' }).SUBSCRIPTION_PENDING_PAYMENT_TTL_DAYS).toBe(365);
+        for (const bad of ['1.5', '-1', '366', 'soon']) {
+          expect(() => validate({ ...base, SUBSCRIPTION_PENDING_PAYMENT_TTL_DAYS: bad })).toThrow(/Env validation error/);
+        }
+      });
+    });
+
     describe('Tap schema', () => {
       it('accepts sandbox | live (or unset) for TAP_ENV and rejects anything else', () => {
         expect(validate({ ...base, TAP_ENV: 'live' }).TAP_ENV).toBe('live');

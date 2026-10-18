@@ -43,6 +43,7 @@ describe('SubscriptionService', () => {
     generateInvoice: jest.Mock;
     findOpenInvoice: jest.Mock;
     voidOpenInvoices: jest.Mock;
+    voidSupersededOpenInvoices: jest.Mock;
     isPaymentInFlight: jest.Mock;
   };
   let access: { assertUsable: jest.Mock; invalidate: jest.Mock };
@@ -93,6 +94,7 @@ describe('SubscriptionService', () => {
       generateInvoice: jest.fn().mockResolvedValue({ id: 'inv-new' }),
       findOpenInvoice: jest.fn().mockResolvedValue(null),
       voidOpenInvoices: jest.fn().mockResolvedValue(0),
+      voidSupersededOpenInvoices: jest.fn().mockResolvedValue(0),
       isPaymentInFlight: jest.fn().mockReturnValue(false),
     };
     access = {
@@ -601,6 +603,13 @@ describe('SubscriptionService', () => {
       expect(sub.auto_renew).toBe(false);
       expect(sub.pending_plan).toBeNull();
       expect(billing.voidOpenInvoices).not.toHaveBeenCalled();
+      // …but its idle unpaid invoices (an open renewal, say) are voided — never one
+      // somebody is paying right now (the 'all' scope still applies the in-flight rule).
+      expect(billing.voidSupersededOpenInvoices).toHaveBeenCalledWith(
+        'sub1',
+        expect.stringContaining('cancelled'),
+        'all',
+      );
       expect(emitted(SubscriptionCancelledEvent)[0][1]).toMatchObject({
         cancelAtPeriodEnd: false,
       });
@@ -611,6 +620,8 @@ describe('SubscriptionService', () => {
       await service.cancel(TENANT, { cancelAtPeriodEnd: true } as any);
       expect(sub.status).toBe(SubscriptionStatus.ACTIVE);
       expect(sub.auto_renew).toBe(false);
+      // The subscription keeps running to ends_at: nothing to void yet.
+      expect(billing.voidSupersededOpenInvoices).not.toHaveBeenCalled();
     });
 
     it('a PENDING_PAYMENT subscription is cancelled at once even at period end — and its unpaid invoice is voided', async () => {

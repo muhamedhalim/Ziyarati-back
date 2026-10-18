@@ -47,6 +47,12 @@ export interface SettleEvidence {
   /** Captured amount in the domain's cents (×100) — checked against the invoice. */
   capturedMinorUnits?: number;
   capturedCurrency?: string;
+  /**
+   * TRUE for a real money gateway: the captured amount AND currency must then be
+   * reported and match the invoice — a missing figure is itself a mismatch (fail
+   * closed), never a reason to skip the check.
+   */
+  amountRequired?: boolean;
   /** The card this payment saved (hosted checkout with save-card). */
   savedPaymentMethod?: SavedPaymentMethodInfo;
   /** The saved card that was CHARGED (merchant-initiated renewal). */
@@ -212,7 +218,7 @@ export class InvoiceSettlementService {
     const mismatch = this.amountMismatch(inv, evidence);
     if (mismatch) {
       this.logger.error(
-        `Invoice ${inv.id}: ${evidence.provider} captured ${mismatch} — NOT booked, left for manual review`,
+        `ALERT: invoice ${inv.id}: ${evidence.provider} captured ${mismatch} — NOT booked, left for manual review`,
       );
       return {
         result: {
@@ -282,6 +288,11 @@ export class InvoiceSettlementService {
     inv: SubscriptionInvoice,
     evidence: SettleEvidence,
   ): string | null {
+    if (evidence.amountRequired) {
+      if (evidence.capturedMinorUnits == null)
+        return 'no captured amount reported';
+      if (!evidence.capturedCurrency) return 'no captured currency reported';
+    }
     if (evidence.capturedMinorUnits != null) {
       const expected = Math.round(Number(inv.amount) * 100);
       if (evidence.capturedMinorUnits !== expected) {

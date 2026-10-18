@@ -359,6 +359,59 @@ describe('InvoiceSettlementService', () => {
       expect(res.outcome).toBe('settled');
     });
 
+    describe('amountRequired (a real gateway) fails closed', () => {
+      it.each([
+        ['no captured amount', { capturedMinorUnits: undefined }],
+        ['no captured currency', { capturedCurrency: undefined }],
+        [
+          'neither',
+          { capturedMinorUnits: undefined, capturedCurrency: undefined },
+        ],
+      ])('%s: NOT booked, with an ALERT', async (_l, over) => {
+        const inv = invoice();
+        arrange(inv, subscription());
+        const err = jest
+          .spyOn((service as any).logger, 'error')
+          .mockImplementation(() => undefined);
+
+        const res = await service.settleInvoicePaid(
+          'inv-1',
+          evidence({ amountRequired: true, ...over }),
+        );
+
+        expect(res).toMatchObject({
+          outcome: 'rejected',
+          reason: 'amount_mismatch',
+        });
+        expect(inv.status).toBe(InvoiceStatus.OPEN);
+        expect(invoiceRepo.save).not.toHaveBeenCalled();
+        expect(subRepo.save).not.toHaveBeenCalled();
+        expect(err).toHaveBeenCalledWith(
+          expect.stringMatching(
+            /^ALERT: invoice inv-1: tap captured no captured/,
+          ),
+        );
+      });
+
+      it('a complete, matching capture is booked as before', async () => {
+        arrange(invoice(), subscription());
+        const res = await service.settleInvoicePaid(
+          'inv-1',
+          evidence({ amountRequired: true }),
+        );
+        expect(res.outcome).toBe('settled');
+      });
+
+      it('a wrong amount is still refused when required', async () => {
+        arrange(invoice(), subscription());
+        const res = await service.settleInvoicePaid(
+          'inv-1',
+          evidence({ amountRequired: true, capturedMinorUnits: 1 }),
+        );
+        expect(res.reason).toBe('amount_mismatch');
+      });
+    });
+
     it.each([InvoiceStatus.DRAFT, InvoiceStatus.UNCOLLECTIBLE])(
       'a %s invoice is still payable',
       async (status) => {

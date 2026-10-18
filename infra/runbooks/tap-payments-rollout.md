@@ -4,6 +4,8 @@ Companion to `specs/017-tap-payments/phase-8-production-rollout.md` (the evidenc
 
 **State when written (2026-10-04):** the code for Phases 1–7 is merged on `master`; **nothing is switched on anywhere**. Production runs on Railway today (the AWS target in `infra/` is not applied); the frontend is on Vercel. `PAYMENT_PROVIDER` is unset, and no Tap secret exists in any hosted environment.
 
+> **Stale since 2026-10-18 — verify before acting.** The infrastructure audit notes (`infra/docs/DATA-RESIDENCY.md`, `INFRASTRUCTURE-AUDITS.md`) record a running ECS task definition (`zt-production-api:16`) with `PAYMENT_PROVIDER=tap` and `TAP_ENV=live`, and `environments/production/terraform.tfvars` sets both, while `TAP_MERCHANT_ID` and the live key are still commented out. Read the **actual** environment of the running api and worker tasks (names only) and run the preflight (§4) before trusting the paragraph above. With `PAYMENT_PROVIDER=tap` and no merchant id, subscription checkout is simply not offered and paid plans are refused in production — safe, but visible.
+
 ---
 
 ## 1. Principles
@@ -28,10 +30,13 @@ Set every `TAP_*` variable on **both** the API and the worker service — the wo
 | `TAP_RECURRING_ENABLED`, `TAP_BOOKING_PAYMENTS_ENABLED` | no | service variable (default `false`) | `app_environment` (declared `"false"`) |
 | `TAP_MERCHANT_ID` (dashboard "Merchant ID") | no | service variable | `app_environment` (commented line to enable) |
 | `TAP_LIVE_SECRET_KEY` (production) / `TAP_TEST_SECRET_KEY` (sandbox) | **yes** | secret variable | key in the `zt/<env>/app` JSON secret **and** in `app_secret_keys` (commented line to enable) |
+| `SUBSCRIPTION_PENDING_PAYMENT_TTL_DAYS` (default `7`, `0` = off) | no | service variable | `app_environment` (optional) — days before a never-paid `PENDING_PAYMENT` subscription is cancelled by the daily 02:30 UTC sweep |
 | `TAP_PLATFORM_ID` | no | service variable — only for §5 step 9 | `app_environment` — only for step 9 |
 | `TAP_SEGMENT_SECRET_KEY` | **yes** | only if Tap issues a separate one | same as the key |
 
-Rules that are enforced at boot (`src/config/env.validation.ts`, covered by tests): with `NODE_ENV=production` and `PAYMENT_PROVIDER=tap` the service refuses to start unless `TAP_ENV`, `TAP_MERCHANT_ID`, the **active** key and an https, non-localhost `TAP_WEBHOOK_URL` are set; a `sk_live_` key in the test slot (or the reverse) is refused; `TAP_BOOKING_PAYMENTS_ENABLED=true` needs `TAP_PLATFORM_ID`.
+Rules that are enforced at boot (`src/config/env.validation.ts`, covered by tests): a value that IS present is checked — a `sk_live_` key in the test slot (or the reverse) is refused, a production `TAP_WEBHOOK_URL` must be https and not localhost, and `TAP_BOOKING_PAYMENTS_ENABLED=true` needs `TAP_PLATFORM_ID`. **A value that is ABSENT does not stop the boot** (deliberate: an absent Tap variable must never take the whole app down). Tap calls then fail at call time (`no secret key for TAP_ENV`, alarm P-03), and the preflight (§4) is the gate that turns a missing `TAP_ENV`, `TAP_MERCHANT_ID`, active key or webhook URL into a failure.
+
+`TAP_MERCHANT_ID` is ZiyaraTech's **own** merchant id. Every subscription charge is sent with it and is only booked when Tap echoes the same id back (otherwise the charge is held and an `ALERT:` line is logged, P-01) — so it is required for subscription payments, not optional. The `TAP_*_PUBLIC_KEY`, `TAP_DOMAIN_*` and `TAP_BUNDLE_*` names that may exist in a developer `.env` are **not read by any code** (hosted checkout needs no public key); do not deploy them.
 
 Production carries **only** the live key; staging only the test key. Never put both in one environment.
 
@@ -153,14 +158,14 @@ AWS: created by `infra/terraform/modules/monitoring` (log metric filters + alarm
 
 | Alarm | Fires when | Means | First action |
 |---|---|---|---|
-| P-01 `critical-payments-alert` | any `ALERT:` line in 15 min | a money-state exception: duplicate capture, a reconciliation exception, an exhausted `payments.outcome` job, a stuck refund, a charge captured on a void invoice | open `/platform/finance/reconciliation`; §8 queries 6–9 |
+| P-01 `critical-payments-alert` | any `ALERT:` line in 15 min | a money-state exception: duplicate capture, a reconciliation exception, an exhausted `payments.outcome` job, a stuck refund, a charge captured on a void invoice, **a subscription charge not routed to the ZiyaraTech merchant** (`subscription charge … was NOT routed to the ZiyaraTech merchant`), **a capture whose amount/currency is missing or wrong** (`invoice …: tap captured …`), **a subscription charge unresolved for over 24 h** (`unresolved provider charge for over 24 hours`) | open `/platform/finance/reconciliation`; §8 queries 6–9 |
 | P-02 `critical-tap-misrouted-charge` | any `was NOT routed to the clinic merchant` | Tap put a clinic charge on our own account, or named no merchant — refused, no link issued | check the clinic's merchant id and the platform routing; do **not** re-enable until understood |
 | P-03 `critical-tap-not-configured` | any `no secret key for TAP_ENV` | a Tap call was skipped: no key for the active `TAP_ENV` | run the preflight; fix the secret |
 | P-04 `warning-tap-webhooks-rejected` | ≥ 3 `Rejected Tap webhook` / 15 min | bad signature: secret mismatch after a rotation, or probing | compare the key on API and worker; payments still settle via return verify + the 10-minute sweep |
 | P-05 `warning-tap-webhook-refetch-failed` | ≥ 3 `could not be re-fetched` / 15 min | correctly signed deliveries for charges Tap will not show us: wrong environment/account, or a clinic charge our platform key cannot read | check `TAP_ENV` and the merchant; for clinics see `provider_reports_status` |
 | P-06 `warning` / `critical-tap-api-unavailable` | > 5 / > 30 calls per 5 min for 10 min | Tap unreachable or timing out (outcomes stay `unknown`, never `failed`) | Tap status page; NAT egress |
 
-Not covered by an alarm (no log line to key on): the daily reconciliation job not running. Check it each morning (below).
+Not covered by an alarm (no log line to key on): the daily reconciliation job not running, and the daily `subscriptions.pendingPaymentExpiry` sweep (02:30 UTC; heartbeat `subscriptions.pendingPaymentExpiry`, log `pendingPaymentExpiry: scanned=… cancelled=…`). Check them each morning (below).
 
 **Daily for the first 14 days (10 minutes):**
 1. `/platform/finance/reconciliation?status=OPEN` is empty or understood; resolve/ignore each row with a note.

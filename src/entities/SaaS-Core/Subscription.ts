@@ -15,6 +15,12 @@ import { SubscriptionStatus } from '../enums';
 
 @Entity('subscriptions')
 @Index(['tenant'])
+// At most one LIVE subscription per tenant — the rule SubscriptionService.create applies,
+// now enforced by the database (migration SubscriptionBillingIntegrityIndexes).
+@Index('UQ_subscriptions_live_per_tenant', ['tenant'], {
+  unique: true,
+  where: `"deleted_at" IS NULL AND "status" <> 'CANCELLED'`,
+})
 export class Subscription {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

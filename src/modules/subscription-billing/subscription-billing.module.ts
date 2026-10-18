@@ -22,6 +22,7 @@ import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 import { SubscriptionService } from './subscription.service';
 import { BillingService } from './billing.service';
 import { RenewalService } from './renewal.service';
+import { PendingPaymentExpiryService } from './pending-payment-expiry.service';
 import { InvoiceSettlementService } from './invoice-settlement.service';
 import { SubscriptionInvoiceRefundService } from './subscription-invoice-refund.service';
 import { SubscriptionCheckoutService } from './subscription-checkout.service';
@@ -138,6 +139,7 @@ export function resolveSubscriptionPaymentProvider(
     PaymentMethodService,
     TapSubscriptionProvider,
     RenewalService,
+    PendingPaymentExpiryService,
     UsageService,
     TenantUsageLimitOverrideService,
     FeatureFlagService,
@@ -188,6 +190,8 @@ export function resolveSubscriptionPaymentProvider(
     // T082 (spec 014, US5) — SubscriptionsProcessor (worker.module.ts)
     // invokes the renewal cycle from the `subscriptions.renewalBill` job.
     RenewalService,
+    // The daily sweep that cancels never-paid subscriptions (worker's subscriptions queue).
+    PendingPaymentExpiryService,
     // T084 (spec 014, US5) — PaymentReconciliationService (payments module)
     // verifies a stuck subscription-invoice claim through the SAME provider
     // binding BillingService uses, never a second one.

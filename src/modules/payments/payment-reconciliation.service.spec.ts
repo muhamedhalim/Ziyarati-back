@@ -506,7 +506,132 @@ describe('PaymentReconciliationService (webhook-loss recovery)', () => {
       const summary = await service.reconcileStaleSubscriptionInvoices();
       expect(summary.stillClaimed).toBe(1);
     });
-  });
+
+    describe('a provider that can look a charge up by the invoice reference (Tap)', () => {
+      let findCharge: jest.Mock;
+      beforeEach(() => {
+        findCharge = jest.fn();
+        (subscriptionProvider as any).findCharge = findCharge;
+      });
+
+      it('ADOPTS a charge it never named: stores the id, then verifies and settles by it', async () => {
+        invoices.find.mockResolvedValueOnce([staleClaimedInvoice()]);
+        findCharge.mockResolvedValueOnce({
+          status: 'found',
+          reference: 'chg_lost_1',
+        });
+        subscriptionProvider.verifyCharge.mockResolvedValueOnce({
+          status: 'paid',
+          reference: 'chg_lost_1',
+          capturedMinorUnits: 10000,
+          capturedCurrency: 'SAR',
+        });
+
+        const summary = await service.reconcileStaleSubscriptionInvoices();
+
+        expect(findCharge).toHaveBeenCalledWith('inv-1');
+        expect(invoices.update).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 'inv-1' }),
+          { checkout_charge_id: 'chg_lost_1' },
+        );
+        expect(subscriptionProvider.verifyCharge).toHaveBeenCalledWith(
+          'inv-1',
+          'chg_lost_1',
+        );
+        expect(summary.settled).toBe(1);
+      });
+
+      it('RELEASES the claim only when the provider CONFIRMS no live charge exists', async () => {
+        invoices.find.mockResolvedValueOnce([staleClaimedInvoice()]);
+        findCharge.mockResolvedValueOnce({ status: 'not_found' });
+        const locked = staleClaimedInvoice();
+        invoiceRepo().findOne.mockResolvedValueOnce(locked);
+
+        const summary = await service.reconcileStaleSubscriptionInvoices();
+
+        expect(locked.charge_started_at).toBeNull();
+        expect(summary.released).toBe(1);
+        expect(settlement.settleInvoicePaid).not.toHaveBeenCalled();
+      });
+
+      it('KEEPS the claim when the lookup cannot say (outage, refusal, several live charges) — silence is never "nothing was charged"', async () => {
+        invoices.find.mockResolvedValueOnce([staleClaimedInvoice()]);
+        findCharge.mockResolvedValueOnce({ status: 'unknown' });
+        const locked = staleClaimedInvoice();
+        invoiceRepo().findOne.mockResolvedValueOnce(locked);
+
+        const summary = await service.reconcileStaleSubscriptionInvoices();
+
+        expect(locked.charge_started_at).not.toBeNull();
+        expect(invoiceRepo().save).not.toHaveBeenCalled();
+        expect(summary.stillClaimed).toBe(1);
+        expect(summary.released).toBe(0);
+      });
+
+      it('KEEPS the claim when the charge id is KNOWN but Tap cannot be asked — the charge may still capture', async () => {
+        const known = {
+          ...staleClaimedInvoice(),
+          checkout_charge_id: 'chg_known_1',
+        };
+        invoices.find.mockResolvedValueOnce([known]);
+        subscriptionProvider.verifyCharge.mockResolvedValueOnce({
+          status: 'unknown',
+        });
+        const locked = { ...known };
+        invoiceRepo().findOne.mockResolvedValueOnce(locked);
+
+        const summary = await service.reconcileStaleSubscriptionInvoices();
+
+        expect(findCharge).not.toHaveBeenCalled(); // an id is on file: no lookup needed
+        expect(locked.charge_started_at).not.toBeNull();
+        expect(summary.stillClaimed).toBe(1);
+        expect(summary.released).toBe(0);
+      });
+
+      it('shouts (ALERT) once an unresolved charge is over 24 hours old, and still holds the claim', async () => {
+        const old = {
+          ...staleClaimedInvoice(),
+          checkout_charge_id: 'chg_known_1',
+          charge_started_at: new Date(Date.now() - 25 * 60 * 60_000),
+        };
+        invoices.find.mockResolvedValueOnce([old]);
+        subscriptionProvider.verifyCharge.mockResolvedValueOnce({
+          status: 'unknown',
+        });
+        invoiceRepo().findOne.mockResolvedValueOnce({ ...old });
+        const err = jest
+          .spyOn((service as any).logger, 'error')
+          .mockImplementation(() => undefined);
+
+        const summary = await service.reconcileStaleSubscriptionInvoices();
+
+        expect(summary.stillClaimed).toBe(1);
+        expect(err).toHaveBeenCalledWith(
+          expect.stringMatching(
+            /^ALERT: subscription invoice inv-1 .*over 24 hours/,
+          ),
+        );
+      });
+
+      it('a FAILED charge still releases the claim (the provider said so definitively)', async () => {
+        const known = {
+          ...staleClaimedInvoice(),
+          checkout_charge_id: 'chg_known_1',
+        };
+        invoices.find.mockResolvedValueOnce([known]);
+        subscriptionProvider.verifyCharge.mockResolvedValueOnce({
+          status: 'failed',
+          failureReason: 'declined',
+        });
+        const locked = { ...known };
+        invoiceRepo().findOne.mockResolvedValueOnce(locked);
+
+        const summary = await service.reconcileStaleSubscriptionInvoices();
+
+        expect(locked.charge_started_at).toBeNull();
+        expect(summary.released).toBe(1);
+      });
+    });  });
 
   // REL-005 — the sweep that recovers a lost webhook runs in the WORKER, where the
   // in-process event reaches only the listeners that process happens to load. The

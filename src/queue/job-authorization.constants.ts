@@ -198,6 +198,7 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
   // no per-invocation tenant identity — billing itself is not feature-gated
   // (FeatureKey.BILLING is `alwaysOn`).
   [JOB.SUBSCRIPTIONS_RENEWAL_BILL]: SYSTEM,
+  [JOB.SUBSCRIPTIONS_PENDING_PAYMENT_EXPIRY]: SYSTEM,
   [JOB.ANALYTICS_EXPORT_GENERATE]: {
     tier: 'tenant',
     featureKey: FeatureKey.ANALYTICS,

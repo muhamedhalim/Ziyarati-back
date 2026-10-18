@@ -267,7 +267,7 @@ locals {
       "critical-payments-alert" = {
         ns   = "ZiyaraTech/${var.environment}", metric = "PaymentsAlerts", stat = "Sum", dims = {}
         op   = "GreaterThanOrEqualToThreshold", threshold = 1, period = 900, evals = 1, missing = "notBreaching"
-        desc = "P-01: a money-state ALERT line (duplicate capture, reconciliation exception, exhausted payments.outcome, stuck refund, charge captured on a void invoice) — a person must look today"
+        desc = "P-01: a money-state ALERT line (duplicate capture, reconciliation exception, exhausted payments.outcome, stuck refund, charge captured on a void invoice, subscription charge not routed to the ZiyaraTech merchant, captured amount missing or wrong, subscription charge unresolved for over 24 hours) — a person must look today"
       }
       "critical-tap-misrouted-charge" = {
         ns   = "ZiyaraTech/${var.environment}", metric = "TapMisroutedCharges", stat = "Sum", dims = {}

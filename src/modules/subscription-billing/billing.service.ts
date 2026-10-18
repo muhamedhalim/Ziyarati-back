@@ -11,9 +11,14 @@ import {
   Repository,
 } from 'typeorm';
 
+import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
-import { InvoiceStatus, SubscriptionInvoiceKind } from '../../entities/enums';
+import {
+  InvoiceStatus,
+  SubscriptionInvoiceKind,
+  SubscriptionStatus,
+} from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 import {
   FAILURE_CLASS_TOKENIZATION_UNAVAILABLE,
@@ -26,6 +31,7 @@ import {
   type SettleEvidence,
 } from './invoice-settlement.service';
 import { PaymentMethodService } from './payment-method.service';
+import { chargeClaimBlocks, chargeClaimFree } from './charge-claim';
 
 /** Optional fields a caller sets when it issues an invoice (all NULL on a legacy invoice). */
 export interface GenerateInvoiceExtra {
@@ -50,6 +56,8 @@ export class BillingService {
     private readonly invoices: Repository<SubscriptionInvoice>,
     @InjectRepository(Tenant)
     private readonly tenants: Repository<Tenant>,
+    @InjectRepository(Subscription)
+    private readonly subscriptions: Repository<Subscription>,
     @Inject(PAYMENT_PROVIDER)
     private readonly payment: PaymentProvider,
     private readonly dataSource: DataSource,
@@ -143,12 +151,17 @@ export class BillingService {
    * right now (no fresh charge claim, no open checkout). They would otherwise
    * hold the subscription's single OPEN-invoice slot and block the renewal
    * invoice from ever being issued.
+   *
+   * `scope: 'all'` drops the kind filter: an immediate cancellation leaves no use for
+   * ANY unpaid invoice, but the same "nobody is paying it" rule still holds.
    */
   async voidSupersededOpenInvoices(
     subscriptionId: string,
     reason: string,
+    scope: 'superseded' | 'all' = 'superseded',
   ): Promise<number> {
     const now = Date.now();
+    const claimFree = chargeClaimFree(now);
     const res = await this.invoices
       .createQueryBuilder()
       .update(SubscriptionInvoice)
@@ -159,13 +172,12 @@ export class BillingService {
       })
       .where('subscription_id = :subscriptionId', { subscriptionId })
       .andWhere('status = :open', { open: InvoiceStatus.OPEN })
-      .andWhere('(kind IS NULL OR kind = :upgrade)', {
-        upgrade: SubscriptionInvoiceKind.UPGRADE,
-      })
       .andWhere(
-        '(charge_started_at IS NULL OR charge_started_at < :chargeStale)',
-        { chargeStale: new Date(now - BillingService.CHARGE_CLAIM_STALE_MS) },
+        scope === 'all' ? '1 = 1' : '(kind IS NULL OR kind = :upgrade)',
+        { upgrade: SubscriptionInvoiceKind.UPGRADE },
       )
+      // Not while a charge is live OR unresolved: voiding under it would orphan money.
+      .andWhere(claimFree.sql, claimFree.params)
       .andWhere(
         '(checkout_started_at IS NULL OR checkout_started_at < :checkoutStale)',
         {
@@ -196,11 +208,9 @@ export class BillingService {
       !!invoice.checkout_started_at &&
       now - invoice.checkout_started_at.getTime() <
         this.payment.checkoutWindowMinutes * 60_000;
-    const claimed =
-      !!invoice.charge_started_at &&
-      now - invoice.charge_started_at.getTime() <
-        BillingService.CHARGE_CLAIM_STALE_MS;
-    return checkoutOpen || claimed;
+    // Includes an UNRESOLVED charge (id known, or too old to retry): it may still
+    // capture, so nothing may re-quote or void the invoice under it.
+    return checkoutOpen || chargeClaimBlocks(invoice, now);
   }
 
   /** Settles an invoice from a proof of payment. See {@link InvoiceSettlementService}. */
@@ -240,9 +250,6 @@ export class BillingService {
     return invoice;
   }
 
-  /** A stale charge claim (crashed attempt) may be re-claimed after this window. */
-  private static readonly CHARGE_CLAIM_STALE_MS = 10 * 60_000;
-
   /**
    * Settles an open invoice via the payment abstraction. Double-charge safe at
    * the DATABASE level: an atomic claim on `charge_started_at` means one
@@ -257,22 +264,25 @@ export class BillingService {
    * subscription; a decline / still-pending outcome is finalized here under a row
    * lock (idempotent: an invoice already PAID is returned as-is).
    *
-   * `pending` (the provider accepted the charge but cannot say yet): with a
-   * provider charge id the claim is KEPT and the invoice stays OPEN — the webhook
-   * or the reconciliation sweep settles it; without one the claim is released
-   * (there is nothing to verify, and the retry reuses the same idempotency key).
+   * `pending` (the provider accepted the charge but cannot say yet): the claim is
+   * KEPT and the invoice stays OPEN — the webhook or the reconciliation sweep
+   * settles it. Without a provider charge id the sweep finds the charge by the
+   * invoice reference; a retry under the same idempotency key is only allowed
+   * while the provider's 24h guarantee holds (`charge-claim.ts`).
    */
   async payInvoice(tenantId: string, id: string): Promise<SubscriptionInvoice> {
     // ── Phase 1: atomic claim (UPDATE … WHERE claim free/stale, no fresh checkout) ──
     const now = Date.now();
-    const staleBefore = new Date(now - BillingService.CHARGE_CLAIM_STALE_MS);
+    const claimFree = chargeClaimFree(now);
     const checkoutStaleBefore = new Date(
       now - this.payment.checkoutWindowMinutes * 60_000,
     );
     const claim = await this.invoices
       .createQueryBuilder()
       .update(SubscriptionInvoice)
-      .set({ charge_started_at: new Date() })
+      // The claim owns the slot: a hosted-checkout id left by a dead checkout is
+      // cleared, so a charge id present with a claim is always THIS claim's charge.
+      .set({ charge_started_at: new Date(), checkout_charge_id: null })
       .where('id = :id AND tenant_id = :tenantId', { id, tenantId })
       .andWhere('status IN (:...payable)', {
         payable: [
@@ -281,12 +291,7 @@ export class BillingService {
           InvoiceStatus.UNCOLLECTIBLE,
         ],
       })
-      .andWhere(
-        '(charge_started_at IS NULL OR charge_started_at < :staleBefore)',
-        {
-          staleBefore,
-        },
-      )
+      .andWhere(claimFree.sql, claimFree.params)
       .andWhere(
         '(checkout_started_at IS NULL OR checkout_started_at < :checkoutStaleBefore)',
         { checkoutStaleBefore },
@@ -319,6 +324,23 @@ export class BillingService {
 
     const invoice = await this.getInvoice(tenantId, id);
 
+    // Never take money the subscription cannot use: a charge on a cancelled /
+    // suspended / deleted subscription would be captured and then land as
+    // `settled_unapplied`. The claim is handed back untouched — nothing was sent.
+    const sub = await this.subscriptions.findOne({
+      where: { id: invoice.subscription_id },
+    });
+    if (
+      !sub ||
+      sub.status === SubscriptionStatus.CANCELLED ||
+      sub.status === SubscriptionStatus.SUSPENDED
+    ) {
+      await this.invoices.update({ id }, { charge_started_at: null });
+      throw new AppError(ErrorCode.CONFLICT, {
+        message: 'This subscription cannot be paid in its current state',
+      });
+    }
+
     // ── Phase 2: provider charge OUTSIDE any tx/lock ──
     // Charges in the invoice's OWN currency (T079: snapshotted at issue
     // time from the platform's billing default) — never a caller-supplied
@@ -347,12 +369,23 @@ export class BillingService {
         source: 'charge',
         provider: this.payment.name,
         reference: result.reference ?? `${this.payment.name}:${invoice.id}`,
+        capturedMinorUnits: result.capturedMinorUnits,
+        capturedCurrency: result.capturedCurrency,
+        amountRequired: this.payment.supportsCheckout,
         paymentMethodId: method?.id,
         savedPaymentMethod: result.savedPaymentMethod,
       });
       if (settled.outcome === 'rejected' || !settled.invoice) {
         // Money moved but the invoice cannot take it (voided under us, amount
-        // mismatch). The settle path already raised the ALERT.
+        // mismatch). The settle path already raised the ALERT. The charge id is
+        // kept on the invoice so the claim stays an UNRESOLVED charge (no second
+        // charge on top of it) and the sweep keeps surfacing it.
+        if (result.reference) {
+          await this.invoices.update(
+            { id },
+            { checkout_charge_id: result.reference },
+          );
+        }
         throw new AppError(ErrorCode.CONFLICT, {
           message: 'Invoice can no longer be paid',
           internalContext: { reason: settled.reason },
@@ -386,12 +419,11 @@ export class BillingService {
       }
 
       if (outcome === 'pending') {
-        if (result.reference) {
-          // Keep the claim: a charge exists and must be verified, not re-created.
-          locked.checkout_charge_id = result.reference;
-        } else {
-          locked.charge_started_at = null; // nothing to verify — free for a retry
-        }
+        // The claim is KEPT either way — a charge may exist and must be resolved,
+        // not re-created. With an id the sweep verifies it; without one it looks the
+        // charge up by the invoice reference (see `chargeClaimBlocks` for how long a
+        // retry under the same idempotency key stays safe).
+        if (result.reference) locked.checkout_charge_id = result.reference;
         const saved = await repo.save(locked);
         return { declined: false as const, invoice: saved };
       }

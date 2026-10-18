@@ -8,6 +8,11 @@ import {
   WebhookResult,
 } from '../payment-webhook.service';
 import { isUuid } from '../payments.constants';
+import { PaymentsConfig } from '../payments.config';
+import {
+  subscriptionChargeRouting,
+  subscriptionMisroutedLogLine,
+} from '../providers/tap/tap-routing';
 import { RefundWebhookService } from '../refund-webhook.service';
 import { TapApiClient } from '../providers/tap/tap-api.client';
 import {
@@ -75,6 +80,7 @@ export class TapWebhookHandler {
     private readonly webhooks: PaymentWebhookService,
     private readonly refunds: RefundWebhookService,
     private readonly logs: WebhookLogService,
+    private readonly config: PaymentsConfig,
   ) {}
 
   async handle(
@@ -315,6 +321,19 @@ export class TapWebhookHandler {
       isUuid,
     );
     const isInvoice = charge.metadata?.udf2 === 'subscription_invoice';
+    if (isInvoice && target === 'paid') {
+      // Subscription revenue is only booked when Tap says the charge belongs to
+      // ZiyaraTech's own merchant (Tap books an unknown merchant.id to the
+      // authenticated account). Otherwise it is held as `pending` for an operator.
+      const routing = subscriptionChargeRouting(
+        charge,
+        this.config.tapMerchantId,
+      );
+      if (routing !== 'ok') {
+        this.logger.error(subscriptionMisroutedLogLine(charge.id, routing));
+        target = 'pending';
+      }
+    }
     const method = charge.source?.payment_method ?? charge.source?.type;
     const status = String(charge.status ?? 'unknown');
 

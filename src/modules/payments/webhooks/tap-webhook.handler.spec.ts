@@ -7,6 +7,7 @@ import type {
 import type { PaymentWebhookService } from '../payment-webhook.service';
 import type { RefundWebhookService } from '../refund-webhook.service';
 import type { WebhookLogService } from '../../platform/webhook-log.service';
+import type { PaymentsConfig } from '../payments.config';
 import { ErrorCode } from '../../../common/errors';
 import type { TapCharge, TapRefund } from '../providers/tap/tap.types';
 
@@ -72,6 +73,7 @@ describe('TapWebhookHandler', () => {
       webhooks as unknown as PaymentWebhookService,
       refundWebhooks as unknown as RefundWebhookService,
       logs as unknown as WebhookLogService,
+      { tapMerchantId: 'merchant_ZT' } as unknown as PaymentsConfig,
     );
   });
 
@@ -252,6 +254,7 @@ describe('TapWebhookHandler', () => {
           charge({
             reference: { transaction: INVOICE_ID },
             metadata: { udf1: INVOICE_ID, udf2: 'subscription_invoice' },
+            merchant: { id: 'merchant_ZT' },
             customer: { id: 'cus_1' },
             card: {
               id: 'card_1',
@@ -324,6 +327,7 @@ describe('TapWebhookHandler', () => {
             charge({
               reference: { transaction: INVOICE_ID },
               metadata: { udf1: INVOICE_ID, udf2: 'subscription_invoice' },
+              merchant: { id: 'merchant_ZT' },
             }),
           ),
         );
@@ -331,6 +335,51 @@ describe('TapWebhookHandler', () => {
         const event = webhooks.process.mock.calls[0][0];
         expect(event.subscriptionInvoiceId).toBe(INVOICE_ID);
         expect(event.correlationId).toBeUndefined();
+        expect(event.target).toBe('paid');
+      });
+
+      describe('subscription revenue must land on the ZiyaraTech merchant', () => {
+        const invoiceCharge = (merchant?: { id: string }) =>
+          charge({
+            reference: { transaction: INVOICE_ID },
+            metadata: { udf1: INVOICE_ID, udf2: 'subscription_invoice' },
+            customer: { id: 'cus_1' },
+            card: { id: 'card_1', brand: 'VISA', last_four: '1019' },
+            payment_agreement: { id: 'pa_1' },
+            ...(merchant ? { merchant } : {}),
+          } as never);
+
+        it.each([
+          ['another merchant', { id: 'merchant_OTHER' }],
+          ['no merchant at all', undefined],
+        ])(
+          'a CAPTURED invoice charge echoed on %s is held as pending (no amount, no saved card) and an ALERT is logged',
+          async (_l, merchant) => {
+            const err = jest
+              .spyOn((handler as any).logger, 'error')
+              .mockImplementation(() => undefined);
+            client.getCharge.mockResolvedValueOnce(ok(invoiceCharge(merchant)));
+            await handler.handle(charge(), 'h');
+            const event = webhooks.process.mock.calls[0][0];
+            expect(event.target).toBe('pending');
+            expect(event.capturedMinorUnits).toBeUndefined();
+            expect(event.savedPaymentMethod).toBeUndefined();
+            expect(event.subscriptionInvoiceId).toBe(INVOICE_ID);
+            expect(err).toHaveBeenCalledWith(
+              expect.stringMatching(
+                /^ALERT: subscription charge chg_1 was NOT routed/,
+              ),
+            );
+          },
+        );
+
+        it('a booking payment is NOT subject to the subscription check (it routes to a clinic merchant)', async () => {
+          client.getCharge.mockResolvedValueOnce(
+            ok(charge({ merchant: { id: 'clinic_merchant' } })),
+          );
+          await handler.handle(charge(), 'h');
+          expect(webhooks.process.mock.calls[0][0].target).toBe('paid');
+        });
       });
     });
   });

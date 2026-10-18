@@ -366,6 +366,16 @@ export class SubscriptionService {
         'Subscription cancelled before payment',
       );
     }
+    if (!neverPaid && current.status === SubscriptionStatus.CANCELLED) {
+      // Immediate cancellation of a paid subscription: its unpaid invoices (an open
+      // renewal, say) have nothing left to apply to. Only the ones nobody is paying
+      // right now — a live checkout / unresolved charge keeps its invoice.
+      await this.billing.voidSupersededOpenInvoices(
+        current.id,
+        'Subscription cancelled',
+        'all',
+      );
+    }
     // An immediate cancellation must stop access now, not at the next TTL.
     this.access.invalidate(tenantId);
 

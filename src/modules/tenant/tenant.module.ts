@@ -9,7 +9,11 @@ import { Branch } from '../../entities/SaaS-Core/Branch';
 import { BranchUser } from '../../entities/Multi Branch/BranchUser';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 
+import { TenantTarget } from '../../entities/SaaS-Core/TenantTarget';
+import { TenantTargetHistory } from '../../entities/SaaS-Core/TenantTargetHistory';
+import { BranchScopeModule } from '../../core/branch-scope/branch-scope.module';
 import { TenantService } from './tenant.service';
+import { TenantTargetsService } from './tenant-targets.service';
 import { BranchService } from './branch.service';
 import { BranchCityService } from './branch-city.service';
 import { TenantVerificationService } from './tenant-verification.service';
@@ -39,6 +43,8 @@ import { ActivityLogModule } from '../activity-log/activity-log.module';
       TenantSetting,
       TenantVerificationDocument,
       TenantApprovalEvent,
+      TenantTarget,
+      TenantTargetHistory,
       Branch,
       // Read-only here: BranchService only counts these to enforce safe
       // deletion (staff assignments / upcoming appointments), it never
@@ -58,6 +64,8 @@ import { ActivityLogModule } from '../activity-log/activity-log.module';
     AnalyticsModule,
     // Audit record when the clinic switches the WhatsApp AI on or off.
     ActivityLogModule,
+    // Branch-scope authority for the per-branch targets.
+    BranchScopeModule,
   ],
   controllers: [
     TenantController,
@@ -66,6 +74,7 @@ import { ActivityLogModule } from '../activity-log/activity-log.module';
   ],
   providers: [
     TenantService,
+    TenantTargetsService,
     BranchService,
     BranchCityService,
     TenantVerificationService,

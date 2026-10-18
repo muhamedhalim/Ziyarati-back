@@ -33,7 +33,14 @@ import { UpdateTenantDto } from './dto/update-tenant.dto';
 import { ListTenantsQueryDto } from './dto/list-tenants.query.dto';
 import { TenantApprovalActionDto } from './dto/tenant-approval-action.dto';
 import { UpdateTenantSettingsDto } from './dto/update-tenant-settings.dto';
-import { UpdateTenantTargetsDto } from './dto/update-tenant-targets.dto';
+import {
+  TargetChangesQueryDto,
+  TargetHistoryQueryDto,
+  TargetProgressQueryDto,
+  UpdateTenantTargetsDto,
+} from './dto/tenant-targets.dto';
+import { TenantTargetsService } from './tenant-targets.service';
+import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -115,6 +122,16 @@ const S_TARGET_METRIC = {
     remaining: { type: 'number', nullable: true, example: 58 },
     percentage: { type: 'number', nullable: true, example: 42 },
     isCompleted: { type: 'boolean', example: false },
+    targetId: { type: 'string', format: 'uuid', nullable: true },
+    originalTarget: { type: 'number', nullable: true },
+    createdAt: { type: 'string', format: 'date-time', nullable: true },
+    updatedAt: { type: 'string', format: 'date-time', nullable: true },
+    source: { type: 'string', enum: ['BRANCH', 'ORGANIZATION', 'BRANCH_SUM'] },
+    unavailableReason: {
+      type: 'string',
+      nullable: true,
+      example: 'BRANCH_TARGETS_INCOMPLETE',
+    },
   },
 };
 
@@ -130,6 +147,13 @@ const S_TARGET_PROGRESS = {
       },
     },
     currency: { type: 'string', example: 'SAR' },
+    branch: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', format: 'uuid', nullable: true },
+        name: { type: 'string', nullable: true },
+      },
+    },
     appointments: S_TARGET_METRIC,
     revenue: S_TARGET_METRIC,
   },
@@ -203,6 +227,7 @@ export class TenantController {
     private readonly tenantService: TenantService,
     private readonly ctx: TenantContextService,
     private readonly verification: TenantVerificationService,
+    private readonly targetsService: TenantTargetsService,
   ) {}
 
   // ─────────────────────────── Platform admin ────────────────────────────── //
@@ -466,35 +491,79 @@ current values.
   @ApiOperation({
     summary: "Get progress toward my clinic's monthly targets (self-service)",
     description: `
-**Protected — requires \`analytics.reports.read\`** (held by Owner and
-Manager by default — the same permission that gates the dashboard's revenue
-trend chart, since this response includes revenue figures).
+**Protected — requires \`analytics.reports.read\`.**
 
-Returns progress toward the appointment/revenue goals configured by the
-clinic owner, always for the CURRENT (in-progress) UTC calendar month —
-computed live from completed appointments and paid payments, not a stored
-snapshot. Either target may be \`null\` (not yet set), in which case
-\`remaining\`/\`percentage\` are also \`null\` rather than a misleading 0%.
+Progress for ONE month (\`?month=YYYY-MM\`, default the current UTC month) and
+ONE scope (\`?branchId=\`, default all branches). Actuals (completed
+appointments, PAID revenue) use the same month and branch scope as the target.
 
-**Who can call this:** Any tenant user holding \`analytics.reports.read\`.
+**All-branches rule:** a tenant-wide caller sees the clinic-wide target
+(\`source: ORGANIZATION\`) against clinic-wide actuals. A branch-restricted
+caller sees the SUM of their branches' targets, only when every one of their
+branches has one — otherwise the target is \`null\`
+(\`unavailableReason: BRANCH_TARGETS_INCOMPLETE\`). A branch target is never
+silently substituted for the clinic-wide one.
 
-**Tenant scoping:** Always the caller's own clinic.
+**Tenant scoping:** always the caller's own clinic; a branch outside it is 404,
+outside the caller's own branch scope 403.
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Target progress for the current month.', schema: S_TARGET_PROGRESS })
+  @ApiOkResponse({
+    description: 'Target progress for the month/scope.',
+    schema: S_TARGET_PROGRESS,
+  })
+  @ApiBadRequestResponse({
+    description: 'Invalid month or branch id.',
+    schema: S_ERROR,
+  })
   @ApiUnauthorizedResponse({
     description: 'Missing or invalid access token.',
     schema: S_ERROR,
   })
   @ApiForbiddenResponse({
-    description: 'Caller lacks `analytics.reports.read`.',
+    description: 'Caller lacks `analytics.reports.read` or the branch.',
     schema: S_ERROR,
   })
   @Get('me/targets')
   @UseGuards(PermissionsGuard)
   @RequirePermissions(PERMISSION.ANALYTICS_REPORTS_READ)
-  myTargetProgress() {
-    return this.tenantService.getTargetProgress(this.ctx.requireTenantId());
+  myTargetProgress(
+    @Query() q: TargetProgressQueryDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.targetsService.getProgress(this.ctx.requireTenantId(), user, q);
+  }
+
+  @ApiOperation({
+    summary: 'Paged target history for one target type (self-service)',
+    description:
+      'Every month that has a target for the selected scope (`branchId`, else the clinic-wide scope), newest first, with the original and latest value, the actual result and the achievement percentage. Bounded: `limit` ≤ 50.',
+  })
+  @ApiOkResponse({ description: 'A page of target history rows.' })
+  @Get('me/targets/history')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions(PERMISSION.ANALYTICS_REPORTS_READ)
+  myTargetHistory(
+    @Query() q: TargetHistoryQueryDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.targetsService.getHistory(this.ctx.requireTenantId(), user, q);
+  }
+
+  @ApiOperation({
+    summary: 'Edit ledger of one target (self-service)',
+    description:
+      'The append-only create/update trail (previous value, new value, actor, time) of one type + month + scope. Max 100 entries.',
+  })
+  @ApiOkResponse({ description: 'Ledger entries, newest first.' })
+  @Get('me/targets/changes')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions(PERMISSION.ANALYTICS_REPORTS_READ)
+  myTargetChanges(
+    @Query() q: TargetChangesQueryDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.targetsService.getChanges(this.ctx.requireTenantId(), user, q);
   }
 
   @ApiOperation({
@@ -502,22 +571,17 @@ snapshot. Either target may be \`null\` (not yet set), in which case
     description: `
 **Protected — \`owner\` role required.**
 
-Sets the monthly appointment/revenue goals shown on the dashboard target
-cards. Only the supplied field changes; the other target keeps its current
-value. Pass \`0\` for a trivially-met target; omit a field to leave it as-is
-— there is currently no way to clear a target back to "unset" once set.
-
-Returns the freshly recomputed progress (same shape as the GET above), so
-the caller sees the effect of the change without a second request.
-
-**Who can call this:** Clinic Owner only — deliberately narrower than
-\`updateMySettings\` (Owner or Manager), since a revenue/appointment target is
-a business commitment, not an operational toggle.
-
-**Tenant scoping:** Always operates on the caller's own clinic.
+Sets the appointment and/or revenue goal for \`month\` (default current;
+past months rejected, at most 12 months ahead) and \`branchId\` (omit for the
+clinic-wide target). Only supplied fields change. Every first value and every
+change is recorded in the target ledger inside the same transaction. Returns
+the recomputed progress for that month/scope.
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Targets updated; current progress returned.', schema: S_TARGET_PROGRESS })
+  @ApiOkResponse({
+    description: 'Targets updated; progress returned.',
+    schema: S_TARGET_PROGRESS,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
   @ApiUnauthorizedResponse({
     description: 'Missing or invalid access token.',
@@ -529,8 +593,15 @@ a business commitment, not an operational toggle.
   })
   @Patch('me/targets')
   @Roles(ROLE.OWNER)
-  updateMyTargets(@Body() dto: UpdateTenantTargetsDto) {
-    return this.tenantService.updateTargets(this.ctx.requireTenantId(), dto);
+  updateMyTargets(
+    @Body() dto: UpdateTenantTargetsDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.targetsService.setTargets(
+      this.ctx.requireTenantId(),
+      user,
+      dto,
+    );
   }
 
   // ────────────────────── Platform admin (by ID) ─────────────────────────── //

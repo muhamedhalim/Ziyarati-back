@@ -79,6 +79,12 @@ export interface ChargeResult {
   status?: 'paid' | 'failed' | 'pending';
   /** Opaque provider reference (e.g. Stripe PaymentIntent id). */
   reference?: string;
+  /**
+   * What the provider says it CAPTURED, in the domain's cents (×100) and ISO code —
+   * checked against the invoice before it is booked. A real gateway must report both.
+   */
+  capturedMinorUnits?: number;
+  capturedCurrency?: string;
   failureReason?: string;
   /**
    * T081 (spec 014, US5) — coarse, additive-only decline classification
@@ -214,6 +220,18 @@ export interface VerifyCheckoutResult {
   savedPaymentMethod?: SavedPaymentMethodInfo;
 }
 
+/**
+ * What the provider holds for an invoice, found by the reference WE sent
+ * (`reference.transaction`) when a charge was created but its id never came back.
+ *  - `found`      exactly one live (not failed) charge: its provider id.
+ *  - `not_found`  the provider answered and holds NO live charge for the invoice.
+ *  - `unknown`    cannot say (outage, refusal, several live charges): never read as "nothing was charged".
+ */
+export type FindChargeResult =
+  | { status: 'found'; reference: string }
+  | { status: 'not_found' }
+  | { status: 'unknown' };
+
 export interface PaymentProvider {
   /** Stored on `subscription_invoices.provider` when this provider settles one. */
   readonly name: string;
@@ -246,6 +264,13 @@ export interface PaymentProvider {
    * asynchronous. Absent on a provider whose refund() answers definitively.
    */
   verifyRefund?(reference: string): Promise<VerifyRefundResult>;
+  /**
+   * Looks the live charge of ONE invoice up by our own reference, for a merchant-
+   * initiated charge whose provider id was never stored. Its presence marks a
+   * provider whose unresolved charges the sweep must resolve (adopt or confirm
+   * absent) rather than drop; absent on a provider with no such lookup.
+   */
+  findCharge?(invoiceId: string): Promise<FindChargeResult>;
   /** Best-effort removal of a saved card at the provider. Resolves false when it could not be confirmed. */
   deletePaymentMethod(method: SavedPaymentMethodRef): Promise<boolean>;
 }

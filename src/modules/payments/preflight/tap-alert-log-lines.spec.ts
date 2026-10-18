@@ -94,6 +94,70 @@ describe('Tap CloudWatch alarm log-line contract', () => {
     },
   );
 
+  // P-01 fires on any "ALERT:" line, so the subscription money-safety alerts need no
+  // filter of their own — but the runbook (§7) and the P-01 alarm description NAME them,
+  // and nothing else ties those words to the code. Pin the wording to ONE source line each,
+  // starting with the literal "ALERT:", so rewording a message (or dropping the prefix)
+  // fails here instead of silently turning the alarm off.
+  describe('subscription money-safety ALERT lines named by P-01', () => {
+    const alerts: Array<[string, string[]]> = [
+      [
+        'a subscription charge not routed to the ZiyaraTech merchant',
+        [
+          'ALERT:',
+          'subscription charge',
+          'was NOT routed to the ZiyaraTech merchant',
+        ],
+      ],
+      [
+        'a capture whose amount/currency is missing or wrong',
+        ['ALERT:', 'invoice', 'captured', 'NOT booked, left for manual review'],
+      ],
+      [
+        'a subscription charge unresolved for over 24 hours',
+        [
+          'ALERT:',
+          'subscription invoice',
+          'unresolved provider charge for over 24 hours',
+        ],
+      ],
+      [
+        'a payment that could not be applied to its subscription',
+        ['ALERT:', 'invoice', 'could not be applied'],
+      ],
+    ];
+
+    it.each(alerts)('%s', (_label, terms) => {
+      const hit = lines.find((l) => terms.every((t) => l.includes(t)));
+      expect({ terms, found: !!hit }).toEqual({ terms, found: true });
+    });
+
+    it('the P-01 alarm description and the runbook still name them', () => {
+      const tf = readFileSync(MONITORING_TF, 'utf8');
+      const p01 = /"critical-payments-alert"[\s\S]*?desc\s*=\s*"([^"]*)"/.exec(
+        tf,
+      );
+      expect(p01).not.toBeNull();
+      for (const word of [
+        'not routed to the ZiyaraTech merchant',
+        'amount',
+        'unresolved',
+      ]) {
+        expect(p01![1]).toContain(word);
+      }
+      const runbook = readFileSync(
+        join(BACKEND_ROOT, 'infra/runbooks/tap-payments-rollout.md'),
+        'utf8',
+      );
+      for (const fragment of [
+        'was NOT routed to the ZiyaraTech merchant',
+        'unresolved provider charge for over 24 hours',
+      ]) {
+        expect(runbook).toContain(fragment);
+      }
+    });
+  });
+
   it('every metric the alarms read is published by some filter', () => {
     const tf = readFileSync(MONITORING_TF, 'utf8');
     const published = new Set(entries.map((e) => e.metric));

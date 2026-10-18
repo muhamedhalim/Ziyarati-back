@@ -244,6 +244,12 @@ export const validate = (config: Record<string, unknown>) => {
     // Floored at 1 day so an unset/zero value can never mean "no grace at
     // all" (FR-B007g — configurable, never hardcoded, and never silently zero).
     SUBSCRIPTION_GRACE_DAYS: Joi.number().min(1).default(14),
+    // Days a paid-plan subscription may wait in PENDING_PAYMENT before it is cancelled. 0 = never.
+    SUBSCRIPTION_PENDING_PAYMENT_TTL_DAYS: Joi.number()
+      .integer()
+      .min(0)
+      .max(365)
+      .default(7),
 
     // Free-access lifecycle notices (start + 48h expiry warning) rollout
     // kill switch. Defaults ON; set to 'false' to stop `grant()` from writing
@@ -1293,6 +1299,21 @@ export const validate = (config: Record<string, unknown>) => {
           `Set the variable(s) correctly or remove them.`,
       );
     }
+
+    // A LIVE secret key has no business in a development machine: the TAP_ENV and
+    // prefix checks keep it unused, but a copy of it lying in a dev .env is one typo
+    // from a real charge. A warning, never a failure (names only, no value); silent
+    // in production and under test.
+    if (
+      tapLiveKey &&
+      value.NODE_ENV !== 'production' &&
+      value.NODE_ENV !== 'test'
+    ) {
+      console.warn(
+        `⚠️  TAP_LIVE_SECRET_KEY is set while NODE_ENV=${value.NODE_ENV ?? 'unset'}. ` +
+          `It stays unused unless TAP_ENV=live — remove live keys from development environments.`,
+      );
+    }
   }
 
   // ── Credential-encryption fail-fast (production only, HRD-001) ────────────
@@ -1453,29 +1474,6 @@ export const validate = (config: Record<string, unknown>) => {
   // the BullMQ job still reported success. Each process root validates its
   // OWN environment here, so the worker can no longer boot in that state.
   // Names variables only, never values.
-  // Amazon SES is the ONLY provider. Retired Resend settings left in an
-  // environment are refused rather than ignored, so a stale API key cannot
-  // linger as a secret nothing uses (names only, never values).
-  if (value.NODE_ENV === 'production') {
-    const legacy = value as Record<string, unknown>;
-    const retired = [
-      'RESEND_API_KEY',
-      'RESEND_WEBHOOK_SECRET',
-      'RESEND_HTTP_TIMEOUT_MS',
-    ].filter((k) => String(legacy[k] ?? '').trim() !== '');
-    const provider = String(legacy.EMAIL_PROVIDER ?? '').trim();
-    if (provider !== '' && provider.toLowerCase() !== 'ses') {
-      retired.push(`EMAIL_PROVIDER=${provider.toLowerCase()}`);
-    }
-    if (retired.length > 0) {
-      throw new Error(
-        `❌ Env validation error: ${retired.join(', ')} refer to a retired ` +
-          `email provider. Amazon SES is the only supported provider — remove ` +
-          `these settings (EMAIL_PROVIDER is no longer read).`,
-      );
-    }
-  }
-
   const emailLive =
     value.NODE_ENV === 'production' && value.EMAIL_ENABLED !== 'false';
   if (emailLive) {

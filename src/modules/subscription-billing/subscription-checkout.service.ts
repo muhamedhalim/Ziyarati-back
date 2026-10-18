@@ -11,6 +11,7 @@ import { PaymentsConfig } from '../payments/payments.config';
 import { buildPayer } from '../payments/providers/payer.util';
 
 import { InvoiceSettlementService } from './invoice-settlement.service';
+import { chargeClaimFree } from './charge-claim';
 import {
   PAYMENT_PROVIDER,
   type PaymentProvider,
@@ -22,8 +23,6 @@ const PAYABLE: InvoiceStatus[] = [
   InvoiceStatus.DRAFT,
   InvoiceStatus.UNCOLLECTIBLE,
 ];
-/** Same window `BillingService` uses for a stale merchant-initiated claim. */
-const CHARGE_CLAIM_STALE_MS = 10 * 60_000;
 
 export type CheckoutOutcome =
   | { status: 'redirect'; invoiceId: string; redirectUrl: string }
@@ -255,6 +254,7 @@ export class SubscriptionCheckoutService {
       reference: chargeId,
       capturedMinorUnits: v.capturedMinorUnits,
       capturedCurrency: v.capturedCurrency,
+      amountRequired: this.payment.supportsCheckout,
       savedPaymentMethod: v.savedPaymentMethod,
     });
     if (settled.outcome === 'rejected') {
@@ -271,11 +271,15 @@ export class SubscriptionCheckoutService {
     tenantId: string,
   ): Promise<number | null> {
     const now = Date.now();
+    const claimFree = chargeClaimFree(now);
     const res = await this.invoices
       .createQueryBuilder()
       .update(SubscriptionInvoice)
       .set({
         checkout_started_at: new Date(now),
+        // The claim owns the slot: the id of a dead earlier checkout is cleared, so
+        // an unknown outcome below can hand the attempt number back (D4).
+        checkout_charge_id: null,
         checkout_attempts: () => 'checkout_attempts + 1',
       })
       .where('id = :invoiceId AND tenant_id = :tenantId', {
@@ -283,10 +287,7 @@ export class SubscriptionCheckoutService {
         tenantId,
       })
       .andWhere('status IN (:...payable)', { payable: PAYABLE })
-      .andWhere(
-        '(charge_started_at IS NULL OR charge_started_at < :chargeStale)',
-        { chargeStale: new Date(now - CHARGE_CLAIM_STALE_MS) },
-      )
+      .andWhere(claimFree.sql, claimFree.params)
       .andWhere(
         '(checkout_started_at IS NULL OR checkout_started_at < :checkoutStale)',
         {

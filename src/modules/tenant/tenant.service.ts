@@ -12,34 +12,10 @@ import { CreateTenantDto } from './dto/create-tenant.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
 import { ListTenantsQueryDto } from './dto/list-tenants.query.dto';
 import { UpdateTenantSettingsDto } from './dto/update-tenant-settings.dto';
-import { UpdateTenantTargetsDto } from './dto/update-tenant-targets.dto';
 import { AppError, ErrorCode } from '../../common/errors';
 import { AccessControlService } from '../subscription-billing/access-control.service';
 import { FeatureKey } from '../subscription-billing/feature-registry';
 import { ActivityAuditService } from '../activity-log/activity-audit.service';
-
-import { AnalyticsAggregationService } from '../analytics/analytics-aggregation.service';
-import {
-  AnalyticsCacheService,
-  CACHE_NS,
-} from '../analytics/analytics-cache.service';
-import {
-  currentMonthUtc,
-  monthRangeUtc,
-} from '../analytics/analytics.constants';
-import {
-  computeMetricProgress,
-  type TargetMetricProgress,
-} from './tenant-target-progress.util';
-
-export interface TenantTargetProgress {
-  period: { month: string; start: string; end: string };
-  /** The clinic's configured currency (`TenantSetting.currency`) — revenue
-   *  figures are in this currency, never a hardcoded default. */
-  currency: string;
-  appointments: TargetMetricProgress;
-  revenue: TargetMetricProgress;
-}
 
 export interface Paginated<T> {
   data: T[];
@@ -65,8 +41,6 @@ export class TenantService {
     @InjectRepository(TenantApprovalEvent)
     private readonly approvalEvents: Repository<TenantApprovalEvent>,
     private readonly dataSource: DataSource,
-    private readonly analyticsAggregation: AnalyticsAggregationService,
-    private readonly analyticsCache: AnalyticsCacheService,
     private readonly access: AccessControlService,
     private readonly activityAudit: ActivityAuditService,
   ) {}
@@ -338,84 +312,6 @@ export class TenantService {
       });
     }
     return saved;
-  }
-
-  // ----------------------------------------------------------------------- //
-  // Dashboard targets (owner-only write; read by any authenticated user with
-  // analytics.reports.read — enforced by the controller, not here)
-  // ----------------------------------------------------------------------- //
-
-  /**
-   * Sets the monthly appointment/revenue goals. Only the supplied field
-   * changes (same partial-update semantics as {@link updateSettings}).
-   * Returns the freshly recomputed progress — the same shape `GET
-   * /tenants/me/targets` returns — so the caller never needs a second
-   * round-trip to see the effect of the change it just made.
-   */
-  async updateTargets(
-    tenantId: string,
-    dto: UpdateTenantTargetsDto,
-  ): Promise<TenantTargetProgress> {
-    const settings = await this.getSettings(tenantId);
-    Object.assign(settings, {
-      appointment_target: dto.appointmentTarget ?? settings.appointment_target,
-      revenue_target: dto.revenueTarget ?? settings.revenue_target,
-      updated_at: new Date(),
-    });
-    await this.settings.save(settings);
-    return this.getTargetProgress(tenantId);
-  }
-
-  /**
-   * Progress toward the clinic's monthly appointment/revenue targets, for
-   * the CURRENT UTC calendar month — always live, never a snapshot: a target
-   * changed mid-month, or an appointment/payment whose status changed after
-   * an earlier read, are both reflected on the very next call (bounded by
-   * the analytics cache's short TTL below, not by anything persisted here).
-   *
-   * The month total (completed appointments + PAID revenue) is the only
-   * expensive part, and it does not depend on the target values — so it is
-   * read through {@link AnalyticsCacheService} under the same per-tenant
-   * `dashboard` namespace the KPI snapshot uses, keyed by month. A cache miss
-   * costs one aggregation query pair; a hit costs nothing. This is
-   * deliberately NOT invalidated by appointment/payment writes (that would
-   * mean hooking every status-changing path in two other modules for a
-   * dashboard progress bar) — the existing ~60s TTL means a status change is
-   * reflected within a minute, the same staleness tolerance the rest of the
-   * analytics dashboard already has.
-   */
-  async getTargetProgress(tenantId: string): Promise<TenantTargetProgress> {
-    const settings = await this.getSettings(tenantId);
-    const monthStr = currentMonthUtc();
-    const { start, end } = monthRangeUtc(monthStr);
-
-    const totals = await this.analyticsCache.wrap(
-      tenantId,
-      CACHE_NS.DASHBOARD,
-      `targets:${monthStr}`,
-      () =>
-        this.analyticsAggregation.computeCurrentMonthTenantTotals(
-          tenantId,
-          monthStr,
-        ),
-    );
-
-    return {
-      period: {
-        month: monthStr,
-        start: start.toISOString(),
-        end: end.toISOString(),
-      },
-      currency: settings.currency,
-      appointments: computeMetricProgress(
-        settings.appointment_target ?? null,
-        totals.completed_appointments,
-      ),
-      revenue: computeMetricProgress(
-        settings.revenue_target ?? null,
-        totals.total_revenue,
-      ),
-    };
   }
 
   // ----------------------------------------------------------------------- //

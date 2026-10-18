@@ -1083,7 +1083,7 @@ describe('Subscriptions over Tap (Phase 3) — real Postgres + Redis', () => {
       );
     });
 
-    it('an outage on the charge (5xx) is PENDING with no id: the claim is released and NO retry is burned, no failure recorded', async () => {
+    it('an outage on the charge (5xx) is PENDING with no id: the claim is KEPT until the sweep confirms nothing was charged, then the retry reuses the SAME key; NO retry is burned, no failure recorded', async () => {
       const { subscriptionId } = await activeClinic('d6', planBasic);
       await lapse(subscriptionId);
       tap.failNextCreateWith = { status: 503 };
@@ -1096,8 +1096,21 @@ describe('Subscriptions over Tap (Phase 3) — real Postgres + Redis', () => {
       )!;
       expect(renewal.retry_count).toBe(0);
       expect(renewal.failure_reason).toBeNull();
-      expect(renewal.charge_started_at).toBeNull();
-      // and tomorrow's run succeeds with the SAME idempotency key
+      // The claim is KEPT: a charge may exist at Tap, so nothing starts on top of it…
+      expect(renewal.charge_started_at).not.toBeNull();
+      expect(await renew(subscriptionId)).toBe('skipped');
+      // …until the reconciliation sweep asks Tap by OUR reference and is told
+      // that no charge exists (the 503 happened before one was created).
+      await invoices().update(
+        { id: renewal.id },
+        { charge_started_at: new Date(Date.now() - 30 * 60_000) },
+      );
+      const recon = e2e.moduleRef.get(PaymentReconciliationService, {
+        strict: false,
+      });
+      await recon.reconcileStaleSubscriptionInvoices();
+      expect((await inv(renewal.id)).charge_started_at).toBeNull();
+      // and the next run succeeds with the SAME idempotency key
       expect(await renew(subscriptionId)).toBe('settled');
       const keys = tap.chargeRequests
         .slice(-2)
@@ -1227,6 +1240,44 @@ describe('Subscriptions over Tap (Phase 3) — real Postgres + Redis', () => {
       );
     });
 
+    it('a charge captured on ANOTHER merchant is never booked as subscription revenue: invoice stays OPEN, subscription stays PENDING_PAYMENT, ALERT raised', async () => {
+      const clinic = await newClinic('e1c');
+      const created = await subscribe(clinic, planBasic);
+      await openCheckout(clinic, created.openInvoice.id);
+      const err = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+      try {
+        await payByWebhook(tap.lastCharge().id, {
+          merchant: { id: 'someone-elses-merchant' },
+        });
+        expect(
+          err.mock.calls.some(
+            ([m]) =>
+              String(m).includes('ALERT: subscription charge') &&
+              String(m).includes('was NOT routed to the ZiyaraTech merchant'),
+          ),
+        ).toBe(true);
+      } finally {
+        err.mockRestore();
+      }
+      expect((await inv(created.openInvoice.id)).status).toBe(
+        InvoiceStatus.OPEN,
+      );
+      expect((await sub(created.subscription.id)).status).toBe(
+        SubscriptionStatus.PENDING_PAYMENT,
+      );
+      // …and the return page cannot be talked into it either
+      const verified = await api.post(
+        clinic.token,
+        '/billing/checkout/verify',
+        { chargeId: tap.lastCharge().id },
+      );
+      expect(verified.status).toBe(200);
+      expect(verified.body.status).toBe('pending');
+      expect((await sub(created.subscription.id)).status).toBe(
+        SubscriptionStatus.PENDING_PAYMENT,
+      );
+    });
+
     it('a SECOND capture for an already-paid invoice raises a duplicate-capture ALERT and changes nothing', async () => {
       const { subscriptionId, invoiceId } = await activeClinic('e2', planBasic);
       const before = await sub(subscriptionId);
@@ -1241,6 +1292,7 @@ describe('Subscriptions over Tap (Phase 3) — real Postgres + Redis', () => {
         currency: tap.charges.get(firstCharge)!.currency,
         reference: { transaction: invoiceId, gateway: 'GW2', payment: 'PAY2' },
         metadata: { udf1: invoiceId, udf2: 'subscription_invoice', udf3: 'x' },
+        merchant: { id: 'e2e-merchant' }, // on ZiyaraTech's own account, like a real subscription charge
         transaction: { created: String(Date.now()) },
       };
       tap.charges.set(dup.id, dup);

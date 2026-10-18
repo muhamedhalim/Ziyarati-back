@@ -82,6 +82,16 @@ describe('ScheduleRegistrarService', () => {
     );
   });
 
+  it('registers subscriptions.pendingPaymentExpiry daily at 02:30, after the renewal check (02:00) and bill (02:15)', async () => {
+    await service.onApplicationBootstrap();
+    expect(queue.addRepeatable).toHaveBeenCalledWith(
+      QUEUE.SUBSCRIPTIONS,
+      JOB.SUBSCRIPTIONS_PENDING_PAYMENT_EXPIRY,
+      { tenantId: null },
+      '30 2 * * *',
+    );
+  });
+
   it('registers platform.waitlistExpiry every 5 minutes', async () => {
     await service.onApplicationBootstrap();
     expect(queue.addRepeatable).toHaveBeenCalledWith(

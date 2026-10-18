@@ -433,6 +433,8 @@ export class PaymentWebhookService {
         webhookEventId: eventId ?? null,
         capturedMinorUnits: event.capturedMinorUnits,
         capturedCurrency: event.capturedCurrency,
+        // Only a real gateway posts webhooks: its capture must be reported and match.
+        amountRequired: true,
         savedPaymentMethod: event.savedPaymentMethod,
       });
       return {

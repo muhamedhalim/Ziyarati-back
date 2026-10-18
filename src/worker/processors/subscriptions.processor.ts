@@ -16,6 +16,7 @@ import { User } from '../../entities/Auth&RBAC/User';
 import { SubscriptionStatus } from '../../entities/enums';
 import { EmailService } from '../../modules/email/email.service';
 import { RenewalService } from '../../modules/subscription-billing/renewal.service';
+import { PendingPaymentExpiryService } from '../../modules/subscription-billing/pending-payment-expiry.service';
 import { MetricsService } from '../../metrics/metrics.service';
 import {
   PlatformAdminAuditService,
@@ -27,6 +28,8 @@ const RENEWAL_WINDOW_DAYS = 3;
  *  cron ticks, generous for a full page's worth of charge attempts. */
 const RENEWAL_BILL_LOCK_KEY = 'lock:subscriptions-renewal-bill';
 const RENEWAL_BILL_LOCK_TTL_MS = 10 * 60 * 1000;
+const PENDING_EXPIRY_LOCK_KEY = 'lock:subscriptions-pending-payment-expiry';
+const PENDING_EXPIRY_LOCK_TTL_MS = 10 * 60 * 1000;
 /** How far ahead of a boundary (expiry, or grace end) the "before" warning fires. */
 const WARNING_WINDOW_DAYS = 3;
 /**
@@ -66,6 +69,7 @@ export class SubscriptionsProcessor extends WorkerHost {
     private readonly audit: PlatformAdminAuditService,
     private readonly config: ConfigService,
     private readonly renewal: RenewalService,
+    private readonly pendingExpiry: PendingPaymentExpiryService,
     private readonly lock: DistributedLockService,
     private readonly metrics: MetricsService,
   ) {
@@ -84,6 +88,9 @@ export class SubscriptionsProcessor extends WorkerHost {
   ) {
     if (job.name === JOB.SUBSCRIPTIONS_RENEWAL_BILL) {
       return this.processRenewalBill();
+    }
+    if (job.name === JOB.SUBSCRIPTIONS_PENDING_PAYMENT_EXPIRY) {
+      return this.processPendingPaymentExpiry();
     }
     return this.processRenewalCheck();
   }
@@ -113,6 +120,27 @@ export class SubscriptionsProcessor extends WorkerHost {
       return result;
     } finally {
       await this.lock.release(RENEWAL_BILL_LOCK_KEY, token);
+    }
+  }
+
+  /** Lock-guarded like the bill run: the conditional updates already make an overlap harmless; this only avoids duplicate work. */
+  private async processPendingPaymentExpiry() {
+    const token = await this.lock.acquire(
+      PENDING_EXPIRY_LOCK_KEY,
+      PENDING_EXPIRY_LOCK_TTL_MS,
+    );
+    if (!token) {
+      this.logger.log(
+        'pendingPaymentExpiry sweep already in progress elsewhere — skipping this run',
+      );
+      return { skipped: true };
+    }
+    try {
+      const result = await this.pendingExpiry.expireAbandoned();
+      this.metrics.setWorkerHeartbeat('subscriptions.pendingPaymentExpiry');
+      return result;
+    } finally {
+      await this.lock.release(PENDING_EXPIRY_LOCK_KEY, token);
     }
   }
 

@@ -8,6 +8,7 @@ import { User } from '../../entities/Auth&RBAC/User';
 import { SubscriptionStatus } from '../../entities/enums';
 import { EmailService } from '../../modules/email/email.service';
 import { RenewalService } from '../../modules/subscription-billing/renewal.service';
+import { PendingPaymentExpiryService } from '../../modules/subscription-billing/pending-payment-expiry.service';
 import { DistributedLockService } from '../../queue/distributed-lock.service';
 import { MetricsService } from '../../metrics/metrics.service';
 import {
@@ -27,6 +28,7 @@ describe('SubscriptionsProcessor', () => {
   let email: { sendSubscriptionNotification: jest.Mock };
   let audit: { record: jest.Mock };
   let renewal: { processDueBills: jest.Mock };
+  let pendingExpiry: { expireAbandoned: jest.Mock };
   let lock: { acquire: jest.Mock; release: jest.Mock };
   let metrics: { setWorkerHeartbeat: jest.Mock };
   let qb: ReturnType<typeof createMockQueryBuilder>;
@@ -50,6 +52,11 @@ describe('SubscriptionsProcessor', () => {
         skipped: 0,
       }),
     };
+    pendingExpiry = {
+      expireAbandoned: jest
+        .fn()
+        .mockResolvedValue({ scanned: 0, cancelled: 0, skipped: 0 }),
+    };
     lock = {
       acquire: jest.fn().mockResolvedValue('token'),
       release: jest.fn().mockResolvedValue(undefined),
@@ -68,6 +75,7 @@ describe('SubscriptionsProcessor', () => {
           useValue: { get: jest.fn().mockReturnValue(GRACE_DAYS) },
         },
         { provide: RenewalService, useValue: renewal },
+        { provide: PendingPaymentExpiryService, useValue: pendingExpiry },
         { provide: DistributedLockService, useValue: lock },
         { provide: MetricsService, useValue: metrics },
       ],
@@ -320,6 +328,54 @@ describe('SubscriptionsProcessor', () => {
       primeEmptyExcept({ 2: [sub] });
       await runCheck();
       expect(renewal.processDueBills).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('subscriptions.pendingPaymentExpiry job routing', () => {
+    it('routes to PendingPaymentExpiryService, lock-guarded, and never runs the grace sweep or the bill run', async () => {
+      pendingExpiry.expireAbandoned.mockResolvedValueOnce({
+        scanned: 2,
+        cancelled: 1,
+        skipped: 1,
+      });
+      const result = await processor.process({
+        name: 'subscriptions.pendingPaymentExpiry',
+      } as any);
+      expect(lock.acquire).toHaveBeenCalledWith(
+        'lock:subscriptions-pending-payment-expiry',
+        expect.any(Number),
+      );
+      expect(pendingExpiry.expireAbandoned).toHaveBeenCalledTimes(1);
+      expect(renewal.processDueBills).not.toHaveBeenCalled();
+      expect(subscriptions.find).not.toHaveBeenCalled();
+      expect(lock.release).toHaveBeenCalledWith(
+        'lock:subscriptions-pending-payment-expiry',
+        'token',
+      );
+      expect(metrics.setWorkerHeartbeat).toHaveBeenCalledWith(
+        'subscriptions.pendingPaymentExpiry',
+      );
+      expect(result).toEqual({ scanned: 2, cancelled: 1, skipped: 1 });
+    });
+
+    it('skips when the lock is already held', async () => {
+      lock.acquire.mockResolvedValueOnce(null);
+      const result = await processor.process({
+        name: 'subscriptions.pendingPaymentExpiry',
+      } as any);
+      expect(result).toEqual({ skipped: true });
+      expect(pendingExpiry.expireAbandoned).not.toHaveBeenCalled();
+    });
+
+    it('releases the lock even when the sweep throws', async () => {
+      pendingExpiry.expireAbandoned.mockRejectedValueOnce(new Error('boom'));
+      await expect(
+        processor.process({ name: 'subscriptions.pendingPaymentExpiry' } as any),
+      ).rejects.toThrow('boom');
+      expect(lock.release).toHaveBeenCalledWith(
+        'lock:subscriptions-pending-payment-expiry',
+        'token',
+      );
     });
   });
 

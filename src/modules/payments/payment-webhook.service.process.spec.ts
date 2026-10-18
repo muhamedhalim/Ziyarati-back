@@ -493,6 +493,7 @@ describe('PaymentWebhookService.process (provider-neutral)', () => {
         webhookEventId: 'tap:chg_1:CAPTURED',
         capturedMinorUnits: expect.any(Number),
         capturedCurrency: 'SAR',
+        amountRequired: true,
         savedPaymentMethod,
       });
       expect(res).toMatchObject({

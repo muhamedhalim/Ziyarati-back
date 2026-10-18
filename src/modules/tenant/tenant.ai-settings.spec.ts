@@ -27,8 +27,6 @@ describe('TenantService.updateSettings — WhatsApp AI settings', () => {
       settings as never,
       {} as never,
       {} as never,
-      {} as never,
-      {} as never,
       access as never,
       audit as never,
     );

@@ -164,7 +164,6 @@ export interface MonthlyExtras {
  */
 @Injectable()
 export class AnalyticsAggregationService {
-
   constructor(
     @InjectRepository(Branch)
     private readonly branches: Repository<Branch>,
@@ -392,19 +391,91 @@ export class AnalyticsAggregationService {
   async computeCurrentMonthTenantTotals(
     tenantId: string,
     monthStr: string,
+    branchIds: string[] | null = null,
   ): Promise<{ completed_appointments: number; total_revenue: number }> {
-    const { start, end } = monthRangeUtc(monthStr);
-    const [completed_appointments, total_revenue] = await Promise.all([
-      this.appointments.count({
-        where: {
-          tenant: { id: tenantId },
-          status: AppointmentStatus.COMPLETED,
-          start_at: Between(start, end),
-        },
-      }),
-      this.sumTenantRevenue(tenantId, { start, end }),
+    const map = await this.computeMonthTotalsBulk(
+      tenantId,
+      [monthStr],
+      branchIds,
+    );
+    return map.get(monthStr) ?? { completed_appointments: 0, total_revenue: 0 };
+  }
+
+  /**
+   * Completed-appointment counts and PAID revenue for MANY UTC months in two
+   * grouped queries (no N+1), optionally confined to `branchIds`
+   * (`null` = every branch, `[]` = none → all zeros). Months with no activity
+   * are present with zeros. Same definitions as every other figure here:
+   * completed by `start_at`, revenue by `paid_at` over clinic purposes.
+   */
+  async computeMonthTotalsBulk(
+    tenantId: string,
+    months: string[],
+    branchIds: string[] | null,
+  ): Promise<
+    Map<string, { completed_appointments: number; total_revenue: number }>
+  > {
+    const out = new Map<
+      string,
+      { completed_appointments: number; total_revenue: number }
+    >();
+    for (const m of months)
+      out.set(m, { completed_appointments: 0, total_revenue: 0 });
+    if (months.length === 0 || (branchIds !== null && branchIds.length === 0))
+      return out;
+
+    const sorted = [...months].sort();
+    const start = monthRangeUtc(sorted[0]).start;
+    const end = monthRangeUtc(sorted[sorted.length - 1]).end;
+
+    const apptQb = this.appointments
+      .createQueryBuilder('a')
+      .select(`to_char(a.start_at AT TIME ZONE 'UTC', 'YYYY-MM')`, 'month')
+      .addSelect('COUNT(*)', 'count')
+      .innerJoin('a.tenant', 't')
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('a.status = :completed', {
+        completed: AppointmentStatus.COMPLETED,
+      })
+      .andWhere('a.start_at BETWEEN :start AND :end', { start, end })
+      .groupBy('month');
+    if (branchIds !== null) {
+      apptQb
+        .innerJoin('a.branch', 'b')
+        .andWhere('b.id IN (:...branchIds)', { branchIds });
+    }
+
+    const payQb = this.payments
+      .createQueryBuilder('p')
+      .select(`to_char(p.paid_at AT TIME ZONE 'UTC', 'YYYY-MM')`, 'month')
+      .addSelect('COALESCE(SUM(p.amount), 0)', 'sum')
+      .innerJoin('p.tenant', 't')
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('p.status = :status', { status: PaymentStatus.PAID })
+      .andWhere('p.purpose IN (:...clinicPurposes)', {
+        clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
+      })
+      .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
+      .groupBy('month');
+    if (branchIds !== null) {
+      payQb
+        .innerJoin('p.branch', 'b')
+        .andWhere('b.id IN (:...branchIds)', { branchIds });
+    }
+
+    const [apptRows, payRows] = await Promise.all([
+      apptQb.getRawMany<{ month: string; count: string }>(),
+      payQb.getRawMany<{ month: string; sum: string }>(),
     ]);
-    return { completed_appointments, total_revenue };
+    for (const r of apptRows) {
+      const e = out.get(r.month);
+      if (e) e.completed_appointments = Number(r.count);
+    }
+    for (const r of payRows) {
+      const e = out.get(r.month);
+      if (e) e.total_revenue = round2(Number(r.sum));
+    }
+    return out;
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //

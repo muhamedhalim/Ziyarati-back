@@ -10,6 +10,7 @@ import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoic
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { InvoiceStatus, SubscriptionStatus } from '../../entities/enums';
 import { ErrorCode } from '../../common/errors';
+import { chargeClaimFree } from './charge-claim';
 import {
   createMockRepository,
   createMockQueryBuilder,
@@ -234,7 +235,7 @@ describe('SubscriptionCheckoutService', () => {
         expect(predicates).toEqual(
           expect.arrayContaining([
             'status IN (:...payable)',
-            '(charge_started_at IS NULL OR charge_started_at < :chargeStale)',
+            chargeClaimFree().sql,
             '(checkout_started_at IS NULL OR checkout_started_at < :checkoutStale)',
           ]),
         );
@@ -242,6 +243,29 @@ describe('SubscriptionCheckoutService', () => {
           'id = :invoiceId AND tenant_id = :tenantId',
           { invoiceId: INVOICE, tenantId: TENANT },
         );
+      });
+
+      it('the claim takes the slot: it clears the id of a dead earlier checkout, so an unknown outcome can hand the attempt number back (D4)', async () => {
+        invoices.findOne.mockResolvedValueOnce(openInvoice());
+        claimsAs(2);
+        await service.createCheckout(TENANT, INVOICE);
+        expect(claimQb.set).toHaveBeenCalledWith(
+          expect.objectContaining({
+            checkout_charge_id: null,
+            checkout_started_at: expect.any(Date),
+          }),
+        );
+      });
+
+      it('an unresolved saved-card charge (stale claim, id known) is never reclaimed by a hosted checkout — the claim SQL refuses it', async () => {
+        invoices.findOne.mockResolvedValueOnce(openInvoice());
+        claimsAs(1);
+        await service.createCheckout(TENANT, INVOICE);
+        const sql = chargeClaimFree().sql;
+        expect(claimQb.andWhere.mock.calls.map((c: unknown[]) => c[0])).toContain(
+          sql,
+        );
+        expect(sql).toContain('checkout_charge_id IS NULL');
       });
 
       it("numbers each NEW checkout from the invoice's own counter (the provider idempotency key)", async () => {
@@ -493,6 +517,7 @@ describe('SubscriptionCheckoutService', () => {
         reference: CHARGE,
         capturedMinorUnits: 29900,
         capturedCurrency: 'SAR',
+        amountRequired: true,
         savedPaymentMethod: expect.objectContaining({ cardId: 'card_1' }),
       });
       expect(invoices.findOne).toHaveBeenCalledWith({

@@ -4,15 +4,21 @@ import { DataSource } from 'typeorm';
 
 import { BillingService } from './billing.service';
 import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
+import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import {
   FAILURE_CLASS_TOKENIZATION_UNAVAILABLE,
   PAYMENT_PROVIDER,
 } from './payment/payment-provider.interface';
-import { InvoiceStatus, SubscriptionInvoiceKind } from '../../entities/enums';
+import {
+  InvoiceStatus,
+  SubscriptionInvoiceKind,
+  SubscriptionStatus,
+} from '../../entities/enums';
 import { InvoiceSettlementService } from './invoice-settlement.service';
 import { PaymentMethodService } from './payment-method.service';
 import { ErrorCode } from '../../common/errors';
+import { chargeClaimFree } from './charge-claim';
 import {
   createMockRepository,
   createMockQueryBuilder,
@@ -30,6 +36,7 @@ describe('BillingService', () => {
   let service: BillingService;
   let invoices: MockRepository;
   let tenants: MockRepository;
+  let subscriptions: MockRepository;
   let payment: {
     name: string;
     supportsCheckout: boolean;
@@ -48,6 +55,12 @@ describe('BillingService', () => {
   beforeEach(async () => {
     invoices = createMockRepository();
     tenants = createMockRepository();
+    subscriptions = createMockRepository();
+    // The invoice's subscription exists and is usable unless a test says otherwise.
+    subscriptions.findOne.mockResolvedValue({
+      id: 'sub1',
+      status: SubscriptionStatus.PAST_DUE,
+    });
     payment = {
       name: 'tap',
       supportsCheckout: true,
@@ -69,6 +82,7 @@ describe('BillingService', () => {
           useValue: invoices,
         },
         { provide: getRepositoryToken(Tenant), useValue: tenants },
+        { provide: getRepositoryToken(Subscription), useValue: subscriptions },
         { provide: PAYMENT_PROVIDER, useValue: payment },
         { provide: DataSource, useValue: dataSource },
         { provide: InvoiceSettlementService, useValue: settlement },
@@ -196,6 +210,9 @@ describe('BillingService', () => {
         source: 'charge',
         provider: 'tap',
         reference: 'gw-ref-1',
+        capturedMinorUnits: undefined,
+        capturedCurrency: undefined,
+        amountRequired: true, // a real gateway: its capture must be reported and match
         paymentMethodId: undefined,
         savedPaymentMethod: undefined,
       });
@@ -434,7 +451,80 @@ describe('BillingService', () => {
       expect(settlement.settleInvoicePaid).not.toHaveBeenCalled();
     });
 
-    it('PENDING with no charge id: releases the claim (nothing to verify — the retry reuses the same idempotency key)', async () => {
+    it('passes the provider-reported capture to the settle path, which checks it against the invoice', async () => {
+      claimed();
+      invoices.findOne.mockResolvedValueOnce(openInvoice());
+      payment.charge.mockResolvedValueOnce({
+        success: true,
+        status: 'paid',
+        reference: 'gw-ref-9',
+        capturedMinorUnits: 10000,
+        capturedCurrency: 'SAR',
+      });
+      settlement.settleInvoicePaid.mockResolvedValueOnce({
+        outcome: 'settled',
+        invoice: { ...openInvoice(), status: InvoiceStatus.PAID },
+      });
+
+      await service.payInvoice(TENANT, 'inv1');
+
+      expect(settlement.settleInvoicePaid).toHaveBeenCalledWith(
+        'inv1',
+        expect.objectContaining({
+          capturedMinorUnits: 10000,
+          capturedCurrency: 'SAR',
+          amountRequired: true,
+        }),
+      );
+    });
+
+    it('money captured but REFUSED by the settle path (amount mismatch): 409, and the charge id is kept so the claim stays an unresolved charge', async () => {
+      claimed();
+      invoices.findOne.mockResolvedValueOnce(openInvoice());
+      payment.charge.mockResolvedValueOnce({
+        success: true,
+        status: 'paid',
+        reference: 'gw-ref-9',
+      });
+      settlement.settleInvoicePaid.mockResolvedValueOnce({
+        outcome: 'rejected',
+        reason: 'amount_mismatch',
+        invoice: openInvoice(),
+      });
+
+      await expect(service.payInvoice(TENANT, 'inv1')).rejects.toMatchObject({
+        code: ErrorCode.CONFLICT,
+      });
+      expect(invoices.update).toHaveBeenCalledWith(
+        { id: 'inv1' },
+        { checkout_charge_id: 'gw-ref-9' },
+      );
+    });
+
+    it.each([
+      ['cancelled', { id: 'sub1', status: SubscriptionStatus.CANCELLED }],
+      ['suspended', { id: 'sub1', status: SubscriptionStatus.SUSPENDED }],
+      ['missing / soft-deleted', null],
+    ])(
+      'refuses to charge an invoice of a %s subscription: 409, the claim is handed back, the provider is never called (D5)',
+      async (_l, sub) => {
+        claimed();
+        invoices.findOne.mockResolvedValueOnce(openInvoice());
+        subscriptions.findOne.mockResolvedValueOnce(sub);
+
+        await expect(service.payInvoice(TENANT, 'inv1')).rejects.toMatchObject({
+          code: ErrorCode.CONFLICT,
+        });
+
+        expect(payment.charge).not.toHaveBeenCalled();
+        expect(invoices.update).toHaveBeenCalledWith(
+          { id: 'inv1' },
+          { charge_started_at: null },
+        );
+      },
+    );
+
+    it('PENDING with no charge id: the claim is KEPT (the sweep looks the charge up by the invoice reference — it is never dropped)', async () => {
       claimed();
       invoices.findOne.mockResolvedValueOnce(openInvoice());
       payment.charge.mockResolvedValueOnce({
@@ -452,7 +542,8 @@ describe('BillingService', () => {
       const res = await service.payInvoice(TENANT, 'inv1');
 
       expect(res.status).toBe(InvoiceStatus.OPEN);
-      expect(locked.charge_started_at).toBeNull();
+      expect(locked.charge_started_at).toBeInstanceOf(Date);
+      expect(locked.checkout_charge_id).toBeUndefined();
       expect(locked.failure_reason ?? null).toBeNull();
     });
   });
@@ -582,6 +673,50 @@ describe('BillingService', () => {
         ),
       ).toBe(false);
       expect(service.isPaymentInFlight({} as any, now)).toBe(false);
+    });
+
+    it('isPaymentInFlight: an UNRESOLVED charge (id known, or too old to retry) counts however stale the claim is', () => {
+      const now = Date.now();
+      const mins = (m: number) => new Date(now - m * 60_000);
+      expect(
+        service.isPaymentInFlight(
+          { charge_started_at: mins(180), checkout_charge_id: 'chg_1' } as any,
+          now,
+        ),
+      ).toBe(true);
+      expect(
+        service.isPaymentInFlight(
+          { charge_started_at: mins(21 * 60) } as any,
+          now,
+        ),
+      ).toBe(true);
+    });
+
+    it('the atomic claim takes the slot (clears a dead checkout id) and uses the shared claim rules', async () => {
+      claimQb.execute.mockResolvedValueOnce({ affected: 1, raw: [] });
+      invoices.findOne.mockResolvedValueOnce({
+        id: 'inv1',
+        status: InvoiceStatus.OPEN,
+        amount: '100',
+        currency: 'SAR',
+        retry_count: 0,
+      });
+      payment.charge.mockResolvedValueOnce({ success: false, status: 'pending' });
+      lockedRepo().findOne.mockResolvedValueOnce({
+        id: 'inv1',
+        status: InvoiceStatus.OPEN,
+      });
+      lockedRepo().save.mockImplementationOnce(async (i: any) => i);
+
+      await service.payInvoice(TENANT, 'inv1');
+
+      expect(claimQb.set).toHaveBeenCalledWith(
+        expect.objectContaining({ checkout_charge_id: null }),
+      );
+      const predicates = claimQb.andWhere.mock.calls.map((c: unknown[]) =>
+        String(c[0]),
+      );
+      expect(predicates).toContain(chargeClaimFree().sql);
     });
 
     it('settleInvoicePaid delegates to the settle service unchanged', async () => {

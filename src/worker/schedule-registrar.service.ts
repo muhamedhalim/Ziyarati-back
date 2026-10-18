@@ -48,6 +48,9 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       // after the renewal/expiry check above so the two never contend for
       // the same instant on the shared `subscriptions` queue.
       await this.queue.addRepeatable(QUEUE.SUBSCRIPTIONS, JOB.SUBSCRIPTIONS_RENEWAL_BILL, { tenantId: null }, '15 2 * * *');
+      // Cancels subscriptions that never got paid (PENDING_PAYMENT past its TTL). 02:30 UTC,
+      // after the renewal check (02:00) and bill (02:15) on the same queue.
+      await this.queue.addRepeatable(QUEUE.SUBSCRIPTIONS, JOB.SUBSCRIPTIONS_PENDING_PAYMENT_EXPIRY, { tenantId: null }, '30 2 * * *');
       // Refund recovery / reaper sweep — every 5 minutes (R2).
       await this.queue.addRepeatable(QUEUE.REFUNDS, JOB.REFUNDS_REAP, { tenantId: null }, '*/5 * * * *');
       // Payment reconciliation sweep — every 10 minutes (webhook-loss recovery).
