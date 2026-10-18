@@ -60,6 +60,7 @@ const PLATFORM_AND_PUBLIC_SURFACES = new Set([
   'platform-dashboard/platform-dashboard.controller.ts',
   'platform-finance/platform-finance.controller.ts',
   'platform-monitoring/platform-monitoring.controller.ts',
+  'platform-sales/clinic-import.controller.ts',
   'platform-sales/sales-activities.controller.ts',
   'platform-sales/sales-assignment-import.controller.ts',
   'platform-sales/sales-assignments.controller.ts',

@@ -74,6 +74,7 @@ export const PLATFORM_ADMIN_AUDIT_ACTION = {
   SALES_ASSIGNMENT_ENDED: 'platform_admin.sales.assignment_ended',
   SALES_ASSIGNMENT_TRANSFERRED: 'platform_admin.sales.assignment_transferred',
   SALES_IMPORT_COMMITTED: 'platform_admin.sales.import_committed',
+  CLINIC_IMPORT_COMMITTED: 'platform_admin.sales.clinic_import_committed',
   SALES_TARGET_SET: 'platform_admin.sales.target_set',
   SALES_TARGET_DELETED: 'platform_admin.sales.target_deleted',
   SALES_BONUS_APPROVED: 'platform_admin.sales.bonus_approved',

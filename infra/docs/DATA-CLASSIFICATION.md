@@ -30,13 +30,13 @@ A table is classified by what it **can** contain, not by what a typical row does
 ## Summary
 
 <!-- BEGIN GENERATED: classification-summary -->
-Tables classified: 159. A table counts under every class it can hold.
+Tables classified: 161. A table counts under every class it can hold.
 
 | Class | Tables |
 | --- | --- |
 | D0 | 6 |
-| D1 | 55 |
-| D2 | 52 |
+| D1 | 57 |
+| D2 | 53 |
 | D3 | 1 |
 | D4 | 19 |
 | D5 | 18 |
@@ -192,6 +192,8 @@ Generated from `data-classification.ts`; regenerate with `UPDATE_COMPLIANCE_DOCS
 | `tenants` | D1, D2 | clinic | Clinic account and contact details |
 | `tenant_settings` | D1 | - | Clinic settings |
 | `tenant_specialties` | D1 | - | Clinic specialties |
+| `tenant_targets` | D1 | - | Monthly clinic / branch appointment and revenue goals (numeric, no personal data) |
+| `tenant_target_history` | D1, D2 | staff | Append-only ledger of target changes; stores the acting staff user id |
 | `tenant_approval_events` | D1 | - | Clinic approval history |
 | `tenant_verification_documents` | D2 | clinic | Clinic licence documents |
 | `feature_definitions` | D1 | - | Feature catalogue |

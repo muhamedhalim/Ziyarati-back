@@ -1476,6 +1476,31 @@ export const validate = (config: Record<string, unknown>) => {
   // Names variables only, never values.
   const emailLive =
     value.NODE_ENV === 'production' && value.EMAIL_ENABLED !== 'false';
+  // Amazon SES is the only email transport. Resend and the noop provider are
+  // retired: a leftover Resend secret is refused rather than silently carried,
+  // and "email off" is EMAIL_ENABLED=false. Names variables only, never values.
+  if (value.NODE_ENV === 'production') {
+    const retired = ['RESEND_API_KEY', 'RESEND_WEBHOOK_SECRET'].filter(
+      (k) => String(value[k] ?? '').trim() !== '',
+    );
+    if (retired.length > 0) {
+      throw new Error(
+        `❌ Env validation error: ${retired.join(', ')} is set, but Resend is a ` +
+          `retired email provider — email is sent through Amazon SES only. ` +
+          `Remove ${retired.length > 1 ? 'these settings' : 'this setting'}.`,
+      );
+    }
+  }
+  if (emailLive && value.EMAIL_PROVIDER !== undefined) {
+    const provider = String(value.EMAIL_PROVIDER).trim();
+    if (provider !== '' && provider !== 'ses') {
+      throw new Error(
+        `❌ Env validation error: EMAIL_PROVIDER=${provider} is not supported. ` +
+          `Email is sent through Amazon SES only — unset EMAIL_PROVIDER or set ` +
+          `it to "ses". To turn email off, set EMAIL_ENABLED=false.`,
+      );
+    }
+  }
   if (emailLive) {
     const missing: string[] = [];
     // SES authenticates with the runtime role; it only needs a region.

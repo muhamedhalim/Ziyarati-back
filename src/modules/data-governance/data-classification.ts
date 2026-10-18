@@ -198,6 +198,8 @@ const ROWS: Row[] = [
   ['tenants', 'D1,D2', C, 'Clinic account and contact details'],
   ['tenant_settings', 'D1', '', 'Clinic settings'],
   ['tenant_specialties', 'D1', '', 'Clinic specialties'],
+  ['tenant_targets', 'D1', '', 'Monthly clinic / branch appointment and revenue goals (numeric, no personal data)'],
+  ['tenant_target_history', 'D1,D2', S, 'Append-only ledger of target changes; stores the acting staff user id'],
   ['tenant_approval_events', 'D1', '', 'Clinic approval history'],
   ['tenant_verification_documents', 'D2', C, 'Clinic licence documents'],
   // ── Platform / support / sales ──────────────────────────────────────────

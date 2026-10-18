@@ -1,9 +1,13 @@
 import { Module } from '@nestjs/common';
 
+import { AuthModule } from '../auth/auth.module';
 import { PlatformModule } from '../platform/platform.module';
 import { PlatformStaffModule } from '../platform-staff/platform-staff.module';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
+import { TenantModule } from '../tenant/tenant.module';
 
+import { ClinicImportController } from './clinic-import.controller';
+import { ClinicImportService } from './clinic-import.service';
 import { SalesActivitiesController } from './sales-activities.controller';
 import { SalesActivityService } from './sales-activity.service';
 import { SalesAssignmentImportController } from './sales-assignment-import.controller';
@@ -34,9 +38,17 @@ import { SalesTargetsController } from './sales-targets.controller';
  * TypeORM repositories are registered here.
  */
 @Module({
-  imports: [PlatformModule, PlatformStaffModule, SubscriptionBillingModule],
+  imports: [
+    AuthModule,
+    PlatformModule,
+    PlatformStaffModule,
+    SubscriptionBillingModule,
+    TenantModule,
+  ],
   controllers: [
     SalesEmployeesController,
+    // Static `clinic-import/*` paths, kept ahead of the parameterised routes.
+    ClinicImportController,
     // Static `assignments/import|export` paths first; there is no `assignments/:id`
     // today, but a future param route must not be able to shadow them.
     SalesAssignmentImportController,
@@ -48,6 +60,7 @@ import { SalesTargetsController } from './sales-targets.controller';
   ],
   providers: [
     SalesEmployeeService,
+    ClinicImportService,
     SalesAssignmentService,
     SalesAssignmentImportService,
     SalesProgressService,

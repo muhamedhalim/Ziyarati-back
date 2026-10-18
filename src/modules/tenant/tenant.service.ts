@@ -1,6 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, FindOptionsWhere, ILike, Repository } from 'typeorm';
+import {
+  DataSource,
+  EntityManager,
+  FindOptionsWhere,
+  ILike,
+  Repository,
+} from 'typeorm';
 
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
@@ -57,32 +63,46 @@ export class TenantService {
     await this.assertSlugAvailable(dto.slug);
     await this.assertContactEmailAvailable(dto.contactEmail);
 
-    return this.dataSource.transaction(async (manager) => {
-      const tenant = await manager.save(
-        manager.create(Tenant, {
-          name: dto.name,
-          slug: dto.slug,
-          commercial_registration_number: dto.commercialRegistrationNumber,
-          contact_email: dto.contactEmail,
-          contact_phone: dto.contactPhone,
-          legal_name: dto.legalName,
-          logo_url: dto.logoUrl,
-          country_id: dto.countryId,
-          default_currency: dto.defaultCurrency ?? 'USD',
-          default_timezone: dto.defaultTimezone ?? 'UTC',
-        }),
-      );
+    return this.dataSource.transaction((manager) =>
+      this.createInTransaction(manager, dto, actorId),
+    );
+  }
 
-      await manager.save(manager.create(TenantSetting, { tenant }));
-      await manager.save(
-        manager.create(TenantApprovalEvent, {
-          tenant,
-          action: 'CREATED',
-          acted_by: actorId,
-        }),
-      );
-      return tenant;
-    });
+  /**
+   * The inserts behind {@link create}, on the CALLER's transaction so a caller
+   * (the platform clinic import) can add the owner account and the sales
+   * assignment to the same unit of work. No uniqueness pre-check here: the
+   * caller owns that, and the unique indexes remain the real guard.
+   */
+  async createInTransaction(
+    manager: EntityManager,
+    dto: CreateTenantDto,
+    actorId: string,
+  ): Promise<Tenant> {
+    const tenant = await manager.save(
+      manager.create(Tenant, {
+        name: dto.name,
+        slug: dto.slug,
+        commercial_registration_number: dto.commercialRegistrationNumber,
+        contact_email: dto.contactEmail,
+        contact_phone: dto.contactPhone,
+        legal_name: dto.legalName,
+        logo_url: dto.logoUrl,
+        country_id: dto.countryId,
+        default_currency: dto.defaultCurrency ?? 'USD',
+        default_timezone: dto.defaultTimezone ?? 'UTC',
+      }),
+    );
+
+    await manager.save(manager.create(TenantSetting, { tenant }));
+    await manager.save(
+      manager.create(TenantApprovalEvent, {
+        tenant,
+        action: 'CREATED',
+        acted_by: actorId,
+      }),
+    );
+    return tenant;
   }
 
   /** Platform-admin listing with status filter, search and pagination. */
