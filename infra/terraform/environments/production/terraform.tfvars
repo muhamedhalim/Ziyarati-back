@@ -115,7 +115,8 @@ app_secret_keys = [
   # PHASE 8 FLIP — add ONLY after `aws secretsmanager put-secret-value` has stored the key in
   # zt/production/app; a key listed here but absent from the JSON stops every ECS task from
   # starting. Production carries the LIVE key only (never TAP_TEST_SECRET_KEY).
-  # "TAP_LIVE_SECRET_KEY",
+  "TAP_LIVE_SECRET_KEY",
+  "TAP_MERCHANT_ID",
 ]
 
 # The live SNS alert topics had ONE confirmed subscriber (below) and no Terraform-managed one; list both so a
