@@ -42,6 +42,7 @@ describe('BillingService', () => {
     supportsCheckout: boolean;
     checkoutWindowMinutes: number;
     charge: jest.Mock;
+    verifyCheckout: jest.Mock;
   };
   let settlement: { settleInvoicePaid: jest.Mock };
   let methods: { resolveForCharge: jest.Mock };
@@ -66,6 +67,7 @@ describe('BillingService', () => {
       supportsCheckout: true,
       checkoutWindowMinutes: 30,
       charge: jest.fn(),
+      verifyCheckout: jest.fn(),
     };
     settlement = { settleInvoicePaid: jest.fn() };
     methods = { resolveForCharge: jest.fn().mockResolvedValue(null) };
@@ -701,7 +703,10 @@ describe('BillingService', () => {
         currency: 'SAR',
         retry_count: 0,
       });
-      payment.charge.mockResolvedValueOnce({ success: false, status: 'pending' });
+      payment.charge.mockResolvedValueOnce({
+        success: false,
+        status: 'pending',
+      });
       lockedRepo().findOne.mockResolvedValueOnce({
         id: 'inv1',
         status: InvoiceStatus.OPEN,
@@ -734,6 +739,149 @@ describe('BillingService', () => {
         'inv-1',
         evidence,
       );
+    });
+  });
+
+  describe('reconcileHostedCheckout — the provider decides what an open checkout means', () => {
+    const hosted = (over: Record<string, unknown> = {}) => ({
+      id: 'inv1',
+      tenant_id: TENANT,
+      status: InvoiceStatus.OPEN,
+      amount: '200.00',
+      currency: 'SAR',
+      checkout_charge_id: 'chg_1',
+      checkout_started_at: new Date(),
+      charge_started_at: null,
+      ...over,
+    });
+
+    it('nothing to ask without a hosted charge id', async () => {
+      const res = await service.reconcileHostedCheckout(
+        hosted({ checkout_charge_id: null }) as any,
+      );
+      expect(res).toBe('none');
+      expect(payment.verifyCheckout).not.toHaveBeenCalled();
+    });
+
+    it('a merchant-initiated claim is left to the reconciliation sweep', async () => {
+      const res = await service.reconcileHostedCheckout(
+        hosted({ charge_started_at: new Date() }) as any,
+      );
+      expect(res).toBe('none');
+      expect(payment.verifyCheckout).not.toHaveBeenCalled();
+    });
+
+    it('CAPTURED: booked through the one settle path with the captured amount (never voided)', async () => {
+      payment.verifyCheckout.mockResolvedValueOnce({
+        status: 'paid',
+        invoiceId: 'inv1',
+        capturedMinorUnits: 20000,
+        capturedCurrency: 'SAR',
+      });
+      settlement.settleInvoicePaid.mockResolvedValueOnce({
+        outcome: 'settled',
+      });
+
+      const res = await service.reconcileHostedCheckout(hosted() as any);
+
+      expect(res).toBe('paid');
+      expect(settlement.settleInvoicePaid).toHaveBeenCalledWith('inv1', {
+        source: 'checkout_verify',
+        provider: 'tap',
+        reference: 'chg_1',
+        capturedMinorUnits: 20000,
+        capturedCurrency: 'SAR',
+        amountRequired: true,
+        savedPaymentMethod: undefined,
+      });
+      expect(claimQb.execute).not.toHaveBeenCalled();
+    });
+
+    it('a capture the settle path REJECTS (amount mismatch …) stays blocking for manual review', async () => {
+      payment.verifyCheckout.mockResolvedValueOnce({
+        status: 'paid',
+        invoiceId: 'inv1',
+        capturedMinorUnits: 1,
+        capturedCurrency: 'SAR',
+      });
+      settlement.settleInvoicePaid.mockResolvedValueOnce({
+        outcome: 'rejected',
+        reason: 'amount_mismatch',
+      });
+      expect(await service.reconcileHostedCheckout(hosted() as any)).toBe(
+        'pending',
+      );
+    });
+
+    it.each([
+      ['FAILED', { status: 'failed' }],
+      ['unknown to the provider', { status: 'unknown', notFound: true }],
+    ])(
+      '%s: the dead checkout is cleared (guarded on the same charge id)',
+      async (_l, v) => {
+        payment.verifyCheckout.mockResolvedValueOnce(v);
+        const inv = hosted();
+
+        const res = await service.reconcileHostedCheckout(inv as any);
+
+        expect(res).toBe('cleared');
+        expect(inv.checkout_started_at).toBeNull();
+        expect(claimQb.set).toHaveBeenCalledWith({ checkout_started_at: null });
+        expect(claimQb.where).toHaveBeenCalledWith(
+          'id = :id AND checkout_charge_id = :chargeId',
+          { id: 'inv1', chargeId: 'chg_1' },
+        );
+        expect(settlement.settleInvoicePaid).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ['still PENDING on the hosted page', { status: 'pending' }],
+      ['the gateway cannot be reached', { status: 'unknown' }],
+      [
+        'a charge echoing ANOTHER invoice',
+        { status: 'paid', invoiceId: 'inv-other' },
+      ],
+    ])(
+      '%s: treated as in flight — nothing is settled or cleared',
+      async (_l, v) => {
+        payment.verifyCheckout.mockResolvedValueOnce(v);
+        expect(await service.reconcileHostedCheckout(hosted() as any)).toBe(
+          'pending',
+        );
+        expect(settlement.settleInvoicePaid).not.toHaveBeenCalled();
+        expect(claimQb.execute).not.toHaveBeenCalled();
+      },
+    );
+
+    it('a hosted page still INITIATED inside its payable window keeps blocking', async () => {
+      payment.verifyCheckout.mockResolvedValueOnce({
+        status: 'pending',
+        redirectUrl: 'https://tap.test/pay',
+      });
+      expect(await service.reconcileHostedCheckout(hosted() as any)).toBe(
+        'pending',
+      );
+    });
+
+    it('a hosted page still INITIATED PAST its payable window is dead — it no longer blocks forever', async () => {
+      payment.verifyCheckout.mockResolvedValueOnce({
+        status: 'pending',
+        redirectUrl: 'https://tap.test/pay',
+      });
+      const inv = hosted({
+        checkout_started_at: new Date(Date.now() - 2 * 3_600_000),
+      });
+      expect(await service.reconcileHostedCheckout(inv as any)).toBe('cleared');
+      expect(inv.checkout_started_at).toBeNull();
+    });
+
+    it('a pending answer with NO page (captured but unbookable) blocks even past the window', async () => {
+      payment.verifyCheckout.mockResolvedValueOnce({ status: 'pending' });
+      const inv = hosted({
+        checkout_started_at: new Date(Date.now() - 2 * 3_600_000),
+      });
+      expect(await service.reconcileHostedCheckout(inv as any)).toBe('pending');
     });
   });
 

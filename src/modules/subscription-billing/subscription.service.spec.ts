@@ -45,6 +45,7 @@ describe('SubscriptionService', () => {
     voidOpenInvoices: jest.Mock;
     voidSupersededOpenInvoices: jest.Mock;
     isPaymentInFlight: jest.Mock;
+    reconcileHostedCheckout: jest.Mock;
   };
   let access: { assertUsable: jest.Mock; invalidate: jest.Mock };
   let emitter: { emit: jest.Mock };
@@ -96,6 +97,7 @@ describe('SubscriptionService', () => {
       voidOpenInvoices: jest.fn().mockResolvedValue(0),
       voidSupersededOpenInvoices: jest.fn().mockResolvedValue(0),
       isPaymentInFlight: jest.fn().mockReturnValue(false),
+      reconcileHostedCheckout: jest.fn().mockResolvedValue('none'),
     };
     access = {
       assertUsable: jest.fn().mockResolvedValue(undefined),
@@ -125,7 +127,9 @@ describe('SubscriptionService', () => {
           provide: ConfigService,
           // NODE_ENV=test is the guard's explicit exemption: the legacy (no-checkout) tests below
           // exercise that path on purpose.
-          useValue: { get: jest.fn((k: string) => (k === 'NODE_ENV' ? 'test' : 14)) },
+          useValue: {
+            get: jest.fn((k: string) => (k === 'NODE_ENV' ? 'test' : 14)),
+          },
         },
       ],
     }).compile();
@@ -418,13 +422,16 @@ describe('SubscriptionService', () => {
         kind: SubscriptionInvoiceKind.UPGRADE,
         target_plan_id: 'p9',
       });
+      billing.voidSupersededOpenInvoices.mockResolvedValueOnce(1);
 
       const res = await service.changePlan(TENANT, { planId: 'p2' } as any);
 
-      expect(billing.voidOpenInvoices).toHaveBeenCalledWith(
+      // The guarded void: it re-checks "nobody is paying it" in the same UPDATE.
+      expect(billing.voidSupersededOpenInvoices).toHaveBeenCalledWith(
         'sub1',
         expect.stringContaining('quote'),
       );
+      expect(billing.voidOpenInvoices).not.toHaveBeenCalled();
       expect(res.mode).toBe('checkout');
       expect(billing.generateInvoice).toHaveBeenCalledTimes(1);
     });
@@ -443,25 +450,238 @@ describe('SubscriptionService', () => {
         service.changePlan(TENANT, { planId: 'p2' } as any),
       ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
       expect(billing.voidOpenInvoices).not.toHaveBeenCalled();
+      expect(billing.voidSupersededOpenInvoices).not.toHaveBeenCalled();
       expect(billing.generateInvoice).not.toHaveBeenCalled();
     });
 
     it.each([
       ['a renewal invoice', SubscriptionInvoiceKind.RENEWAL],
-      ['a legacy invoice', null],
+      ['a first-payment invoice', SubscriptionInvoiceKind.INITIAL],
       ['a reactivation invoice', SubscriptionInvoiceKind.REACTIVATION],
     ])(
-      'refuses to upgrade while %s is open — settle it first',
+      'refuses to upgrade while %s is open — it bills a real period, pay it first',
       async (_l, kind) => {
         liveSub({ plan: plan({ id: 'p1', price: 100 }) });
         target();
         billing.findOpenInvoice.mockResolvedValue({ id: 'inv-x', kind });
         await expect(
           service.changePlan(TENANT, { planId: 'p2' } as any),
-        ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+        ).rejects.toMatchObject({
+          code: ErrorCode.CONFLICT,
+          publicContext: { invoiceId: 'inv-x', kind },
+        });
+        expect(billing.voidOpenInvoices).not.toHaveBeenCalled();
+        expect(billing.voidSupersededOpenInvoices).not.toHaveBeenCalled();
         expect(billing.generateInvoice).not.toHaveBeenCalled();
       },
     );
+
+    describe('auto-renew OFF (cancel at period end) — the subscription is still ACTIVE to ends_at', () => {
+      const nonRenewing = () =>
+        liveSub({ plan: plan({ id: 'p1', price: 100 }), auto_renew: false });
+
+      it('a legacy invoice (kind NULL, no checkout) is superseded by the upgrade quote — it no longer blocks the change', async () => {
+        const sub = nonRenewing();
+        target();
+        billing.findOpenInvoice.mockResolvedValue({
+          id: 'inv-legacy',
+          kind: null,
+          amount: '100.00',
+        });
+        billing.voidSupersededOpenInvoices.mockResolvedValueOnce(1);
+        billing.generateInvoice.mockResolvedValueOnce({ id: 'inv-up' });
+
+        const res = await service.changePlan(TENANT, { planId: 'p2' } as any);
+
+        expect(res).toMatchObject({ mode: 'checkout', invoiceId: 'inv-up' });
+        expect(billing.voidSupersededOpenInvoices).toHaveBeenCalledWith(
+          'sub1',
+          expect.stringContaining('quote'),
+        );
+        expect(billing.generateInvoice).toHaveBeenCalledWith(
+          TENANT,
+          'sub1',
+          200,
+          expect.any(Date),
+          expect.any(Date),
+          'SAR',
+          InvoiceStatus.OPEN,
+          expect.objectContaining({ kind: SubscriptionInvoiceKind.UPGRADE }),
+        );
+        // Nothing switches before payment, and the clinic's auto-renew choice stays.
+        expect(sub.plan.id).toBe('p1');
+        expect(sub.auto_renew).toBe(false);
+      });
+
+      it('a free-plan invoice for 0.00 (kind NULL) is superseded as well', async () => {
+        liveSub({ plan: plan({ id: 'pf', price: 0 }), auto_renew: false });
+        target();
+        billing.findOpenInvoice.mockResolvedValue({
+          id: 'inv-zero',
+          kind: null,
+          amount: '0.00',
+        });
+        billing.voidSupersededOpenInvoices.mockResolvedValueOnce(1);
+        const res = await service.changePlan(TENANT, { planId: 'p2' } as any);
+        expect(res.mode).toBe('checkout');
+      });
+
+      it('an open RENEWAL invoice is still owed — auto-renew off does not cancel it, the change stays blocked', async () => {
+        nonRenewing();
+        target();
+        billing.findOpenInvoice.mockResolvedValue({
+          id: 'inv-renewal',
+          kind: SubscriptionInvoiceKind.RENEWAL,
+        });
+        await expect(
+          service.changePlan(TENANT, { planId: 'p2' } as any),
+        ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+        expect(billing.voidSupersededOpenInvoices).not.toHaveBeenCalled();
+        expect(billing.generateInvoice).not.toHaveBeenCalled();
+      });
+
+      it('a hosted checkout Tap confirms CAPTURED for another plan is booked, then the change is decided again from the new state', async () => {
+        const sub = nonRenewing();
+        target();
+        const open = {
+          id: 'inv-old',
+          kind: SubscriptionInvoiceKind.UPGRADE,
+          target_plan_id: 'p9',
+          checkout_charge_id: 'chg_paid',
+        };
+        // Before the settle the open invoice is there; after it, it is PAID (gone).
+        billing.findOpenInvoice
+          .mockResolvedValueOnce(open)
+          .mockResolvedValue(null);
+        billing.reconcileHostedCheckout.mockImplementationOnce(async () => {
+          // What the ONE settle path does for a paid UPGRADE.
+          sub.plan = plan({ id: 'p9', price: 150 });
+          return 'paid';
+        });
+        billing.generateInvoice.mockResolvedValueOnce({ id: 'inv-up' });
+
+        const res = await service.changePlan(TENANT, { planId: 'p2' } as any);
+
+        expect(billing.reconcileHostedCheckout).toHaveBeenCalledWith(open);
+        // The captured invoice is never voided under the payer.
+        expect(billing.voidSupersededOpenInvoices).not.toHaveBeenCalled();
+        expect(billing.voidOpenInvoices).not.toHaveBeenCalled();
+        // p9 (150) -> p2 (200) is still an upgrade: a fresh quote.
+        expect(res).toMatchObject({ mode: 'checkout', invoiceId: 'inv-up' });
+      });
+
+      it('a hosted checkout Tap confirms CAPTURED for the requested plan means the change already happened', async () => {
+        const sub = nonRenewing();
+        target();
+        billing.findOpenInvoice
+          .mockResolvedValueOnce({
+            id: 'inv-old',
+            kind: SubscriptionInvoiceKind.UPGRADE,
+            target_plan_id: 'p9',
+            checkout_charge_id: 'chg_paid',
+          })
+          .mockResolvedValue(null);
+        billing.reconcileHostedCheckout.mockImplementationOnce(async () => {
+          sub.plan = plan({ id: 'p2', price: 200 });
+          return 'paid';
+        });
+
+        const res = await service.changePlan(TENANT, { planId: 'p2' } as any);
+
+        expect(res.mode).toBe('switched');
+        expect(billing.generateInvoice).not.toHaveBeenCalled();
+      });
+
+      it('a captured RENEWAL is booked too — then nothing is owed and the upgrade is quoted', async () => {
+        nonRenewing();
+        target();
+        billing.findOpenInvoice
+          .mockResolvedValueOnce({
+            id: 'inv-renewal',
+            kind: SubscriptionInvoiceKind.RENEWAL,
+            checkout_charge_id: 'chg_paid',
+          })
+          .mockResolvedValue(null);
+        billing.reconcileHostedCheckout.mockResolvedValueOnce('paid');
+        const res = await service.changePlan(TENANT, { planId: 'p2' } as any);
+        expect(res.mode).toBe('checkout');
+        expect(billing.voidSupersededOpenInvoices).not.toHaveBeenCalled();
+      });
+
+      it('a hosted checkout Tap reports FAILED no longer counts as in flight — the quote is replaced', async () => {
+        nonRenewing();
+        target();
+        billing.findOpenInvoice.mockResolvedValue({
+          id: 'inv-old',
+          kind: SubscriptionInvoiceKind.UPGRADE,
+          target_plan_id: 'p9',
+          checkout_charge_id: 'chg_failed',
+          checkout_started_at: new Date(),
+        });
+        billing.reconcileHostedCheckout.mockImplementationOnce(
+          async (inv: { checkout_started_at: Date | null }) => {
+            inv.checkout_started_at = null;
+            return 'cleared';
+          },
+        );
+        billing.isPaymentInFlight.mockImplementation(
+          (inv: { checkout_started_at: Date | null }) =>
+            !!inv.checkout_started_at,
+        );
+        billing.voidSupersededOpenInvoices.mockResolvedValueOnce(1);
+
+        const res = await service.changePlan(TENANT, { planId: 'p2' } as any);
+
+        expect(res.mode).toBe('checkout');
+        expect(billing.voidSupersededOpenInvoices).toHaveBeenCalled();
+      });
+
+      it('a hosted checkout Tap still shows as PENDING (or cannot be asked) blocks the change — nothing is voided', async () => {
+        nonRenewing();
+        target();
+        billing.findOpenInvoice.mockResolvedValue({
+          id: 'inv-old',
+          kind: SubscriptionInvoiceKind.UPGRADE,
+          target_plan_id: 'p9',
+          checkout_charge_id: 'chg_pending',
+        });
+        billing.reconcileHostedCheckout.mockResolvedValueOnce('pending');
+
+        await expect(
+          service.changePlan(TENANT, { planId: 'p2' } as any),
+        ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+        expect(billing.voidSupersededOpenInvoices).not.toHaveBeenCalled();
+        expect(billing.generateInvoice).not.toHaveBeenCalled();
+      });
+
+      it('a payment that starts between the check and the void wins: the guarded void affects nothing and the change is refused', async () => {
+        nonRenewing();
+        target();
+        billing.findOpenInvoice.mockResolvedValue({
+          id: 'inv-legacy',
+          kind: null,
+        });
+        billing.voidSupersededOpenInvoices.mockResolvedValueOnce(0);
+        await expect(
+          service.changePlan(TENANT, { planId: 'p2' } as any),
+        ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+        expect(billing.generateInvoice).not.toHaveBeenCalled();
+      });
+
+      it('a DOWNGRADE needs no settlement either way: it is scheduled, the open invoice is untouched', async () => {
+        const sub = nonRenewing();
+        plans.findOne.mockResolvedValueOnce(plan({ id: 'p0', price: 40 }));
+        billing.findOpenInvoice.mockResolvedValue({
+          id: 'inv-legacy',
+          kind: null,
+        });
+        const res = await service.changePlan(TENANT, { planId: 'p0' } as any);
+        expect(res.mode).toBe('scheduled');
+        expect(sub.pending_plan).toEqual({ id: 'p0' });
+        expect(billing.voidSupersededOpenInvoices).not.toHaveBeenCalled();
+        expect(billing.voidOpenInvoices).not.toHaveBeenCalled();
+      });
+    });
 
     it('DOWNGRADE: scheduled for the next renewal — no invoice, the plan is unchanged now', async () => {
       const sub = liveSub({ plan: plan({ id: 'p1', price: 100 }) });
@@ -622,8 +842,10 @@ describe('SubscriptionService', () => {
       await service.cancel(TENANT, { cancelAtPeriodEnd: true } as any);
       expect(sub.status).toBe(SubscriptionStatus.ACTIVE);
       expect(sub.auto_renew).toBe(false);
-      // The subscription keeps running to ends_at: nothing to void yet.
+      // The subscription keeps running to ends_at: nothing to void yet. Turning
+      // auto-renew off is NOT cancelling an invoice — whatever is open stays open.
       expect(billing.voidSupersededOpenInvoices).not.toHaveBeenCalled();
+      expect(billing.voidOpenInvoices).not.toHaveBeenCalled();
     });
 
     it('a PENDING_PAYMENT subscription is cancelled at once even at period end — and its unpaid invoice is voided', async () => {

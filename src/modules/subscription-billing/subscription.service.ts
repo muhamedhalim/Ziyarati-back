@@ -612,20 +612,52 @@ export class SubscriptionService {
         );
         return { ...view, mode: 'checkout', invoiceId: open.id };
       }
-      // Re-quote only an upgrade nobody is paying right now; anything else
-      // (a renewal invoice, an upgrade with a checkout open) must be settled first.
-      if (
-        open.kind !== SubscriptionInvoiceKind.UPGRADE ||
-        this.billing.isPaymentInFlight(open)
-      ) {
+      // A hosted checkout was opened on it: what Tap says about that charge
+      // decides, not our checkout timer — a captured charge is booked (never
+      // voided under the payer), a dead one stops counting as in flight.
+      const hosted = await this.billing.reconcileHostedCheckout(open);
+      if (hosted === 'paid') {
+        // That payment may itself have changed the plan or the period: decide
+        // again from what is now true.
+        const fresh = await this.loadWithPlan(tenantId, current.id);
+        if (fresh.plan.id === newPlan.id) {
+          const view = await this.withBilling(this.view(fresh));
+          return { ...view, mode: 'switched' };
+        }
+        return this.changePlanWithPayment(tenantId, fresh, newPlan);
+      }
+
+      // An invoice that bills a real period (a renewal, a first payment, a
+      // reactivation) is money owed: it is paid first, whatever auto-renew says.
+      // Only an upgrade quote or a legacy invoice (kind NULL — which settles as
+      // nothing and which the renewal sweep itself supersedes) may be replaced.
+      const supersedable =
+        open.kind == null || open.kind === SubscriptionInvoiceKind.UPGRADE;
+      if (!supersedable) {
         throw new AppError(ErrorCode.CONFLICT, {
-          message: 'Pay or cancel the open invoice before changing your plan',
+          message: 'Pay the open invoice before changing your plan',
+          publicContext: { invoiceId: open.id, kind: open.kind },
         });
       }
-      await this.billing.voidOpenInvoices(
+      if (hosted === 'pending' || this.billing.isPaymentInFlight(open)) {
+        throw new AppError(ErrorCode.CONFLICT, {
+          message:
+            'A payment for the open invoice is in progress — finish it or try again shortly',
+          publicContext: { invoiceId: open.id, kind: open.kind },
+        });
+      }
+      // Atomic: voids only while still nobody is paying it.
+      const voided = await this.billing.voidSupersededOpenInvoices(
         current.id,
         'Superseded by a new plan quote',
       );
+      if (voided === 0) {
+        throw new AppError(ErrorCode.CONFLICT, {
+          message:
+            'A payment for the open invoice is in progress — finish it or try again shortly',
+          publicContext: { invoiceId: open.id, kind: open.kind },
+        });
+      }
     }
 
     const now = new Date();
@@ -878,7 +910,9 @@ export class SubscriptionService {
    * The only exceptions are tests (NODE_ENV=test) and an explicit local opt-in,
    * `SUBSCRIPTION_ALLOW_UNPAID_STUB=true`, which is ignored in production.
    */
-  private async assertPaidPlanChargeable(plan: SubscriptionPlan): Promise<void> {
+  private async assertPaidPlanChargeable(
+    plan: SubscriptionPlan,
+  ): Promise<void> {
     if (!this.isPaid(plan) || this.billing.supportsCheckout) return;
     const env = this.config.get<string>('NODE_ENV') ?? process.env.NODE_ENV;
     if (env === 'test') return;

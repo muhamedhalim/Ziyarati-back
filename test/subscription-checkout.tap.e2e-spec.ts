@@ -836,6 +836,190 @@ describe('Subscriptions over Tap (Phase 3) — real Postgres + Redis', () => {
       });
       expect(res.status).toBe(409);
     });
+
+    describe('auto-renew OFF (cancel at period end) — still ACTIVE until ends_at', () => {
+      let planMax: SubscriptionPlan; // 499.00 /month — a second upgrade target
+
+      beforeAll(async () => {
+        const plans = db().getRepository(SubscriptionPlan);
+        planMax = await plans.save(
+          plans.create({
+            name: `P3 Max ${randomUUID().slice(0, 6)}`,
+            price: '499.00',
+            billing_cycle: BillingCycle.MONTHLY,
+            is_active: true,
+            is_custom: false,
+          }),
+        );
+      });
+      afterAll(async () => {
+        await db()
+          .getRepository(SubscriptionPlan)
+          .update({ id: planMax.id }, { is_active: false });
+      });
+
+      /** An ACTIVE paid clinic that turned auto-renew off (NOT an immediate cancel). */
+      async function nonRenewingClinic(label: string, plan = planBasic) {
+        const fx = await activeClinic(label, plan);
+        const res = await api.post(fx.clinic.token, '/subscriptions/cancel', {
+          cancelAtPeriodEnd: true,
+        });
+        expect(res.status).toBe(200);
+        const s = await sub(fx.subscriptionId);
+        expect(s.status).toBe(SubscriptionStatus.ACTIVE);
+        expect(s.auto_renew).toBe(false);
+        return fx;
+      }
+
+      const openOf = async (subscriptionId: string) =>
+        (await invoicesOf(subscriptionId)).filter(
+          (i) => i.status === InvoiceStatus.OPEN,
+        );
+
+      it('turning auto-renew off does not cancel an open invoice — and a legacy invoice (kind NULL) no longer blocks the upgrade', async () => {
+        const { clinic, subscriptionId } = await activeClinic('c6', planBasic);
+        const s0 = await sub(subscriptionId);
+        // An unpaid legacy invoice (issued before `kind` existed / by the no-checkout path).
+        const legacy = await invoices().save(
+          invoices().create({
+            tenant_id: clinic.tenantId,
+            subscription_id: subscriptionId,
+            amount: '99.00',
+            currency: 'SAR',
+            status: InvoiceStatus.OPEN,
+            kind: null,
+            period_start: new Date(s0.starts_at.getTime() - 1_000),
+            period_end: s0.ends_at,
+          }),
+        );
+        await api.post(clinic.token, '/subscriptions/cancel', {
+          cancelAtPeriodEnd: true,
+        });
+        expect((await inv(legacy.id)).status).toBe(InvoiceStatus.OPEN);
+
+        const res = await api.post(clinic.token, '/subscriptions/change-plan', {
+          planId: planPro.id,
+        });
+
+        expect(res.status).toBe(200);
+        expect(res.body.mode).toBe('checkout');
+        expect((await inv(legacy.id)).status).toBe(InvoiceStatus.VOID);
+        expect(await inv(res.body.invoiceId)).toMatchObject({
+          status: InvoiceStatus.OPEN,
+          kind: SubscriptionInvoiceKind.UPGRADE,
+          target_plan_id: planPro.id,
+        });
+        const s = await sub(subscriptionId);
+        expect(s.plan.id).toBe(planBasic.id); // nothing switches before payment
+        expect(s.auto_renew).toBe(false);
+      });
+
+      it('an open RENEWAL invoice is still owed: the upgrade is refused and the invoice is untouched', async () => {
+        const { clinic, subscriptionId } = await nonRenewingClinic('c7');
+        const s = await sub(subscriptionId);
+        const renewal = await invoices().save(
+          invoices().create({
+            tenant_id: clinic.tenantId,
+            subscription_id: subscriptionId,
+            amount: '99.00',
+            currency: 'SAR',
+            status: InvoiceStatus.OPEN,
+            kind: SubscriptionInvoiceKind.RENEWAL,
+            period_start: s.ends_at,
+            period_end: computeNextPeriodEnd(s.ends_at, planBasic),
+          }),
+        );
+
+        const res = await api.post(clinic.token, '/subscriptions/change-plan', {
+          planId: planPro.id,
+        });
+
+        expect(res.status).toBe(409);
+        expect((await inv(renewal.id)).status).toBe(InvoiceStatus.OPEN);
+      });
+
+      it('an upgrade Tap CAPTURED whose webhook never arrived is booked from Tap (never voided), then the next change is decided from the new plan', async () => {
+        const { clinic, subscriptionId } = await nonRenewingClinic('c8');
+        const quote = await api.post(
+          clinic.token,
+          '/subscriptions/change-plan',
+          {
+            planId: planPro.id,
+          },
+        );
+        expect((await openCheckout(clinic, quote.body.invoiceId)).status).toBe(
+          200,
+        );
+        const chargeId = tap.lastCharge().id as string;
+        tap.capture(chargeId); // paid on Tap's page; no webhook, no return visit
+
+        const res = await api.post(clinic.token, '/subscriptions/change-plan', {
+          planId: planMax.id,
+        });
+
+        expect(res.status).toBe(200);
+        const paid = await inv(quote.body.invoiceId);
+        expect(paid.status).toBe(InvoiceStatus.PAID);
+        expect(paid.provider_reference).toBe(chargeId);
+        const s = await sub(subscriptionId);
+        expect(s.plan.id).toBe(planPro.id); // the payment Tap confirmed applied
+        expect(s.auto_renew).toBe(false); // the clinic's choice is kept
+        // Pro (299) → Max (499) is still an upgrade: a fresh quote.
+        expect(res.body.mode).toBe('checkout');
+        expect(await inv(res.body.invoiceId)).toMatchObject({
+          status: InvoiceStatus.OPEN,
+          kind: SubscriptionInvoiceKind.UPGRADE,
+          target_plan_id: planMax.id,
+        });
+      });
+
+      it('an upgrade checkout Tap DECLINED no longer counts as in flight: the quote is replaced at once', async () => {
+        const { clinic, subscriptionId } = await nonRenewingClinic('c9');
+        const quote = await api.post(
+          clinic.token,
+          '/subscriptions/change-plan',
+          {
+            planId: planPro.id,
+          },
+        );
+        await openCheckout(clinic, quote.body.invoiceId);
+        tap.decline(tap.lastCharge().id as string);
+
+        const res = await api.post(clinic.token, '/subscriptions/change-plan', {
+          planId: planMax.id,
+        });
+
+        expect(res.status).toBe(200);
+        expect(res.body.mode).toBe('checkout');
+        expect((await inv(quote.body.invoiceId)).status).toBe(
+          InvoiceStatus.VOID,
+        );
+        expect((await openOf(subscriptionId)).map((i) => i.id)).toEqual([
+          res.body.invoiceId,
+        ]);
+      });
+
+      it('an upgrade checkout still open on Tap blocks a different plan (409) and voids nothing', async () => {
+        const { clinic } = await nonRenewingClinic('c10');
+        const quote = await api.post(
+          clinic.token,
+          '/subscriptions/change-plan',
+          {
+            planId: planPro.id,
+          },
+        );
+        await openCheckout(clinic, quote.body.invoiceId); // INITIATED, payer still on the page
+
+        const res = await api.post(clinic.token, '/subscriptions/change-plan', {
+          planId: planMax.id,
+        });
+
+        expect(res.status).toBe(409);
+        expect((await inv(quote.body.invoiceId)).status).toBe(
+          InvoiceStatus.OPEN,
+        );
+      });
+    });
   });
 
   // ═════════════════ D. D3 — merchant-initiated renewals ═════════════════ //

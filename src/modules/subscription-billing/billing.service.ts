@@ -213,6 +213,73 @@ export class BillingService {
     return checkoutOpen || chargeClaimBlocks(invoice, now);
   }
 
+  /**
+   * Asks the provider what became of the hosted checkout charge on an OPEN invoice,
+   * so a decision about that invoice (supersede it, refuse a plan change) rests on
+   * the provider's confirmed status instead of our own timers:
+   *
+   *  - `paid`    — captured: booked through the ONE settle path (the invoice is PAID
+   *                and the subscription advanced exactly as the webhook would have).
+   *  - `cleared` — failed, unknown to the provider, or a page past its payable
+   *                window: that checkout is dead and no longer counts as in flight.
+   *  - `pending` — still payable on the hosted page, captured but not bookable
+   *                (left for an operator), or the provider cannot be asked right
+   *                now: treat the invoice as being paid.
+   *  - `none`    — nothing to ask: no hosted charge id, or a merchant-initiated
+   *                charge claim owns the invoice (the reconciliation sweep resolves
+   *                those).
+   */
+  async reconcileHostedCheckout(
+    invoice: SubscriptionInvoice,
+  ): Promise<'paid' | 'cleared' | 'pending' | 'none'> {
+    const chargeId = invoice.checkout_charge_id;
+    if (!chargeId || invoice.charge_started_at) return 'none';
+
+    const v = await this.payment.verifyCheckout(chargeId);
+    // A charge echoing another invoice is not this invoice's payment.
+    if (v.invoiceId && v.invoiceId !== invoice.id) return 'pending';
+
+    if (v.status === 'paid') {
+      const settled = await this.settlement.settleInvoicePaid(invoice.id, {
+        source: 'checkout_verify',
+        provider: this.payment.name,
+        reference: chargeId,
+        capturedMinorUnits: v.capturedMinorUnits,
+        capturedCurrency: v.capturedCurrency,
+        amountRequired: this.payment.supportsCheckout,
+        savedPaymentMethod: v.savedPaymentMethod,
+      });
+      // Rejected (amount mismatch, …) is left for manual review: still blocking.
+      return settled.outcome === 'rejected' ? 'pending' : 'paid';
+    }
+    // Still INITIATED on a hosted page whose payable window has passed: nobody can
+    // complete it any more (the same rule `isPaymentInFlight` applies). A pending
+    // answer WITHOUT a page (captured but unreadable, misrouted) is for an operator.
+    const expiredPage =
+      v.status === 'pending' &&
+      !!v.redirectUrl &&
+      !this.isPaymentInFlight(invoice);
+    if (
+      v.status === 'failed' ||
+      (v.status === 'unknown' && v.notFound) ||
+      expiredPage
+    ) {
+      await this.invoices
+        .createQueryBuilder()
+        .update(SubscriptionInvoice)
+        .set({ checkout_started_at: null })
+        .where('id = :id AND checkout_charge_id = :chargeId', {
+          id: invoice.id,
+          chargeId,
+        })
+        .andWhere('status = :open', { open: InvoiceStatus.OPEN })
+        .execute();
+      invoice.checkout_started_at = null;
+      return 'cleared';
+    }
+    return 'pending';
+  }
+
   /** Settles an invoice from a proof of payment. See {@link InvoiceSettlementService}. */
   settleInvoicePaid(invoiceId: string, evidence: SettleEvidence) {
     return this.settlement.settleInvoicePaid(invoiceId, evidence);
