@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
 import { PaymentsConfig } from '../../payments/payments.config';
 import { TapApiClient } from '../../payments/providers/tap/tap-api.client';
@@ -95,7 +95,7 @@ const MIT_CLIENT_IP = '127.0.0.1';
  * "your payment failed" for money that may in fact have been captured).
  */
 @Injectable()
-export class TapSubscriptionProvider implements PaymentProvider {
+export class TapSubscriptionProvider implements PaymentProvider, OnModuleInit {
   readonly name = 'tap';
   readonly supportsCheckout = true;
 
@@ -118,6 +118,29 @@ export class TapSubscriptionProvider implements PaymentProvider {
    */
   get isConfigured(): boolean {
     return this.client.isConfigured && !!this.config.tapMerchantId?.trim();
+  }
+
+  /**
+   * Tap is the gateway for a live deployment but this provider cannot take a checkout:
+   * the module then binds the non-checkout fallback and paid plans are refused (503).
+   * Say WHY once at boot, by setting NAME only, as an `ALERT:` line (P-01). Silent where
+   * payments are not live (dev/test), where the call-time "no secret key" log suffices.
+   */
+  onModuleInit(): void {
+    if (
+      !this.config.paymentsLive ||
+      this.config.providerName !== 'tap' ||
+      this.isConfigured
+    ) {
+      return;
+    }
+    const missing = [
+      this.client.isConfigured ? null : 'the secret key for TAP_ENV',
+      this.config.tapMerchantId?.trim() ? null : 'TAP_MERCHANT_ID',
+    ].filter(Boolean);
+    this.logger.error(
+      `ALERT: PAYMENT_PROVIDER=tap but subscription payments are unavailable — missing ${missing.join(' and ')}; paid plans are refused until it is set`,
+    );
   }
 
   // ───────────────────────────── hosted checkout ──────────────────────────── //

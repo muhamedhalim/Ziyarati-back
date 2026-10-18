@@ -866,19 +866,32 @@ export class SubscriptionService {
   }
 
   /**
-   * FIN-004 — in PRODUCTION, with platform billing in PAID mode, a paid plan
-   * must never go ACTIVE without a payment: when no provider can take a
-   * checkout (`RecurringUnavailableProvider`) the "legacy immediate" paths
-   * would hand the plan over with an unpaid invoice. Dev/test keep the legacy
-   * behaviour (decisions D2/D4), as does FREE billing mode, where plans are not
-   * charged by design.
+   * FIN-004 — a paid plan must NEVER go ACTIVE without a payment. When no provider can
+   * take a checkout (`RecurringUnavailableProvider`, the dev stub, or Tap left
+   * unconfigured) the "legacy immediate" paths would hand the plan over with an unpaid
+   * invoice and the clinic would never be sent to pay. So this refuses in EVERY
+   * environment and billing mode.
+   *
+   * 422 (the code SubscriptionCheckoutService uses for the same condition), NOT 503: the web
+   * client treats every 503 as platform maintenance and redirects to /maintenance.
+   *
+   * The only exceptions are tests (NODE_ENV=test) and an explicit local opt-in,
+   * `SUBSCRIPTION_ALLOW_UNPAID_STUB=true`, which is ignored in production.
    */
   private async assertPaidPlanChargeable(plan: SubscriptionPlan): Promise<void> {
     if (!this.isPaid(plan) || this.billing.supportsCheckout) return;
     const env = this.config.get<string>('NODE_ENV') ?? process.env.NODE_ENV;
-    if (env !== 'production') return;
-    if (!(await this.billingMode?.isPaidMode())) return;
-    throw new AppError(ErrorCode.SERVICE_UNAVAILABLE, {
+    if (env === 'test') return;
+    if (
+      env !== 'production' &&
+      String(
+        this.config.get<string>('SUBSCRIPTION_ALLOW_UNPAID_STUB') ??
+          process.env.SUBSCRIPTION_ALLOW_UNPAID_STUB,
+      ) === 'true'
+    ) {
+      return;
+    }
+    throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
       message:
         'Online payment is not available right now, so this paid plan cannot be activated. Please contact support.',
     });

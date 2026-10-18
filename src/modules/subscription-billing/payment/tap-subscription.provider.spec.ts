@@ -102,6 +102,38 @@ describe('TapSubscriptionProvider', () => {
     };
   });
 
+  describe('onModuleInit — misconfiguration alert', () => {
+    const alertOf = (p: TapSubscriptionProvider) => {
+      const error = jest
+        .spyOn((p as unknown as { logger: { error: () => void } }).logger, 'error')
+        .mockImplementation();
+      p.onModuleInit();
+      return error;
+    };
+
+    it('names the missing setting (never a value) when live Tap is unusable', () => {
+      cfg.paymentsLive = true;
+      cfg.providerName = 'tap';
+      cfg.tapMerchantId = undefined;
+      client.isConfigured = false;
+      const error = alertOf(build());
+      expect(error).toHaveBeenCalledTimes(1);
+      const line = String(error.mock.calls[0][0]);
+      expect(line).toMatch(/^ALERT: PAYMENT_PROVIDER=tap/);
+      expect(line).toContain('the secret key for TAP_ENV and TAP_MERCHANT_ID');
+    });
+
+    it.each([
+      ['configured', { paymentsLive: true, providerName: 'tap' }, true],
+      ['not live (dev/test)', { paymentsLive: false, providerName: 'tap' }, false],
+      ['another gateway', { paymentsLive: true, providerName: 'noop' }, false],
+    ])('is silent when %s', (_label, over, clientOk) => {
+      Object.assign(cfg, over);
+      client.isConfigured = clientOk;
+      expect(alertOf(build())).not.toHaveBeenCalled();
+    });
+  });
+
   it('identifies itself and can take a checkout', () => {
     const p = build();
     expect(p.name).toBe('tap');

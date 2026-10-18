@@ -123,7 +123,9 @@ describe('SubscriptionService', () => {
         { provide: EventEmitter2, useValue: emitter },
         {
           provide: ConfigService,
-          useValue: { get: jest.fn().mockReturnValue(14) },
+          // NODE_ENV=test is the guard's explicit exemption: the legacy (no-checkout) tests below
+          // exercise that path on purpose.
+          useValue: { get: jest.fn((k: string) => (k === 'NODE_ENV' ? 'test' : 14)) },
         },
       ],
     }).compile();

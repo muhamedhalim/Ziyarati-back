@@ -244,6 +244,9 @@ export const validate = (config: Record<string, unknown>) => {
     // Floored at 1 day so an unset/zero value can never mean "no grace at
     // all" (FR-B007g — configurable, never hardcoded, and never silently zero).
     SUBSCRIPTION_GRACE_DAYS: Joi.number().min(1).default(14),
+    // Local-dev escape hatch ONLY (ignored in production): lets a paid plan go ACTIVE with no
+    // payment when no checkout provider exists. Off by default.
+    SUBSCRIPTION_ALLOW_UNPAID_STUB: Joi.boolean().default(false),
     // Days a paid-plan subscription may wait in PENDING_PAYMENT before it is cancelled. 0 = never.
     SUBSCRIPTION_PENDING_PAYMENT_TTL_DAYS: Joi.number()
       .integer()
