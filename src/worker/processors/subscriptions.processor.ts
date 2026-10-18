@@ -17,6 +17,7 @@ import { SubscriptionStatus } from '../../entities/enums';
 import { EmailService } from '../../modules/email/email.service';
 import { RenewalService } from '../../modules/subscription-billing/renewal.service';
 import { PendingPaymentExpiryService } from '../../modules/subscription-billing/pending-payment-expiry.service';
+import { ScheduledPlanChangeService } from '../../modules/subscription-billing/scheduled-plan-change.service';
 import { MetricsService } from '../../metrics/metrics.service';
 import {
   PlatformAdminAuditService,
@@ -72,6 +73,7 @@ export class SubscriptionsProcessor extends WorkerHost {
     private readonly pendingExpiry: PendingPaymentExpiryService,
     private readonly lock: DistributedLockService,
     private readonly metrics: MetricsService,
+    private readonly scheduledChanges: ScheduledPlanChangeService,
   ) {
     super();
   }
@@ -181,6 +183,19 @@ export class SubscriptionsProcessor extends WorkerHost {
       `renewalCheck: ${total} subscription(s) due within ${RENEWAL_WINDOW_DAYS}d across ${byTenant.size} tenant(s)`,
     );
 
+    // A downgrade scheduled for the end of a term that will NOT renew lands at that
+    // end, before the same tick moves the subscription to PAST_DUE. (Auto-renewing
+    // subscriptions keep getting theirs from the renewal invoice.) Isolated: a
+    // failure here must not stop the grace state machine below.
+    const downgrades = await this.scheduledChanges
+      .applyDueDowngrades()
+      .catch((err) => {
+        this.logger.error(
+          `renewalCheck: scheduled downgrades failed: ${(err as Error)?.message}`,
+        );
+        return { applied: 0 };
+      });
+
     const [expiringSoon, enteredGrace, graceEndingSoon, graceExpired] =
       await Promise.all([
         this.warnExpiringSoon(),
@@ -196,6 +211,7 @@ export class SubscriptionsProcessor extends WorkerHost {
       enteredGrace,
       graceEndingSoonWarned: graceEndingSoon,
       graceExpired,
+      downgradesApplied: downgrades.applied,
     };
   }
 

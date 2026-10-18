@@ -848,6 +848,13 @@ describe('SubscriptionService', () => {
       expect(billing.voidOpenInvoices).not.toHaveBeenCalled();
     });
 
+    it('cancel-at-period-end KEEPS a scheduled downgrade — it still takes effect at ends_at', async () => {
+      const sub = liveSub({ pending_plan: plan({ id: 'p0', price: 40 }) });
+      await service.cancel(TENANT, { cancelAtPeriodEnd: true } as any);
+      expect(sub.auto_renew).toBe(false);
+      expect(sub.pending_plan).toMatchObject({ id: 'p0' });
+    });
+
     it('a PENDING_PAYMENT subscription is cancelled at once even at period end — and its unpaid invoice is voided', async () => {
       const sub = liveSub({ status: SubscriptionStatus.PENDING_PAYMENT });
       await service.cancel(TENANT, { cancelAtPeriodEnd: true } as any);
@@ -860,6 +867,70 @@ describe('SubscriptionService', () => {
       expect(emitted(SubscriptionCancelledEvent)[0][1]).toMatchObject({
         cancelAtPeriodEnd: false,
       });
+    });
+  });
+
+  describe('reactivate — ACTIVE with auto-renew OFF (resume auto-renew)', () => {
+    const wireUpdate = (affected: number) => {
+      const qb = createMockQueryBuilder();
+      (qb.execute as jest.Mock).mockResolvedValue({ affected, raw: [] });
+      subscriptions.createQueryBuilder.mockReturnValue(qb);
+      return qb;
+    };
+
+    it.each([
+      ['legacy (no checkout)', false],
+      ['Tap (checkout bound)', true],
+    ])(
+      '%s: turns auto-renew back on with NO charge and NO invoice — the period is already paid',
+      async (_l, checkout) => {
+        billing.supportsCheckout = checkout;
+        const sub = liveSub({
+          auto_renew: false,
+          pending_plan: plan({ id: 'p0', price: 40 }),
+        });
+        const qb = wireUpdate(1);
+
+        const res = await service.reactivate(TENANT);
+
+        expect(qb.set).toHaveBeenCalledWith({ auto_renew: true });
+        // Guarded on the state that was read: only an ACTIVE, non-renewing row flips.
+        expect(qb.where).toHaveBeenCalledWith(
+          'id = :id AND auto_renew = false AND status = :active',
+          { id: 'sub1', active: SubscriptionStatus.ACTIVE },
+        );
+        expect(res.subscription.auto_renew).toBe(true);
+        expect(res.subscription.status).toBe(SubscriptionStatus.ACTIVE);
+        // Paid-through date and a scheduled downgrade are untouched.
+        expect(sub.ends_at).toBe(future);
+        expect(sub.pending_plan).toMatchObject({ id: 'p0' });
+        expect(billing.generateInvoice).not.toHaveBeenCalled();
+        expect(billing.voidOpenInvoices).not.toHaveBeenCalled();
+        expect(billing.voidSupersededOpenInvoices).not.toHaveBeenCalled();
+        expect(subscriptions.save).not.toHaveBeenCalled();
+        expect(access.invalidate).toHaveBeenCalledWith(TENANT);
+        expect(emitted(SubscriptionReactivatedEvent)).toHaveLength(1);
+      },
+    );
+
+    it('a concurrent second request (the row already flipped) gets the old 409 and emits nothing', async () => {
+      billing.supportsCheckout = true;
+      liveSub({ auto_renew: false });
+      wireUpdate(0);
+      await expect(service.reactivate(TENANT)).rejects.toMatchObject({
+        code: ErrorCode.CONFLICT,
+      });
+      expect(emitted(SubscriptionReactivatedEvent)).toHaveLength(0);
+      expect(billing.generateInvoice).not.toHaveBeenCalled();
+    });
+
+    it('an ACTIVE subscription that IS renewing is still a 409 (nothing to reactivate)', async () => {
+      billing.supportsCheckout = true;
+      liveSub({ auto_renew: true });
+      await expect(service.reactivate(TENANT)).rejects.toMatchObject({
+        code: ErrorCode.CONFLICT,
+      });
+      expect(subscriptions.createQueryBuilder).not.toHaveBeenCalled();
     });
   });
 

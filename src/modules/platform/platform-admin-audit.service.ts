@@ -48,6 +48,10 @@ export const PLATFORM_ADMIN_AUDIT_ACTION = {
   SUBSCRIPTION_PAYMENT_UNAPPLIED: 'subscription.payment_unapplied',
   // A paid-plan subscription cancelled by the system because its first payment never came.
   SUBSCRIPTION_PENDING_PAYMENT_EXPIRED: 'subscription.pending_payment_expired',
+  // A downgrade scheduled for the end of the term, applied there by the system
+  // because auto-renew was off (no renewal invoice would have applied it).
+  SUBSCRIPTION_SCHEDULED_DOWNGRADE_APPLIED:
+    'subscription.scheduled_downgrade_applied',
   // Platform Customer Service staff provisioning (PlatformStaffService).
   STAFF_CREATE: 'platform_admin.staff.create',
   STAFF_UPDATE: 'platform_admin.staff.update',

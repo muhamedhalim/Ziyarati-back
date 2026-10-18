@@ -480,7 +480,11 @@ again when online payment is available: a reactivation invoice is issued
 renewal invoice. With no online payment available it returns to ACTIVE with a
 fresh period, as before.
 
-**Business rules:** 409 if already active, suspended, or still on a trial.
+An ACTIVE subscription with auto-renew turned off (cancelled at period end)
+simply resumes auto-renew: nothing is charged and no invoice is issued — the
+current period is already paid, and the renewal bills the next one when due.
+
+**Business rules:** 409 if already active AND auto-renewing, suspended, or still on a trial.
 
 **Who can call this:** Owner (\`subscription.manage\`).
     `.trim(),
@@ -502,7 +506,8 @@ fresh period, as before.
     schema: S_ERROR,
   })
   @ApiConflictResponse({
-    description: 'Subscription is already active.',
+    description:
+      'Subscription is already active and auto-renewing, suspended, or a trial.',
     schema: S_ERROR,
   })
   @Post('reactivate')

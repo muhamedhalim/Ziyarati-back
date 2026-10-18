@@ -348,14 +348,17 @@ export class SubscriptionService {
     const current = await this.getActiveSubscription(tenantId);
 
     current.auto_renew = false;
-    // A scheduled downgrade is moot once the subscription is ending.
-    current.pending_plan = null;
     const neverPaid = current.status === SubscriptionStatus.PENDING_PAYMENT;
     if (neverPaid || !dto.cancelAtPeriodEnd) {
       // Immediate cancellation. A subscription that was never paid has no period
       // to keep, so "at period end" would only leave it stuck PENDING_PAYMENT.
       current.status = SubscriptionStatus.CANCELLED;
+      // Nothing is left for a scheduled downgrade to apply to.
+      current.pending_plan = null;
     }
+    // At period end a scheduled downgrade is KEPT: it still takes effect at
+    // ends_at (`ScheduledPlanChangeService`), and turning auto-renew back on
+    // has the renewal bill it as before.
     // If cancelAtPeriodEnd: keep status/access until ends_at; only auto-renew off.
     await this.subscriptions.save(current);
     if (neverPaid) {
@@ -405,9 +408,7 @@ export class SubscriptionService {
       });
     }
     if (subscription.status === SubscriptionStatus.ACTIVE) {
-      throw new AppError(ErrorCode.CONFLICT, {
-        message: 'Subscription is already active',
-      });
+      return this.resumeAutoRenew(tenantId, subscription);
     }
 
     if (!this.billing.supportsCheckout || !this.isPaid(subscription.plan)) {
@@ -768,6 +769,49 @@ export class SubscriptionService {
   }
 
   // ───────────────────────────── Reactivation ────────────────────────────── //
+
+  /**
+   * ACTIVE with auto-renew off (cancel at period end): turning auto-renew back
+   * on. The running period is already paid — the same rule as a CANCELLED
+   * subscription resumed inside its period — so nothing is charged and no
+   * invoice is issued; the renewal job bills the next period once it is due,
+   * exactly as for any auto-renewing subscription (`UQ_sub_invoice_period`
+   * keeps that to one invoice). A scheduled downgrade is kept: that renewal
+   * bills it.
+   *
+   * Guarded UPDATE, so a double click (or two tabs) resumes it once; the loser,
+   * like a subscription that never stopped renewing, gets the old 409.
+   */
+  private async resumeAutoRenew(
+    tenantId: string,
+    subscription: Subscription,
+  ): Promise<SubscriptionView> {
+    const res = subscription.auto_renew
+      ? { affected: 0 }
+      : await this.subscriptions
+          .createQueryBuilder()
+          .update(Subscription)
+          .set({ auto_renew: true })
+          .where('id = :id AND auto_renew = false AND status = :active', {
+            id: subscription.id,
+            active: SubscriptionStatus.ACTIVE,
+          })
+          .execute();
+    if (!res.affected) {
+      throw new AppError(ErrorCode.CONFLICT, {
+        message: 'Subscription is already active',
+      });
+    }
+    subscription.auto_renew = true;
+    this.access.invalidate(tenantId);
+    this.emitter.emit(
+      SubscriptionReactivatedEvent.eventName,
+      new SubscriptionReactivatedEvent(tenantId, subscription.id),
+    );
+    return this.withBilling(
+      this.view(await this.loadWithPlan(tenantId, subscription.id)),
+    );
+  }
 
   /** Legacy behaviour: straight back to ACTIVE, with a fresh period if it had lapsed. */
   private async reactivateImmediately(

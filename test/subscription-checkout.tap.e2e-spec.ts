@@ -43,6 +43,7 @@ import { TapSandbox, settle } from './utils/tap-e2e';
 import { TapApiClient } from '../src/modules/payments/providers/tap/tap-api.client';
 import { PaymentReconciliationService } from '../src/modules/payments/payment-reconciliation.service';
 import { RenewalService } from '../src/modules/subscription-billing/renewal.service';
+import { ScheduledPlanChangeService } from '../src/modules/subscription-billing/scheduled-plan-change.service';
 import { BillingService } from '../src/modules/subscription-billing/billing.service';
 import { AccessControlService } from '../src/modules/subscription-billing/access-control.service';
 
@@ -1018,6 +1019,214 @@ describe('Subscriptions over Tap (Phase 3) — real Postgres + Redis', () => {
         expect((await inv(quote.body.invoiceId)).status).toBe(
           InvoiceStatus.OPEN,
         );
+      });
+
+      // ── Resuming auto-renew on a subscription that is still ACTIVE ── //
+
+      const scheduled = () =>
+        e2e.moduleRef.get(ScheduledPlanChangeService, { strict: false });
+      const chargeCount = () => tap.createCharge.mock.calls.length;
+
+      it('REACTIVATE: an ACTIVE clinic with auto-renew off turns it back on — 200, no charge, no invoice; a second click is the old 409', async () => {
+        const { clinic, subscriptionId } = await nonRenewingClinic('c11');
+        const before = await sub(subscriptionId);
+        const invoiceCount = (await invoicesOf(subscriptionId)).length;
+        const charges = chargeCount();
+
+        const res = await api.post(clinic.token, '/subscriptions/reactivate');
+
+        expect(res.status).toBe(200);
+        expect(res.body.subscription.auto_renew).toBe(true);
+        const s = await sub(subscriptionId);
+        expect(s.auto_renew).toBe(true);
+        expect(s.status).toBe(SubscriptionStatus.ACTIVE);
+        expect(s.ends_at).toEqual(before.ends_at); // the paid-through date
+        expect((await invoicesOf(subscriptionId)).length).toBe(invoiceCount);
+        expect(chargeCount()).toBe(charges);
+
+        const again = await api.post(clinic.token, '/subscriptions/reactivate');
+        expect(again.status).toBe(409);
+      });
+
+      it('REACTIVATE: two concurrent requests resume it once (one 200, one 409)', async () => {
+        const { clinic } = await nonRenewingClinic('c12');
+        const [a, b] = await Promise.all([
+          api.post(clinic.token, '/subscriptions/reactivate'),
+          api.post(clinic.token, '/subscriptions/reactivate'),
+        ]);
+        expect([a.status, b.status].sort()).toEqual([200, 409]);
+      });
+
+      it('REACTIVATE: another clinic cannot resume it (tenant isolation) — each token acts on its own subscription only', async () => {
+        const victim = await nonRenewingClinic('c13');
+        const other = await nonRenewingClinic('c14');
+
+        expect(
+          (await api.post(other.clinic.token, '/subscriptions/reactivate'))
+            .status,
+        ).toBe(200);
+
+        expect((await sub(other.subscriptionId)).auto_renew).toBe(true);
+        expect((await sub(victim.subscriptionId)).auto_renew).toBe(false);
+      });
+
+      it('REACTIVATE then term end: the renewal bills the next period ONCE — a re-run of the job never charges twice', async () => {
+        const { clinic, subscriptionId } = await nonRenewingClinic('c15');
+        expect(
+          (await api.post(clinic.token, '/subscriptions/reactivate')).status,
+        ).toBe(200);
+        const oldEnd = await lapse(subscriptionId);
+        const charges = chargeCount();
+
+        // Two runs of the job over the same snapshot (a retried / duplicated job).
+        const outcomes = await Promise.all([
+          renew(subscriptionId),
+          renew(subscriptionId),
+        ]);
+        expect(outcomes.sort()).toEqual(['settled', 'skipped']);
+
+        expect(chargeCount()).toBe(charges + 1);
+        const renewals = (await invoicesOf(subscriptionId)).filter(
+          (i) => i.kind === SubscriptionInvoiceKind.RENEWAL,
+        );
+        expect(renewals).toHaveLength(1);
+        expect(renewals[0].status).toBe(InvoiceStatus.PAID);
+        expect(renewals[0].period_start).toEqual(oldEnd);
+        const s = await sub(subscriptionId);
+        expect(s.status).toBe(SubscriptionStatus.ACTIVE);
+        expect(s.starts_at).toEqual(oldEnd);
+      });
+
+      // ── A downgrade scheduled for the end of a term that will not renew ── //
+
+      /** Pro, auto-renew off, Lite scheduled for ends_at. */
+      async function nonRenewingWithDowngrade(label: string) {
+        const fx = await nonRenewingClinic(label, planPro);
+        const res = await api.post(
+          fx.clinic.token,
+          '/subscriptions/change-plan',
+          { planId: planLite.id },
+        );
+        expect(res.body.mode).toBe('scheduled');
+        return fx;
+      }
+
+      /** Move the paid-through date relative to now, leaving the status as the sweep would find it. */
+      const endTermAt = (subscriptionId: string, endsAt: Date) =>
+        subs().update(
+          { id: subscriptionId },
+          {
+            starts_at: new Date(endsAt.getTime() - 30 * DAY),
+            ends_at: endsAt,
+          },
+        );
+
+      it('a downgrade scheduled BEFORE auto-renew was turned off is kept', async () => {
+        const { clinic, subscriptionId } = await activeClinic('c16', planPro);
+        await api.post(clinic.token, '/subscriptions/change-plan', {
+          planId: planLite.id,
+        });
+        await api.post(clinic.token, '/subscriptions/cancel', {
+          cancelAtPeriodEnd: true,
+        });
+        const s = await sub(subscriptionId);
+        expect(s.auto_renew).toBe(false);
+        expect(s.pending_plan?.id).toBe(planLite.id);
+      });
+
+      it('DOWNGRADE at term end with auto-renew off: applied exactly once, paid-through date kept, nothing billed or charged; re-runs are no-ops', async () => {
+        const { subscriptionId } = await nonRenewingWithDowngrade('c17');
+        const endsAt = new Date(Date.now() - 60_000); // the term ended a minute ago
+        await endTermAt(subscriptionId, endsAt);
+        const invoiceCount = (await invoicesOf(subscriptionId)).length;
+        const charges = chargeCount();
+
+        await scheduled().applyDueDowngrades();
+        let s = await sub(subscriptionId);
+        expect(s.plan.id).toBe(planLite.id);
+        expect(s.pending_plan).toBeNull();
+        expect(s.ends_at).toEqual(endsAt);
+        expect(s.status).toBe(SubscriptionStatus.ACTIVE); // the grace sweep owns status
+        expect(s.auto_renew).toBe(false);
+
+        // A retried job, a second worker, a restart: nothing more happens.
+        await Promise.all([
+          scheduled().applyDueDowngrades(),
+          scheduled().applyDueDowngrades(),
+        ]);
+        s = await sub(subscriptionId);
+        expect(s.plan.id).toBe(planLite.id);
+        expect(s.ends_at).toEqual(endsAt);
+        expect((await invoicesOf(subscriptionId)).length).toBe(invoiceCount);
+        expect(chargeCount()).toBe(charges);
+
+        // And the renewal bill run never bills a non-renewing subscription.
+        await lapse(subscriptionId);
+        await e2e.moduleRef
+          .get(RenewalService, { strict: false })
+          .processDueBills();
+        expect((await invoicesOf(subscriptionId)).length).toBe(invoiceCount);
+
+        const audits = await db().query(
+          `SELECT count(*)::int AS n FROM audit_logs
+            WHERE entity_id = $1 AND action = 'subscription.scheduled_downgrade_applied'`,
+          [subscriptionId],
+        );
+        expect(audits[0].n).toBe(1);
+      });
+
+      it('DOWNGRADE boundary: one minute BEFORE ends_at nothing is applied', async () => {
+        const { subscriptionId } = await nonRenewingWithDowngrade('c18');
+        await endTermAt(subscriptionId, new Date(Date.now() + 60_000));
+
+        await scheduled().applyDueDowngrades();
+
+        const s = await sub(subscriptionId);
+        expect(s.plan.id).toBe(planPro.id);
+        expect(s.pending_plan?.id).toBe(planLite.id);
+      });
+
+      it('DOWNGRADE boundary: exactly AT ends_at it is applied', async () => {
+        const { subscriptionId } = await nonRenewingWithDowngrade('c19');
+        const endsAt = new Date(Date.now() - 1_000);
+        await endTermAt(subscriptionId, endsAt);
+
+        await scheduled().applyDueDowngrades(endsAt);
+
+        expect((await sub(subscriptionId)).plan.id).toBe(planLite.id);
+      });
+
+      it('DOWNGRADE: a term that already slid into PAST_DUE (sweep ran first / backlog) still gets it', async () => {
+        const { subscriptionId } = await nonRenewingWithDowngrade('c20');
+        const endsAt = await lapse(subscriptionId);
+
+        await scheduled().applyDueDowngrades();
+
+        const s = await sub(subscriptionId);
+        expect(s.plan.id).toBe(planLite.id);
+        expect(s.status).toBe(SubscriptionStatus.PAST_DUE);
+        expect(s.ends_at).toEqual(endsAt);
+      });
+
+      it('DOWNGRADE: auto-renew turned back on before the end wins — the sweep leaves it, the renewal bills the lower plan', async () => {
+        const { clinic, subscriptionId } =
+          await nonRenewingWithDowngrade('c21');
+        expect(
+          (await api.post(clinic.token, '/subscriptions/reactivate')).status,
+        ).toBe(200);
+        await lapse(subscriptionId);
+
+        await scheduled().applyDueDowngrades();
+        let s = await sub(subscriptionId);
+        expect(s.plan.id).toBe(planPro.id); // left for the renewal
+        expect(s.pending_plan?.id).toBe(planLite.id);
+
+        const before = tap.chargeRequests.length;
+        expect(await renew(subscriptionId)).toBe('settled');
+        expect(tap.chargeRequests[before].amount).toBe(49);
+        s = await sub(subscriptionId);
+        expect(s.plan.id).toBe(planLite.id);
+        expect(s.pending_plan).toBeNull();
       });
     });
   });

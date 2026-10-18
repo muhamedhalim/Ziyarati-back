@@ -9,6 +9,7 @@ import { SubscriptionStatus } from '../../entities/enums';
 import { EmailService } from '../../modules/email/email.service';
 import { RenewalService } from '../../modules/subscription-billing/renewal.service';
 import { PendingPaymentExpiryService } from '../../modules/subscription-billing/pending-payment-expiry.service';
+import { ScheduledPlanChangeService } from '../../modules/subscription-billing/scheduled-plan-change.service';
 import { DistributedLockService } from '../../queue/distributed-lock.service';
 import { MetricsService } from '../../metrics/metrics.service';
 import {
@@ -29,6 +30,7 @@ describe('SubscriptionsProcessor', () => {
   let audit: { record: jest.Mock };
   let renewal: { processDueBills: jest.Mock };
   let pendingExpiry: { expireAbandoned: jest.Mock };
+  let scheduledChanges: { applyDueDowngrades: jest.Mock };
   let lock: { acquire: jest.Mock; release: jest.Mock };
   let metrics: { setWorkerHeartbeat: jest.Mock };
   let qb: ReturnType<typeof createMockQueryBuilder>;
@@ -57,6 +59,11 @@ describe('SubscriptionsProcessor', () => {
         .fn()
         .mockResolvedValue({ scanned: 0, cancelled: 0, skipped: 0 }),
     };
+    scheduledChanges = {
+      applyDueDowngrades: jest
+        .fn()
+        .mockResolvedValue({ scanned: 0, applied: 0, skipped: 0 }),
+    };
     lock = {
       acquire: jest.fn().mockResolvedValue('token'),
       release: jest.fn().mockResolvedValue(undefined),
@@ -78,6 +85,7 @@ describe('SubscriptionsProcessor', () => {
         { provide: PendingPaymentExpiryService, useValue: pendingExpiry },
         { provide: DistributedLockService, useValue: lock },
         { provide: MetricsService, useValue: metrics },
+        { provide: ScheduledPlanChangeService, useValue: scheduledChanges },
       ],
     }).compile();
     processor = moduleRef.get(SubscriptionsProcessor);
@@ -105,6 +113,7 @@ describe('SubscriptionsProcessor', () => {
     enteredGrace: number;
     graceEndingSoonWarned: number;
     graceExpired: number;
+    downgradesApplied: number;
   }
 
   /** T082 — `process()`'s return type is now a union across the two jobs
@@ -147,6 +156,63 @@ describe('SubscriptionsProcessor', () => {
 
     expect(result.due).toBe(1002);
     expect(result.tenants).toBe(4);
+  });
+
+  describe('scheduled downgrades on non-renewing subscriptions', () => {
+    it('are applied BEFORE the same tick moves an ended term to PAST_DUE', async () => {
+      const order: string[] = [];
+      scheduledChanges.applyDueDowngrades.mockImplementationOnce(async () => {
+        order.push('downgrades');
+        return { scanned: 1, applied: 1, skipped: 0 };
+      });
+      (subscriptions.save as jest.Mock).mockImplementation(async (x) => {
+        order.push('grace');
+        return x;
+      });
+      primeEmptyExcept({
+        2: [
+          {
+            id: 'sub-1',
+            status: SubscriptionStatus.ACTIVE,
+            ends_at: new Date(Date.now() - 1_000),
+            tenant: { id: 't1' },
+          },
+        ],
+      });
+
+      const result = await runCheck();
+
+      expect(order).toEqual(['downgrades', 'grace']);
+      expect(result.downgradesApplied).toBe(1);
+      expect(result.enteredGrace).toBe(1);
+    });
+
+    it('a failure there never stops the grace state machine', async () => {
+      scheduledChanges.applyDueDowngrades.mockRejectedValueOnce(
+        new Error('db hiccup'),
+      );
+      primeEmptyExcept({
+        2: [
+          {
+            id: 'sub-1',
+            status: SubscriptionStatus.ACTIVE,
+            ends_at: new Date(Date.now() - 1_000),
+            tenant: { id: 't1' },
+          },
+        ],
+      });
+      const result = await runCheck();
+      expect(result.downgradesApplied).toBe(0);
+      expect(result.enteredGrace).toBe(1);
+    });
+
+    it('are not touched by the bill run or the pending-payment expiry job', async () => {
+      await processor.process({ name: 'subscriptions.renewalBill' } as any);
+      await processor.process({
+        name: 'subscriptions.pendingPaymentExpiry',
+      } as any);
+      expect(scheduledChanges.applyDueDowngrades).not.toHaveBeenCalled();
+    });
   });
 
   describe('FND-031 — grace state machine', () => {
@@ -370,7 +436,9 @@ describe('SubscriptionsProcessor', () => {
     it('releases the lock even when the sweep throws', async () => {
       pendingExpiry.expireAbandoned.mockRejectedValueOnce(new Error('boom'));
       await expect(
-        processor.process({ name: 'subscriptions.pendingPaymentExpiry' } as any),
+        processor.process({
+          name: 'subscriptions.pendingPaymentExpiry',
+        } as any),
       ).rejects.toThrow('boom');
       expect(lock.release).toHaveBeenCalledWith(
         'lock:subscriptions-pending-payment-expiry',

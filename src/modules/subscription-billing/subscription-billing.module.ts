@@ -23,6 +23,7 @@ import { SubscriptionService } from './subscription.service';
 import { BillingService } from './billing.service';
 import { RenewalService } from './renewal.service';
 import { PendingPaymentExpiryService } from './pending-payment-expiry.service';
+import { ScheduledPlanChangeService } from './scheduled-plan-change.service';
 import { InvoiceSettlementService } from './invoice-settlement.service';
 import { SubscriptionInvoiceRefundService } from './subscription-invoice-refund.service';
 import { SubscriptionCheckoutService } from './subscription-checkout.service';
@@ -140,6 +141,7 @@ export function resolveSubscriptionPaymentProvider(
     TapSubscriptionProvider,
     RenewalService,
     PendingPaymentExpiryService,
+    ScheduledPlanChangeService,
     UsageService,
     TenantUsageLimitOverrideService,
     FeatureFlagService,
@@ -192,6 +194,7 @@ export function resolveSubscriptionPaymentProvider(
     RenewalService,
     // The daily sweep that cancels never-paid subscriptions (worker's subscriptions queue).
     PendingPaymentExpiryService,
+    ScheduledPlanChangeService,
     // T084 (spec 014, US5) — PaymentReconciliationService (payments module)
     // verifies a stuck subscription-invoice claim through the SAME provider
     // binding BillingService uses, never a second one.
