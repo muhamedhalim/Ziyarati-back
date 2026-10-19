@@ -40,7 +40,7 @@ const CONTROLLER_PATHS: string[] = [
   'modules/subscription-billing/subscription.controller', 'modules/subscription-billing/billing.controller',
   'modules/subscription-billing/usage.controller', 'modules/subscription-billing/feature-flag.controller',
   'modules/subscription-billing/platform-billing-admin.controller',
-  'modules/payments/payment-gateway.controller', 'modules/payments/payment-webhook.controller',
+  'modules/payments/payment-webhook.controller',
   'modules/payments/payments-ops.controller', 'modules/payments/payment-link.controller',
   'modules/payments/invoice.controller', 'modules/payments/payment.controller', 'modules/payments/refund.controller',
   'modules/payments/transaction.controller', 'modules/payments/settlement.controller',

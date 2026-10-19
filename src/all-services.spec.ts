@@ -70,7 +70,7 @@ const PATHS: string[] = [
   'modules/ai/tools/ai-tool-dispatch.service', 'modules/ai/rag/pgvector-bootstrap.service',
   'modules/ai/providers/openai-embedding.provider', 'modules/ai/providers/openai-chat.provider',
   'modules/ai/providers/noop-ai.provider',
-  'modules/payments/payment-link.service', 'modules/payments/payment-gateway.service',
+  'modules/payments/payment-link.service',
   'modules/payments/invoice-item.service', 'modules/payments/transaction.service', 'modules/payments/invoice.service',
   'modules/payments/refund.service', 'modules/payments/settlement-item.service', 'modules/payments/settlement.service',
   'modules/payments/refund-recovery.service', 'modules/payments/settlement-adjustment.service',

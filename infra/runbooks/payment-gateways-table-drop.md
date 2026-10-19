@@ -1,4 +1,4 @@
-# Retiring the `payment_gateways` table (DEFERRED)
+# Retiring the `payment_gateways` table
 
 **Status: migration written and tested locally (scratch clone + e2e DB). NOT run in production or in the dev DB.**
 
