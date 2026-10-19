@@ -1,10 +1,10 @@
 # Retiring the `payment_gateways` table (DEFERRED)
 
-**Status: NOT executed anywhere. The table still exists in every database that was migrated before this change.**
+**Status: migration written and tested locally (scratch clone + e2e DB). NOT run in production or in the dev DB.**
 
 The `/platform/payment-gateways` page, its `/payment-gateways` API, `PaymentGatewayService`, the `PaymentGateway`
 entity and the two audit-action constants were removed from the code. The table itself is deliberately left in place
-because the content of the PRODUCTION table has not been verified.
+and the migration refuses to drop it unless it is empty, because the content of the PRODUCTION table has not been verified.
 
 ## Why this was safe to remove from code
 - Provider selection is `PAYMENT_PROVIDER` (`PaymentGatewayFactory.resolve`), never this table.
@@ -27,42 +27,16 @@ SELECT count(*) FROM audit_logs WHERE action LIKE 'platform_admin.payment_gatewa
 ```
 Do **not** inspect `config` values in a shared channel: it was documented as non-secret, but an operator could have pasted a key into it.
 
-## Step 2 — only if rows = 0 (or the operator has approved discarding the rows)
-Add this as a new top-level file in `src/migrations/` (e.g. `1730122000000-DropPaymentGateways.ts`; the runner globs only that folder).
-It refuses to drop a non-empty table, so it cannot destroy data even if run unreviewed.
+## Step 2 — the migration (written, NOT run in production)
+`src/migrations/1730122000000-DropPaymentGateways.ts` (+ spec). It runs in the migration's own transaction and:
+1. does nothing if the table is already gone;
+2. takes `LOCK TABLE ... ACCESS EXCLUSIVE` first, so no insert can slip in between the check and the drop;
+3. **fails (rolls back, drops nothing)** if the table holds any row or anything references it (foreign key / view);
+4. otherwise drops the outgoing FK and the table (no `CASCADE`).
 
-```ts
-import { MigrationInterface, QueryRunner } from 'typeorm';
-
-export class DropPaymentGateways1730122000000 implements MigrationInterface {
-  name = 'DropPaymentGateways1730122000000';
-
-  public async up(q: QueryRunner): Promise<void> {
-    await q.query(`
-      DO $$
-      BEGIN
-        IF to_regclass('public.payment_gateways') IS NOT NULL
-           AND EXISTS (SELECT 1 FROM "payment_gateways") THEN
-          RAISE EXCEPTION 'payment_gateways is not empty; export and review its rows before dropping it';
-        END IF;
-      END $$;
-    `);
-    // Order: dependent constraint first, then the table (its PK index goes with it).
-    await q.query(`ALTER TABLE IF EXISTS "payment_gateways" DROP CONSTRAINT IF EXISTS "FK_0290b49027c109e05d84ed6e693"`);
-    await q.query(`DROP TABLE IF EXISTS "payment_gateways"`);
-  }
-
-  /** Recreates the empty structure only (as the baseline migration defined it). Dropped rows are not restorable. */
-  public async down(q: QueryRunner): Promise<void> {
-    await q.query(`CREATE TABLE IF NOT EXISTS "payment_gateways" ("id" uuid NOT NULL DEFAULT uuid_generate_v4(), "gateway_name" character varying NOT NULL, "is_active" boolean NOT NULL DEFAULT true, "config" jsonb, "created_at" TIMESTAMP NOT NULL DEFAULT now(), "tenantId" uuid, CONSTRAINT "PK_2b022a3aafb792a1afe3e14e06f" PRIMARY KEY ("id"))`);
-    await q.query(`ALTER TABLE "payment_gateways" ADD CONSTRAINT "FK_0290b49027c109e05d84ed6e693" FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE NO ACTION ON UPDATE NO ACTION`);
-  }
-}
-```
-
-Impact: metadata-only DDL on an (expected) empty table, takes an ACCESS EXCLUSIVE lock for milliseconds.
-Rollback: `down` recreates the empty table; rows cannot be restored, so export them in Step 1 if there are any.
-Then also: regenerate `docs/schema/schema.sql` (git-ignored) if you keep it current.
+`down()` recreates the empty table and its FK exactly as the baseline defined them (verified identical with `d`). Dropped rows cannot be restored; there are none by construction.
+Impact: milliseconds of ACCESS EXCLUSIVE lock on an empty table. If production has rows, the deploy's migrate step FAILS by design: export/review them (Step 1), then decide.
+Verified on a throwaway clone and on `ziyarati_e2e` (up, up again, down, up), plus: row present → refused, dependent FK → refused, concurrent uncommitted insert → waits, then refused.
 
 ## Left in place on purpose
 - `src/migrations/1700000000000-BaselineSchema.ts` (history; a fresh database still creates the table until Step 2 ships).
