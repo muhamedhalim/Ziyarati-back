@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Not, Repository } from 'typeorm';
+import type { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
@@ -321,8 +322,13 @@ export class SubscriptionService {
       // Re-selecting the current plan withdraws a scheduled downgrade; with
       // nothing scheduled it is still the same conflict as before.
       if (current.pending_plan) {
-        current.pending_plan = null;
-        await this.subscriptions.save(current);
+        // Only while it is still the downgrade the clinic saw (not yet applied).
+        const written = await this.patch(
+          current,
+          { pending_plan: null },
+          { plan: true, pendingPlan: true },
+        );
+        if (!written) throw this.changedMeanwhile();
         const view = await this.withBilling(
           this.view(await this.loadWithPlan(tenantId, current.id)),
         );
@@ -347,20 +353,38 @@ export class SubscriptionService {
   ): Promise<SubscriptionView> {
     const current = await this.getActiveSubscription(tenantId);
 
-    current.auto_renew = false;
     const neverPaid = current.status === SubscriptionStatus.PENDING_PAYMENT;
-    if (neverPaid || !dto.cancelAtPeriodEnd) {
+    const immediate = neverPaid || !dto.cancelAtPeriodEnd;
+    if (!immediate && !current.auto_renew) {
+      // Already set to end at period end: nothing to change, nothing to announce.
+      return this.withBilling(
+        this.view(await this.loadWithPlan(tenantId, current.id)),
+      );
+    }
+    if (immediate) {
       // Immediate cancellation. A subscription that was never paid has no period
       // to keep, so "at period end" would only leave it stuck PENDING_PAYMENT.
+      // Nothing is left for a scheduled downgrade to apply to. Only while the
+      // status is still the one read: a payment that just activated it wins.
+      const written = await this.patch(
+        current,
+        {
+          auto_renew: false,
+          status: SubscriptionStatus.CANCELLED,
+          pending_plan: null,
+        },
+        { status: true },
+      );
+      if (!written) throw this.changedMeanwhile();
       current.status = SubscriptionStatus.CANCELLED;
-      // Nothing is left for a scheduled downgrade to apply to.
-      current.pending_plan = null;
+    } else {
+      // At period end only auto-renew changes: status/access stay until ends_at,
+      // and a scheduled downgrade is KEPT — it still takes effect at ends_at
+      // (`ScheduledPlanChangeService`), and turning auto-renew back on has the
+      // renewal bill it as before.
+      await this.patch(current, { auto_renew: false });
     }
-    // At period end a scheduled downgrade is KEPT: it still takes effect at
-    // ends_at (`ScheduledPlanChangeService`), and turning auto-renew back on
-    // has the renewal bill it as before.
-    // If cancelAtPeriodEnd: keep status/access until ends_at; only auto-renew off.
-    await this.subscriptions.save(current);
+    current.auto_renew = false;
     if (neverPaid) {
       // Nothing to collect any more; a payment that still arrives for the voided
       // invoice is not booked and raises an ALERT in the settle path.
@@ -587,8 +611,14 @@ export class SubscriptionService {
     }
 
     // Downgrade (or same price): no charge now; it takes effect at the next renewal.
-    current.pending_plan = { id: newPlan.id } as SubscriptionPlan;
-    await this.subscriptions.save(current);
+    // Decided against the plan and status read above: if a payment changed them
+    // meanwhile, this comparison is stale and the clinic must decide again.
+    const written = await this.patch(
+      current,
+      { pending_plan: { id: newPlan.id } as SubscriptionPlan },
+      { plan: true, status: true },
+    );
+    if (!written) throw this.changedMeanwhile();
     const view = await this.withBilling(
       this.view(await this.loadWithPlan(tenantId, current.id)),
     );
@@ -708,10 +738,17 @@ export class SubscriptionService {
 
     const now = new Date();
     const endsAt = computeNextPeriodEnd(now, newPlan);
-    current.plan = { id: newPlan.id } as SubscriptionPlan;
-    current.starts_at = now;
-    current.ends_at = endsAt;
-    await this.subscriptions.save(current);
+    // Still unpaid? A first payment that landed meanwhile has activated it.
+    const written = await this.patch(
+      current,
+      {
+        plan: { id: newPlan.id } as SubscriptionPlan,
+        starts_at: now,
+        ends_at: endsAt,
+      },
+      { status: true },
+    );
+    if (!written) throw this.changedMeanwhile();
 
     const currency = await this.platformSettings.getTyped<string>(
       SettingKey.DEFAULT_CURRENCY,
@@ -748,14 +785,22 @@ export class SubscriptionService {
       current.id,
       'Superseded by a plan change',
     );
-    current.plan = { id: newPlan.id } as SubscriptionPlan;
-    current.status = SubscriptionStatus.ACTIVE;
-    current.starts_at = now;
-    current.ends_at = computeNextPeriodEnd(now, newPlan);
-    current.pending_plan = null;
-    current.grace_started_at = null;
-    current.grace_expired_at = null;
-    await this.subscriptions.save(current);
+    // Only from the plan and status read: a paid upgrade that settled meanwhile
+    // must not be thrown away for a free plan the clinic picked from stale data.
+    const written = await this.patch(
+      current,
+      {
+        plan: { id: newPlan.id } as SubscriptionPlan,
+        status: SubscriptionStatus.ACTIVE,
+        starts_at: now,
+        ends_at: computeNextPeriodEnd(now, newPlan),
+        pending_plan: null,
+        grace_started_at: null,
+        grace_expired_at: null,
+      },
+      { plan: true, status: true },
+    );
+    if (!written) throw this.changedMeanwhile();
     this.access.invalidate(tenantId);
 
     const view = await this.withBilling(
@@ -869,9 +914,12 @@ export class SubscriptionService {
     const now = new Date();
     if (status === SubscriptionStatus.CANCELLED && subscription.ends_at > now) {
       // The period was already paid for — nothing to charge, simply resume.
-      subscription.status = SubscriptionStatus.ACTIVE;
-      subscription.auto_renew = true;
-      await this.subscriptions.save(subscription);
+      const written = await this.patch(
+        subscription,
+        { status: SubscriptionStatus.ACTIVE, auto_renew: true },
+        { status: true },
+      );
+      if (!written) throw this.changedMeanwhile();
       this.access.invalidate(tenantId);
       this.emitter.emit(
         SubscriptionReactivatedEvent.eventName,
@@ -887,8 +935,8 @@ export class SubscriptionService {
       status === SubscriptionStatus.GRACE_EXPIRED;
     if (open && isGrace) {
       // The renewal invoice is already waiting: paying it is the way back.
-      subscription.auto_renew = true;
-      await this.subscriptions.save(subscription);
+      // Only the flag: that very payment may be settling right now.
+      await this.patch(subscription, { auto_renew: true });
       return reload();
     }
     if (open) {
@@ -922,15 +970,20 @@ export class SubscriptionService {
         provider: this.billing.providerName,
       },
     );
-    subscription.auto_renew = true;
-    if (status === SubscriptionStatus.CANCELLED) {
-      // Not usable until paid. PAST_DUE/GRACE_EXPIRED keep their status — their
-      // grace rules still apply until the payment lands.
-      subscription.status = SubscriptionStatus.PENDING_PAYMENT;
-      subscription.starts_at = now;
-      subscription.ends_at = endsAt;
-    }
-    await this.subscriptions.save(subscription);
+    // Not usable until paid when it was CANCELLED. PAST_DUE/GRACE_EXPIRED keep
+    // their status — their grace rules still apply until the payment lands.
+    await this.patch(
+      subscription,
+      status === SubscriptionStatus.CANCELLED
+        ? {
+            auto_renew: true,
+            status: SubscriptionStatus.PENDING_PAYMENT,
+            starts_at: now,
+            ends_at: endsAt,
+          }
+        : { auto_renew: true },
+      { status: true },
+    );
     this.access.invalidate(tenantId);
     return reload();
   }
@@ -939,6 +992,50 @@ export class SubscriptionService {
 
   private isPaid(plan: SubscriptionPlan): boolean {
     return Number(plan.price) > 0;
+  }
+
+  /**
+   * Writes ONLY `fields`, and only while the row is still in the state this
+   * request read (`expect`). These requests read the subscription unlocked, and
+   * `save()` writes back every column that differs from the row as it is NOW —
+   * so a settlement or the downgrade sweep that committed in between was undone
+   * (a paid renewal rolled back to PAST_DUE, a paid upgrade back to the old plan).
+   * FALSE when the row moved on; the caller then refuses instead of guessing.
+   */
+  private async patch(
+    subscription: Subscription,
+    fields: QueryDeepPartialEntity<Subscription>,
+    expect: { status?: boolean; plan?: boolean; pendingPlan?: boolean } = {},
+  ): Promise<boolean> {
+    const qb = this.subscriptions
+      .createQueryBuilder()
+      .update(Subscription)
+      .set(fields)
+      .where('id = :id', { id: subscription.id });
+    if (expect.status) {
+      qb.andWhere('status = :expectedStatus', {
+        expectedStatus: subscription.status,
+      });
+    }
+    if (expect.plan) {
+      qb.andWhere('"planId" = :expectedPlanId', {
+        expectedPlanId: subscription.plan.id,
+      });
+    }
+    if (expect.pendingPlan) {
+      qb.andWhere('pending_plan_id = :expectedPendingId', {
+        expectedPendingId: subscription.pending_plan?.id,
+      });
+    }
+    const res = await qb.execute();
+    return !!res.affected;
+  }
+
+  private changedMeanwhile(): AppError {
+    return new AppError(ErrorCode.CONFLICT, {
+      message:
+        'The subscription changed while this request was processed — refresh and try again',
+    });
   }
 
   /**

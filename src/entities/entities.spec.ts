@@ -16,7 +16,7 @@ const ENTITY_PATHS: string[] = [
   'Auth&RBAC/User', 'Auth&RBAC/Role', 'Auth&RBAC/Permission', 'Auth&RBAC/UserRole',
   'Auth&RBAC/RolePermission', 'Auth&RBAC/RefreshToken', 'Auth&RBAC/PasswordReset', 'Auth&RBAC/AuditLog',
   // Payments
-  'Payments/Payment', 'Payments/PaymentGateway', 'Payments/PaymentLink', 'Payments/Transaction',
+  'Payments/Payment', 'Payments/PaymentLink', 'Payments/Transaction',
   'Payments/Refund', 'Payments/Invoice', 'Payments/InvoiceItem', 'Payments/Settlement', 'Payments/SettlementItem',
   // Conversations
   'Conversations/Conversation', 'Conversations/ConversationParticipant', 'Conversations/Message',

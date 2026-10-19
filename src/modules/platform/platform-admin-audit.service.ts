@@ -23,8 +23,6 @@ export const PLATFORM_ADMIN_AUDIT_ACTION = {
   SETTING_UPDATE: 'platform_admin.system_setting.update',
   SETTING_DELETE: 'platform_admin.system_setting.delete',
   SETTING_UPSERT: 'platform_admin.system_setting.upsert',
-  GATEWAY_CREATE: 'platform_admin.payment_gateway.create',
-  GATEWAY_UPDATE: 'platform_admin.payment_gateway.update',
   // Marketplace BE-1 (T056) — specialty correction surface, contract C9.
   SPECIALTY_TENANT_ASSERT: 'platform_admin.specialty.tenant_assert',
   SPECIALTY_TENANT_REMOVE: 'platform_admin.specialty.tenant_remove',

@@ -50,7 +50,6 @@ const PLATFORM_AND_PUBLIC_SURFACES = new Set([
   'billing-upgrades/platform-billing-upgrade.controller.ts',
   'email/email-log.controller.ts',
   'payments/merchant-account-admin.controller.ts',
-  'payments/payment-gateway.controller.ts',
   'payments/payments-ops.controller.ts',
   // Tap Phase 5: the reconciliation queue — super admin only (RolesGuard), platform-wide data.
   'payments/reconciliation/platform-reconciliation.controller.ts',

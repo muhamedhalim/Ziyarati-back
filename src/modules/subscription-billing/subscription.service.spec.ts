@@ -26,6 +26,7 @@ import {
 import {
   createMockRepository,
   createMockQueryBuilder,
+  MockQueryBuilder,
   MockRepository,
 } from '../../../test/utils/mock-factories';
 
@@ -73,8 +74,24 @@ describe('SubscriptionService', () => {
       ...overrides,
     };
     subscriptions.findOne.mockImplementation(async () => sub);
+    // A guarded UPDATE lands on this row, as the database would apply it.
+    subscriptions.createQueryBuilder.mockImplementation(() => {
+      const qb = createMockQueryBuilder();
+      let fields: Record<string, unknown> = {};
+      (qb.set as jest.Mock).mockImplementation((f: Record<string, unknown>) => {
+        fields = f;
+        return qb;
+      });
+      (qb.execute as jest.Mock).mockImplementation(async () => {
+        Object.assign(sub, fields);
+        return { affected: 1, raw: [] };
+      });
+      lastUpdate = qb;
+      return qb;
+    });
     return sub;
   };
+  let lastUpdate: MockQueryBuilder | undefined;
 
   beforeEach(async () => {
     subscriptions = createMockRepository();
@@ -694,7 +711,19 @@ describe('SubscriptionService', () => {
       expect(sub.pending_plan).toEqual({ id: 'p0' });
       expect(sub.plan.id).toBe('p1');
       expect(billing.generateInvoice).not.toHaveBeenCalled();
-      expect(subscriptions.save).toHaveBeenCalledWith(sub);
+      expect(subscriptions.save).not.toHaveBeenCalled();
+      // Only pending_plan, and only while the plan/status read are still current.
+      expect(
+        Object.keys((lastUpdate!.set as jest.Mock).mock.calls[0][0]),
+      ).toEqual(['pending_plan']);
+      expect(lastUpdate!.andWhere).toHaveBeenCalledWith(
+        '"planId" = :expectedPlanId',
+        { expectedPlanId: 'p1' },
+      );
+      expect(lastUpdate!.andWhere).toHaveBeenCalledWith(
+        'status = :expectedStatus',
+        { expectedStatus: SubscriptionStatus.ACTIVE },
+      );
     });
 
     it('a same-price plan is also scheduled, not charged', async () => {
@@ -713,7 +742,11 @@ describe('SubscriptionService', () => {
       const res = await service.changePlan(TENANT, { planId: 'p1' } as any);
       expect(res.mode).toBe('cleared');
       expect(sub.pending_plan).toBeNull();
-      expect(subscriptions.save).toHaveBeenCalledWith(sub);
+      expect(subscriptions.save).not.toHaveBeenCalled();
+      expect(lastUpdate!.andWhere).toHaveBeenCalledWith(
+        'pending_plan_id = :expectedPendingId',
+        { expectedPendingId: 'p0' },
+      );
     });
 
     it('re-selecting the current plan with nothing scheduled is still a 409', async () => {
@@ -818,6 +851,50 @@ describe('SubscriptionService', () => {
   // ───────────────────────────── cancel / reactivate ────────────────────── //
 
   describe('cancel', () => {
+    it('a second cancel-at-period-end is a no-op: nothing written, no second event', async () => {
+      liveSub({ auto_renew: false });
+      await service.cancel(TENANT, { cancelAtPeriodEnd: true } as any);
+      expect(subscriptions.createQueryBuilder).not.toHaveBeenCalled();
+      expect(subscriptions.save).not.toHaveBeenCalled();
+      expect(emitted(SubscriptionCancelledEvent)).toHaveLength(0);
+    });
+
+    it('cancel-at-period-end writes ONLY auto_renew (a settlement committing meanwhile is not undone)', async () => {
+      liveSub();
+      await service.cancel(TENANT, { cancelAtPeriodEnd: true } as any);
+      expect((lastUpdate!.set as jest.Mock).mock.calls[0][0]).toEqual({
+        auto_renew: false,
+      });
+      expect(subscriptions.save).not.toHaveBeenCalled();
+    });
+
+    it('an immediate cancel is refused (409) when the status moved on meanwhile — e.g. the first payment just activated it', async () => {
+      liveSub({ status: SubscriptionStatus.PENDING_PAYMENT });
+      const qb = createMockQueryBuilder();
+      (qb.execute as jest.Mock).mockResolvedValue({ affected: 0, raw: [] });
+      subscriptions.createQueryBuilder.mockReturnValue(qb);
+      await expect(
+        service.cancel(TENANT, { cancelAtPeriodEnd: false } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+      expect(qb.andWhere).toHaveBeenCalledWith('status = :expectedStatus', {
+        expectedStatus: SubscriptionStatus.PENDING_PAYMENT,
+      });
+      expect(billing.voidOpenInvoices).not.toHaveBeenCalled();
+      expect(emitted(SubscriptionCancelledEvent)).toHaveLength(0);
+    });
+
+    it('a downgrade decided from a plan that changed meanwhile (a paid upgrade) is refused (409), not written', async () => {
+      billing.supportsCheckout = true;
+      liveSub({ plan: plan({ id: 'p1', price: 100 }) });
+      plans.findOne.mockResolvedValueOnce(plan({ id: 'p0', price: 40 }));
+      const qb = createMockQueryBuilder();
+      (qb.execute as jest.Mock).mockResolvedValue({ affected: 0, raw: [] });
+      subscriptions.createQueryBuilder.mockReturnValue(qb);
+      await expect(
+        service.changePlan(TENANT, { planId: 'p0' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+    });
+
     it('cancels immediately when not at period end, and drops any scheduled downgrade', async () => {
       const sub = liveSub({ pending_plan: plan({ id: 'p0' }) });
       await service.cancel(TENANT, { cancelAtPeriodEnd: false } as any);

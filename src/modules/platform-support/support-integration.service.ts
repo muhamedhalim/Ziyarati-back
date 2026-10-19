@@ -353,7 +353,7 @@ export class SupportIntegrationService {
    * Never selected: `iban_masked` (still a bank identifier), `bank_name`,
    * `beneficiary_name`, `provider_recipient_id`, `status_history` (contains
    * reviewer identities and notes), and every gateway credential — those live
-   * on `payment_gateways`, which this service does not read at all.
+   * in environment configuration, which this service does not read at all.
    */
   async payments(tenantId: string) {
     const merchant = await this.merchants.findOne({

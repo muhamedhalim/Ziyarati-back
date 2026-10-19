@@ -110,7 +110,6 @@ const ROWS: Row[] = [
   ['invoice_items', 'D5', P, 'Invoice lines'],
   ['payments', 'D2,D5', P, 'Patient payments; metadata and failure text can hold payer details'],
   ['payment_links', 'D5,D6', P, 'Payment link tokens'],
-  ['payment_gateways', 'D6', C, 'Gateway credentials'],
   ['payment_reconciliation_exceptions', 'D5', '', 'Reconciliation discrepancies'],
   ['merchant_accounts', 'D5', C, 'Clinic merchant accounts at the payment provider'],
   ['refunds', 'D5', P, 'Refunds'],

@@ -6,7 +6,6 @@ import { SubscriptionBillingModule } from '../subscription-billing/subscription-
 import { StorageModule } from '../storage/storage.module';
 
 import { Payment } from '../../entities/Payments/Payment';
-import { PaymentGateway } from '../../entities/Payments/PaymentGateway';
 import { PaymentLink } from '../../entities/Payments/PaymentLink';
 import { Transaction } from '../../entities/Payments/Transaction';
 import { Refund } from '../../entities/Payments/Refund';
@@ -20,7 +19,6 @@ import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 
-import { PaymentGatewayService } from './payment-gateway.service';
 import { PaymentService } from './payment.service';
 import { PaymentLinkService } from './payment-link.service';
 import { TransactionService } from './transaction.service';
@@ -45,7 +43,6 @@ import { PublicPaymentService } from './public-payment.service';
 import { ReconciliationExceptionService } from './reconciliation/reconciliation-exception.service';
 import { ProviderReconciliationService } from './reconciliation/provider-reconciliation.service';
 
-import { PaymentGatewayController } from './payment-gateway.controller';
 import { PaymentsOpsController } from './payments-ops.controller';
 import { PaymentController } from './payment.controller';
 import { PaymentLinkController } from './payment-link.controller';
@@ -76,7 +73,6 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
  * and the global JwtAuthGuard.
  *
  * PLATFORM vs TENANT split (critical business rule):
- *  - PaymentGateway config is PLATFORM-owned — its controller is super-admin only.
  *  - Everything else is strictly tenant-scoped; tenants only CONSUME payments.
  *
  * The gateway integration is decoupled behind a strategy/factory: real adapters
@@ -90,7 +86,6 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
   imports: [
     TypeOrmModule.forFeature([
       Payment,
-      PaymentGateway,
       PaymentLink,
       Transaction,
       Refund,
@@ -120,7 +115,6 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     StorageModule,
   ],
   controllers: [
-    PaymentGatewayController,
     PaymentsOpsController,
     // MUST precede PaymentController: Nest registers routes in this order, and
     // `GET /payments/:id` (a uuid-validated param) would otherwise capture
@@ -143,7 +137,6 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     PlatformReconciliationController,
   ],
   providers: [
-    PaymentGatewayService,
     PaymentService,
     PaymentLinkService,
     TransactionService,

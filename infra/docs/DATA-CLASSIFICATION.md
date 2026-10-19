@@ -30,7 +30,7 @@ A table is classified by what it **can** contain, not by what a typical row does
 ## Summary
 
 <!-- BEGIN GENERATED: classification-summary -->
-Tables classified: 161. A table counts under every class it can hold.
+Tables classified: 160. A table counts under every class it can hold.
 
 | Class | Tables |
 | --- | --- |
@@ -40,7 +40,7 @@ Tables classified: 161. A table counts under every class it can hold.
 | D3 | 1 |
 | D4 | 19 |
 | D5 | 18 |
-| D6 | 15 |
+| D6 | 14 |
 | D7 | 5 |
 | D8 | 9 |
 
@@ -108,7 +108,6 @@ Generated from `data-classification.ts`; regenerate with `UPDATE_COMPLIANCE_DOCS
 | `invoice_items` | D5 | patient | Invoice lines |
 | `payments` | D2, D5 | patient | Patient payments; metadata and failure text can hold payer details |
 | `payment_links` | D5, D6 | patient | Payment link tokens |
-| `payment_gateways` | D6 | clinic | Gateway credentials |
 | `payment_reconciliation_exceptions` | D5 | - | Reconciliation discrepancies |
 | `merchant_accounts` | D5 | clinic | Clinic merchant accounts at the payment provider |
 | `refunds` | D5 | patient | Refunds |

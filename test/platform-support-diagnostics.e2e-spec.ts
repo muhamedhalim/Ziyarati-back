@@ -428,7 +428,6 @@ describe('Support Operations Console — diagnostics authorization (HTTP e2e)', 
         denied('RBAC audit centre', 'get', () => `${API}/platform/rbac/permissions`),
         denied('platform staff management', 'get', () => `${API}/platform/staff`),
         denied('tenant directory', 'get', () => `${API}/tenants`),
-        denied('payment gateways', 'get', () => `${API}/payment-gateways`),
         denied('payment merchants', 'get', () => `${API}/payment-merchants`),
       ];
 

@@ -39,8 +39,7 @@ const S_ERROR = {
 
 /**
  * PLATFORM-ONLY merchant onboarding review. Eligibility to receive money is a
- * platform decision (super admin), mirroring PaymentGatewayController's
- * ownership rule. Every transition is appended to the account's
+ * platform decision (super admin). Every transition is appended to the account's
  * `status_history` audit trail with the acting admin's user id.
  */
 @ApiTags('Merchant Accounts (Platform)')

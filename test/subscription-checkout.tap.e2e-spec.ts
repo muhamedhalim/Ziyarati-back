@@ -24,6 +24,8 @@ void TEST_META_ENV;
 
 import request from 'supertest';
 import { Logger } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { getRepositoryToken } from '@nestjs/typeorm';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -1980,6 +1982,151 @@ describe('Subscriptions over Tap (Phase 3) — real Postgres + Redis', () => {
           (i) => i.kind === SubscriptionInvoiceKind.REACTIVATION,
         ),
       ).toHaveLength(0);
+    });
+  });
+
+  // ═══════ G. a clinic request racing a settlement / the downgrade sweep (lost update) ═══════ //
+
+  describe('G. a clinic request never undoes a settlement that committed while it ran', () => {
+    const subRepo = () =>
+      e2e.moduleRef.get(getRepositoryToken(Subscription), { strict: false });
+
+    /**
+     * Commit `interleave` (its own transaction) between the request's read of the
+     * subscription and its write — the window a webhook or the worker can hit.
+     */
+    function between(interleave: () => Promise<unknown>) {
+      const repo = subRepo();
+      const realSave = repo.save.bind(repo);
+      const realUpdate = repo.update.bind(repo);
+      let fired = false;
+      const once = async () => {
+        if (fired) return;
+        fired = true;
+        await interleave();
+      };
+      const s = jest
+        .spyOn(repo, 'save')
+        .mockImplementation(async (...a: any[]) => {
+          await once();
+          return (realSave as any)(...a);
+        });
+      const u = jest
+        .spyOn(repo, 'update')
+        .mockImplementation(async (...a: any[]) => {
+          await once();
+          return (realUpdate as any)(...a);
+        });
+      // …and a guarded UPDATE through the query builder (what the fix uses).
+      const realQb = repo.createQueryBuilder.bind(repo);
+      const qb = jest
+        .spyOn(repo, 'createQueryBuilder')
+        .mockImplementation((...a: any[]) => {
+          const builder: any = (realQb as any)(...a);
+          const realUpd = builder.update.bind(builder);
+          builder.update = (...u: any[]) => {
+            const upd = realUpd(...u);
+            const exec = upd.execute.bind(upd);
+            upd.execute = async () => {
+              await once();
+              return exec();
+            };
+            return upd;
+          };
+          return builder;
+        });
+      return {
+        fired: () => fired,
+        restore: () => {
+          s.mockRestore();
+          u.mockRestore();
+          qb.mockRestore();
+        },
+      };
+    }
+
+    it('cancel-at-period-end while the renewal settles keeps the NEW paid period (only auto-renew changes)', async () => {
+      const { clinic, subscriptionId } = await activeClinic('g1');
+      const oldEnd = await lapse(subscriptionId);
+      const race = between(() => renew(subscriptionId));
+      try {
+        const res = await api.post(clinic.token, '/subscriptions/cancel', {
+          cancelAtPeriodEnd: true,
+        });
+        expect(res.status).toBe(200);
+      } finally {
+        race.restore();
+      }
+      expect(race.fired()).toBe(true);
+      const s = await sub(subscriptionId);
+      expect(s.status).toBe(SubscriptionStatus.ACTIVE); // the renewal's result
+      expect(s.starts_at).toEqual(oldEnd);
+      expect(s.ends_at.getTime()).toBeGreaterThan(Date.now());
+      expect(s.auto_renew).toBe(false); // the request's own change
+    });
+
+    it('scheduling a downgrade while an upgrade settles does not put the old plan back', async () => {
+      const { clinic, subscriptionId } = await activeClinic('g2', planBasic);
+      const up = await api.post(clinic.token, '/subscriptions/change-plan', {
+        planId: planPro.id,
+      });
+      expect((await openCheckout(clinic, up.body.invoiceId)).status).toBe(200);
+      const chargeId = tap.lastCharge().id;
+
+      const race = between(() => payByWebhook(chargeId));
+      try {
+        // Decided while still on Basic; the paid upgrade lands first → refused, decide again.
+        const res = await api.post(clinic.token, '/subscriptions/change-plan', {
+          planId: planLite.id,
+        });
+        expect(res.status).toBe(409);
+      } finally {
+        race.restore();
+      }
+      expect(race.fired()).toBe(true);
+      const s = await sub(subscriptionId);
+      expect(s.plan.id).toBe(planPro.id); // what was paid for
+    });
+
+    it('a second cancel-at-period-end is a no-op: nothing written, no second "cancelled" event', async () => {
+      const { clinic, subscriptionId } = await activeClinic('g3');
+      expect(
+        (
+          await api.post(clinic.token, '/subscriptions/cancel', {
+            cancelAtPeriodEnd: true,
+          })
+        ).status,
+      ).toBe(200);
+      const emitter = e2e.moduleRef.get(EventEmitter2, { strict: false });
+      const emit = jest.spyOn(emitter, 'emit');
+      try {
+        const again = await api.post(clinic.token, '/subscriptions/cancel', {
+          cancelAtPeriodEnd: true,
+        });
+        expect(again.status).toBe(200);
+        expect(again.body.subscription.auto_renew).toBe(false);
+        expect(
+          emit.mock.calls.filter((c) => c[0] === 'subscription.cancelled'),
+        ).toHaveLength(0);
+      } finally {
+        emit.mockRestore();
+      }
+      expect((await sub(subscriptionId)).status).toBe(
+        SubscriptionStatus.ACTIVE,
+      );
+    });
+
+    it('two concurrent subscribe requests: one 201, the other 409 (never 500), one live subscription', async () => {
+      const clinic = await newClinic('g4');
+      const [a, b] = await Promise.all([
+        api.post(clinic.token, '/subscriptions', { planId: planBasic.id }),
+        api.post(clinic.token, '/subscriptions', { planId: planBasic.id }),
+      ]);
+      expect([a.status, b.status].sort()).toEqual([201, 409]);
+      const live = await subs().count({
+        where: { tenant: { id: clinic.tenantId } },
+      });
+      expect(live).toBe(1);
     });
   });
 });
