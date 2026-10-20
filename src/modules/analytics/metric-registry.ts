@@ -121,7 +121,7 @@ export const METRIC_REGISTRY: Record<MetricKey, MetricDefinition> = {
     key: 'revenue.total',
     label: 'Revenue',
     definition:
-      'The sum of SETTLED (PAID) `Payment` rows in the period. Excludes pending, failed and refunded payments, and is never derived from `Appointment.total_amount` (a booking price, not a settled payment).',
+      'Net collected money in the period (by `paid_at`): every PAID or PARTIALLY_REFUNDED clinic payment (purpose BOOKING/MANUAL), counted at `amount − refunded_amount`. Pending and failed payments are never counted; a fully refunded payment counts 0; a partial refund reduces its payment by the refunded amount. Gross of gateway/platform fees. Summed in ONE reporting currency (see `GET /analytics/currency`) — other currencies are excluded, never added in. A payment belongs to its own branch, else to the branch of the appointment it pays for. Never derived from `Appointment.total_amount` (a booking price, not money received).',
     source: 'AnalyticsAggregationService.sumBranchRevenue',
   },
   'customers.new': {
@@ -168,14 +168,14 @@ export const METRIC_REGISTRY: Record<MetricKey, MetricDefinition> = {
     key: 'total_revenue',
     label: 'Total revenue (all time)',
     definition:
-      'Sum of every SETTLED (PAID) payment for the tenant, with no date bound — the all-time counterpart of "Revenue" (revenue.total), which is period- and branch-scoped. Same settled-payment-only rule; excludes pending/failed/refunded.',
+      'Net collected money for the tenant with no date bound — the all-time counterpart of "Revenue" (revenue.total), same rule: PAID + PARTIALLY_REFUNDED clinic payments at `amount − refunded_amount`, in the reporting currency only. Recomputed hourly (snapshot).',
     source: 'AnalyticsAggregationService.sumTenantRevenue (no range)',
   },
   total_paid_payments: {
     key: 'total_paid_payments',
     label: 'Total paid payments (all time)',
     definition:
-      'Count of PAID payment rows for the tenant, with no date bound. A payment count, not a revenue amount.',
+      'Count of collected clinic payments (PAID or PARTIALLY_REFUNDED, purpose BOOKING/MANUAL) for the tenant, any currency, with no date bound. A payment count, not a revenue amount; fully refunded, pending and failed payments are excluded.',
     source: 'AnalyticsAggregationService.computeDashboardKpis (payments.count)',
   },
   active_conversations: {
@@ -249,7 +249,7 @@ export const METRIC_REGISTRY: Record<MetricKey, MetricDefinition> = {
     key: 'trends.revenue_daily',
     label: 'Revenue trend',
     definition:
-      'SETTLED (PAID) payment amounts bucketed by UTC calendar day (by `paid_at`), for every day in the requested range and branch — same settled-payment definition as revenue.total, never `Appointment.total_amount`.',
+      'Net collected money (revenue.total) bucketed by UTC calendar day of `paid_at`, for every day in the requested range and branch, in the reporting currency. Payments in other currencies are counted in a visible exclusion notice, never added in.',
     source: 'AnalyticsAggregationService.revenueTrend',
   },
   'rates.cancellation': {
@@ -307,7 +307,7 @@ export const METRIC_REGISTRY: Record<MetricKey, MetricDefinition> = {
     key: 'performance.services',
     label: 'Service performance',
     definition:
-      'Per service, in the requested period/branch: how many times it was booked (one count per appointment line item — an appointment with two services counts once for each), and its booked LINE-ITEM PRICE summed (`appointment_services.price`) — the existing top-services definition (used by the monthly report), extended and paginated. This is deliberately NOT the settled-payment revenue definition (revenue.total): a single payment can cover several services on one appointment, so there is no sound way to split a settled payment across service lines without inventing a new allocation rule.',
+      'Per service, in the requested period/branch: how many times it was booked (one count per appointment line item — an appointment with two services counts once for each, ANY outcome including cancelled and no-show), and its booked LINE-ITEM PRICE summed (`appointment_services.price`) — the existing top-services definition (used by the monthly report), extended and paginated. This is deliberately NOT the settled-payment revenue definition (revenue.total): a single payment can cover several services on one appointment, so there is no sound way to split a settled payment across service lines without inventing a new allocation rule.',
     source:
       'AnalyticsAggregationService.servicePerformance (extends topServices)',
   },
@@ -315,21 +315,21 @@ export const METRIC_REGISTRY: Record<MetricKey, MetricDefinition> = {
     key: 'performance.staff',
     label: 'Staff performance',
     definition:
-      'Per practitioner, in the requested period/branch: appointment counts (total/completed/cancelled/no-show), SETTLED (PAID) revenue attributed via the appointment they staffed, average review rating, and no-show rate (rates.no_show, grouped by staff). Only staff with at least one appointment in the window appear.',
+      'Per practitioner, in the requested period/branch: appointment counts (total/completed/cancelled/no-show), net collected revenue (revenue.total) attributed via the appointment they staffed, average review rating, and no-show rate (rates.no_show, grouped by staff). Only staff with at least one appointment in the window appear.',
     source: 'AnalyticsAggregationService.computeStaffPerformance',
   },
   'performance.branches': {
     key: 'performance.branches',
     label: 'Branch performance',
     definition:
-      'Per branch, in the requested period: appointment count (by `start_at`) and SETTLED (PAID) revenue (by `paid_at`) — same definitions as appointments.total / revenue.total, grouped by branch instead of filtered to one. A branch-restricted caller sees only their own branch(es), never a clinic-wide comparison.',
+      'Per branch, in the requested period: appointment count (by `start_at`) and net collected revenue (by `paid_at`) — same definitions as appointments.total / revenue.total, grouped by branch instead of filtered to one. Revenue that belongs to no branch (no branch on the payment or its appointment) is reported separately as `unattributedRevenue`, so rows + unattributed = the revenue trend total. A branch-restricted caller sees only their own branch(es), never a clinic-wide comparison.',
     source: 'AnalyticsAggregationService.branchPerformance',
   },
   'performance.channels': {
     key: 'performance.channels',
     label: 'Channel performance',
     definition:
-      'Per `AppointmentSource` (PLATFORM / WHATSAPP_BOT / MANUAL / PUBLIC_AI), in the requested period/branch: appointment count, completion rate (rates.completion, grouped by channel) and SETTLED (PAID) revenue. Every channel is listed even at zero, so a channel with no bookings is never silently omitted.',
+      'Per `AppointmentSource` (PLATFORM / WHATSAPP_BOT / MANUAL / PUBLIC_AI), in the requested period/branch: appointment count, completion rate (rates.completion, grouped by channel) and net collected revenue (revenue.total) of payments linked to a booking of that channel. Payments not linked to any booking are reported separately as `unattributedRevenue`. Every channel is listed even at zero, so a channel with no bookings is never silently omitted.',
     source: 'AnalyticsAggregationService.channelPerformance',
   },
 

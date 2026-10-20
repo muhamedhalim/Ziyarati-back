@@ -118,6 +118,7 @@ describe('AdvancedAnalyticsService — metric conformance against raw tables (T1
       ds.getRepository(AppointmentServiceEntity),
       ds.getRepository(StaffProfile),
       ds.getRepository(AppointmentCancellation),
+      ds.getRepository(TenantSetting),
     );
     advanced = new AdvancedAnalyticsService(
       aggregation,

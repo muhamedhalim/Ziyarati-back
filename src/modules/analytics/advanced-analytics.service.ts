@@ -16,7 +16,7 @@ import {
   enumerateDays,
   inclusiveDayCount,
   priorPeriod,
-  round2,
+  roundRatio,
   type ReportDate,
 } from './analytics.constants';
 import { QueryAdvancedAnalyticsDto } from './dto/query-advanced-analytics.dto';
@@ -155,11 +155,19 @@ export class AdvancedAnalyticsService {
     return { branchId: ownBranchIds[0] };
   }
 
+  /** The analytics reporting currency — see `AnalyticsAggregationService.resolveReportingCurrency`. */
   private async getCurrency(tenantId: string): Promise<string> {
-    const settings = await this.tenantSettings.findOne({
-      where: { tenant: { id: tenantId } },
-    });
-    return settings?.currency ?? 'USD';
+    return (await this.aggregation.resolveReportingCurrency(tenantId)).currency;
+  }
+
+  /** `GET /analytics/currency` — which currency the page's money is in, and why. */
+  reportingCurrency(tenantId: string) {
+    return this.cache.wrap(
+      tenantId,
+      CACHE_NS.DASHBOARD,
+      'reporting-currency',
+      () => this.aggregation.resolveReportingCurrency(tenantId),
+    );
   }
 
   /**
@@ -390,11 +398,23 @@ export class AdvancedAnalyticsService {
         return {
           ...envelope,
           empty: false,
-          cancellationRate: round2(raw.cancelled / raw.total),
+          cancellationRate: roundRatio(raw.cancelled / raw.total),
           cancellationByPatient: raw.cancelledByPatient,
           cancellationByClinic: raw.cancelledByClinic,
-          noShowRate: round2(raw.no_show / raw.total),
-          completionRate: round2(raw.completed / raw.total),
+          // Cancelled bookings with no AppointmentCancellation row (who
+          // cancelled is unknown) — reported so the split visibly adds up.
+          cancellationUnattributed: Math.max(
+            raw.cancelled - raw.cancelledByPatient - raw.cancelledByClinic,
+            0,
+          ),
+          noShowRate: roundRatio(raw.no_show / raw.total),
+          completionRate: roundRatio(raw.completed / raw.total),
+          // The denominator, and how much of it has no outcome yet (upcoming,
+          // pending payment, confirmed, in progress, rescheduled) — the rates
+          // plus `openAppointments / totalAppointments` sum to 100%.
+          totalAppointments: raw.total,
+          openAppointments:
+            raw.total - raw.completed - raw.cancelled - raw.no_show,
         };
       },
     );
@@ -443,7 +463,9 @@ export class AdvancedAnalyticsService {
           empty: false,
           retainedPatients: raw.retainedPatients,
           priorPeriodPatients: raw.priorPeriodPatients,
-          retentionRate: round2(raw.retainedPatients / raw.priorPeriodPatients),
+          retentionRate: roundRatio(
+            raw.retainedPatients / raw.priorPeriodPatients,
+          ),
           repeatDistribution: raw.repeatDistribution,
         };
       },
@@ -543,7 +565,7 @@ export class AdvancedAnalyticsService {
       avgRating: r.avg_rating,
       noShowRate:
         r.total_appointments > 0
-          ? round2(r.no_show_appointments / r.total_appointments)
+          ? roundRatio(r.no_show_appointments / r.total_appointments)
           : null,
     }));
 
@@ -574,7 +596,7 @@ export class AdvancedAnalyticsService {
         const currency = await this.getCurrency(tenantId);
         const { start, end } = this.instants(from, to);
         const branchIds = scope.branchId ? [scope.branchId] : undefined;
-        const [rows, other] = await Promise.all([
+        const [rows, other, unattributedRevenue] = await Promise.all([
           this.aggregation.branchPerformance(
             tenantId,
             branchIds,
@@ -589,8 +611,23 @@ export class AdvancedAnalyticsService {
             start,
             end,
           ),
+          // Only meaningful clinic-wide: a branch-pinned view never owns
+          // revenue that belongs to no branch.
+          scope.branchId
+            ? Promise.resolve(0)
+            : this.aggregation.unattributedRevenue(
+                tenantId,
+                'branch',
+                undefined,
+                currency,
+                start,
+                end,
+              ),
         ]);
-        const envelope = this.envelope(from, to, scope.branchId, currency);
+        const envelope = {
+          ...this.envelope(from, to, scope.branchId, currency),
+          unattributedRevenue,
+        };
         // FR-A021 — never silently summed away; surfaced only when non-zero.
         const excluded =
           other.count > 0
@@ -601,9 +638,9 @@ export class AdvancedAnalyticsService {
                 },
               }
             : {};
-        const anyActivity = rows.some(
-          (r) => r.appointments > 0 || r.revenue > 0,
-        );
+        const anyActivity =
+          unattributedRevenue > 0 ||
+          rows.some((r) => r.appointments > 0 || r.revenue > 0);
         return { envelope, excluded, rows, anyActivity };
       },
     );
@@ -641,57 +678,73 @@ export class AdvancedAnalyticsService {
     const { from, to } = this.validateRange(dto);
     const scope = await this.resolveScope(tenantId, user, dto.branchId);
 
-    const { envelope, excluded, data, totalAppointments } =
-      await this.cache.wrap(
-        tenantId,
-        CACHE_NS.DASHBOARD,
-        this.aggregateKey('perf-channels', from, to, scope.branchId),
-        async () => {
-          const currency = await this.getCurrency(tenantId);
-          const { start, end } = this.instants(from, to);
-          const [rows, other] = await Promise.all([
-            this.aggregation.channelPerformance(
-              tenantId,
-              scope.branchId,
-              currency,
-              start,
-              end,
-            ),
-            this.aggregation.countOtherCurrencyRevenue(
-              tenantId,
-              scope.branchId,
-              currency,
-              start,
-              end,
-            ),
-          ]);
-          const envelope = this.envelope(from, to, scope.branchId, currency);
-          // FR-A021 — never silently summed away; surfaced only when non-zero.
-          const excluded =
-            other.count > 0
-              ? {
-                  excludedOtherCurrency: {
-                    count: other.count,
-                    amount: other.amount,
-                  },
-                }
-              : {};
-          const totalAppointments = rows.reduce(
-            (s, r) => s + r.appointments,
-            0,
-          );
-          const data = rows.map((r) => ({
-            source: r.source,
-            appointments: r.appointments,
-            completionRate:
-              r.appointments > 0 ? round2(r.completed / r.appointments) : null,
-            revenue: r.revenue,
-          }));
-          return { envelope, excluded, data, totalAppointments };
-        },
-      );
+    const { envelope, excluded, data, anyActivity } = await this.cache.wrap(
+      tenantId,
+      CACHE_NS.DASHBOARD,
+      this.aggregateKey('perf-channels', from, to, scope.branchId),
+      async () => {
+        const currency = await this.getCurrency(tenantId);
+        const { start, end } = this.instants(from, to);
+        const [rows, other, unattributedRevenue] = await Promise.all([
+          this.aggregation.channelPerformance(
+            tenantId,
+            scope.branchId,
+            currency,
+            start,
+            end,
+          ),
+          this.aggregation.countOtherCurrencyRevenue(
+            tenantId,
+            scope.branchId,
+            currency,
+            start,
+            end,
+          ),
+          this.aggregation.unattributedRevenue(
+            tenantId,
+            'channel',
+            scope.branchId,
+            currency,
+            start,
+            end,
+          ),
+        ]);
+        const envelope = {
+          ...this.envelope(from, to, scope.branchId, currency),
+          unattributedRevenue,
+        };
+        // FR-A021 — never silently summed away; surfaced only when non-zero.
+        const excluded =
+          other.count > 0
+            ? {
+                excludedOtherCurrency: {
+                  count: other.count,
+                  amount: other.amount,
+                },
+              }
+            : {};
+        const totalAppointments = rows.reduce((s, r) => s + r.appointments, 0);
+        const data = rows.map((r) => ({
+          source: r.source,
+          appointments: r.appointments,
+          completionRate:
+            r.appointments > 0
+              ? roundRatio(r.completed / r.appointments)
+              : null,
+          revenue: r.revenue,
+        }));
+        // Revenue is bucketed by `paid_at`, appointments by `start_at`: a
+        // range can hold payments for bookings that start elsewhere, so a
+        // zero appointment count alone must not hide that revenue.
+        const anyActivity =
+          totalAppointments > 0 ||
+          unattributedRevenue > 0 ||
+          data.some((r) => r.revenue > 0);
+        return { envelope, excluded, data, anyActivity };
+      },
+    );
 
-    if (totalAppointments === 0) {
+    if (!anyActivity) {
       return {
         ...envelope,
         ...excluded,

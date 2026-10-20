@@ -44,7 +44,21 @@ const BRANCH_RESTRICTED: AuthenticatedUser = {
 } as AuthenticatedUser;
 
 function build(options: { cached?: unknown } = {}) {
+  const tenantSettings = {
+    findOne: jest.fn().mockResolvedValue({ currency: 'SAR' }),
+  };
   const aggregation = {
+    // The currency read now lives on the aggregation engine
+    // (`resolveReportingCurrency`); it still reads tenant settings, so the
+    // "no currency read on a cache hit" assertions below keep their meaning.
+    resolveReportingCurrency: jest.fn(async () => {
+      const settings = (await tenantSettings.findOne()) as { currency: string };
+      return {
+        currency: settings.currency,
+        configuredCurrency: settings.currency,
+      };
+    }),
+    unattributedRevenue: jest.fn().mockResolvedValue(0),
     appointmentsTrend: jest.fn().mockResolvedValue([]),
     revenueTrend: jest.fn().mockResolvedValue([]),
     countOtherCurrencyRevenue: jest
@@ -94,10 +108,6 @@ function build(options: { cached?: unknown } = {}) {
   const branchScope = {
     getMembershipBranchIds: jest.fn().mockResolvedValue(['branch-b']),
   };
-  const tenantSettings = {
-    findOne: jest.fn().mockResolvedValue({ currency: 'SAR' }),
-  };
-
   const service = new AdvancedAnalyticsService(
     aggregation as never,
     branchScope as never,

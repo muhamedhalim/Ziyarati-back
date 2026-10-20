@@ -113,6 +113,24 @@ export class AdvancedAnalyticsController {
   }
 
   @ApiOperation({
+    summary: 'Analytics reporting currency',
+    description:
+      "**Protected — `analytics.dashboard.read` or `analytics.reports.read`. Clinic active.** The single currency every revenue figure on the analytics page is summed in (`currency`), and the clinic's configured one (`configuredCurrency`). They differ when the clinic has never collected a payment in its configured currency. Amounts in other currencies are never added in.",
+  })
+  @ApiOkResponse({ description: 'Reporting currency.' })
+  @ApiUnauthorizedResponse(AUTH_RESPONSES.unauthorized)
+  @ApiForbiddenResponse(AUTH_RESPONSES.forbidden)
+  @Get('currency')
+  @PrivateCache(ANALYTICS_MAX_AGE_SECONDS)
+  @RequireAnyPermission(
+    PERMISSION.ANALYTICS_DASHBOARD_READ,
+    PERMISSION.ANALYTICS_REPORTS_READ,
+  )
+  reportingCurrency() {
+    return this.advanced.reportingCurrency(this.ctx.requireTenantId());
+  }
+
+  @ApiOperation({
     summary: 'Appointment-volume trend',
     description:
       '**Protected — `analytics.dashboard.read` or `analytics.reports.read`. Clinic active.** Server-side, range- and branch-scoped daily appointment counts (FR-A004) — fixes R13 (the old UI mixed branches and read "last 14 rows" instead of "last 14 days"). `empty: true` when nothing at all matched the range/scope.',

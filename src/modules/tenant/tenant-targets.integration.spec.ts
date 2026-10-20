@@ -90,6 +90,7 @@ d('TenantTargetsService — real Postgres', () => {
       r(AppointmentServiceEntity),
       r(StaffProfile),
       r(AppointmentCancellation),
+      r(TenantSetting),
     );
     scope = new BranchScopeService(
       r(BranchUser),

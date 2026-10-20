@@ -51,6 +51,13 @@ export const MAX_ADVANCED_ANALYTICS_RANGE_DAYS = 731;
 export const round2 = (n: number): number => Math.round(Number(n) * 100) / 100;
 
 /**
+ * Round a 0..1 ratio to 4 dp — keeps one decimal of a percentage exact
+ * (0.6667 → 66.7%). `round2` on a ratio silently truncates to whole percents.
+ */
+export const roundRatio = (n: number): number =>
+  Math.round(Number(n) * 10_000) / 10_000;
+
+/**
  * ── DATE STRATEGY (single source of truth) ──────────────────────────────────
  * Calendar report values are STRINGS, never JS `Date` objects:
  *   • daily report `date`            → 'YYYY-MM-DD'  (ReportDate)

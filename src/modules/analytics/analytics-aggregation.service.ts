@@ -1,6 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, In, MoreThanOrEqual, Repository } from 'typeorm';
+import {
+  Between,
+  In,
+  MoreThanOrEqual,
+  Repository,
+  SelectQueryBuilder,
+} from 'typeorm';
 
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
@@ -18,6 +24,7 @@ import {
   PaymentStatus,
 } from '../../entities/enums';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
+import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { AppError, ErrorCode } from '../../common/errors';
 import { CLINIC_REVENUE_PURPOSES } from '../payments/payments.constants';
 
@@ -134,6 +141,54 @@ export interface MonthlyExtras {
 }
 
 /**
+ * Payment statuses whose money was actually collected and not fully returned —
+ * the same set the settlement run and platform finance treat as net
+ * collectible. A PARTIALLY_REFUNDED payment still holds `amount −
+ * refunded_amount` of real money; a fully REFUNDED one holds none.
+ */
+export const COLLECTED_PAYMENT_STATUSES: readonly PaymentStatus[] = [
+  PaymentStatus.PAID,
+  PaymentStatus.PARTIALLY_REFUNDED,
+];
+
+/**
+ * Net collected value of one payment row (alias `p`): gross minus successful
+ * refunds (`refunded_amount` mirrors the refund ledger), never negative.
+ */
+export const NET_COLLECTED_SQL = 'GREATEST(p.amount - p.refunded_amount, 0)';
+
+/**
+ * The branch a payment belongs to: its own `branchId`, else the branch of the
+ * appointment it pays for (`apptAlias` must be joined on `p.appointment`).
+ * Many payment writers only stamp the appointment, so filtering on
+ * `p.branchId` alone silently drops their revenue from every branch view.
+ */
+export const paymentBranchSql = (apptAlias: string): string =>
+  `COALESCE(p."branchId", ${apptAlias}."branchId")`;
+
+/**
+ * Restricts a `payments` query (alias `p`) to the clinic's collected revenue:
+ * collected statuses, clinic-owned purposes, and — when given — one currency.
+ * The one place this filter lives, so every revenue figure on the analytics
+ * page uses the same rule.
+ */
+function whereCollectedClinicRevenue<T extends object>(
+  qb: SelectQueryBuilder<T>,
+  currency: string | null,
+): SelectQueryBuilder<T> {
+  qb.andWhere('p.status IN (:...collectedStatuses)', {
+    collectedStatuses: [...COLLECTED_PAYMENT_STATUSES],
+  }).andWhere('p.purpose IN (:...clinicPurposes)', {
+    clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
+  });
+  if (currency) qb.andWhere('p.currency = :currency', { currency });
+  return qb;
+}
+
+/** Default when a tenant has no `tenant_settings` row (the column's own default). */
+const SETTINGS_CURRENCY_DEFAULT = 'USD';
+
+/**
  * Analytics computation engine — the ONLY place heavy aggregation runs.
  *
  * Every query is tenant-scoped via relations; the tenant id always comes from
@@ -185,7 +240,59 @@ export class AnalyticsAggregationService {
     private readonly staffProfiles: Repository<StaffProfile>,
     @InjectRepository(AppointmentCancellation)
     private readonly appointmentCancellations: Repository<AppointmentCancellation>,
+    @InjectRepository(TenantSetting)
+    private readonly tenantSettings: Repository<TenantSetting>,
   ) {}
+
+  // ─────────────────────────── Reporting currency ────────────────────────── //
+
+  /**
+   * The ONE currency every revenue figure on the analytics page is summed in —
+   * amounts in different currencies are never added together (no conversion
+   * exists in the system).
+   *
+   * `tenant_settings.currency` defaults to USD while bookings are priced in
+   * `appointment.currency` (default SAR), so a clinic that never touched its
+   * settings has every real payment in a currency other than its configured
+   * one. Filtering blindly on the setting would report 0 revenue for it. Rule:
+   *  1. no collected clinic payments yet → the configured currency;
+   *  2. the configured currency has collected payments → the configured one
+   *     (other currencies are excluded and surfaced, never summed in);
+   *  3. otherwise → the currency holding the most collected payments
+   *     (tie → alphabetical), i.e. the currency the clinic actually charges in.
+   * Tenant-wide and range-independent, so every panel agrees on it.
+   */
+  async resolveReportingCurrency(
+    tenantId: string,
+  ): Promise<{ currency: string; configuredCurrency: string }> {
+    const [settings, rows] = await Promise.all([
+      this.tenantSettings.findOne({ where: { tenant: { id: tenantId } } }),
+      whereCollectedClinicRevenue(
+        this.payments
+          .createQueryBuilder('p')
+          .innerJoin('p.tenant', 't')
+          .select('p.currency', 'currency')
+          .addSelect('COUNT(*)', 'count')
+          .where('t.id = :tenantId', { tenantId }),
+        null,
+      )
+        .groupBy('p.currency')
+        .getRawMany<{ currency: string; count: string }>(),
+    ]);
+    const configuredCurrency = settings?.currency ?? SETTINGS_CURRENCY_DEFAULT;
+    if (
+      rows.length === 0 ||
+      rows.some((r) => r.currency === configuredCurrency)
+    ) {
+      return { currency: configuredCurrency, configuredCurrency };
+    }
+    const [top] = [...rows].sort(
+      (a, b) =>
+        Number(b.count) - Number(a.count) ||
+        a.currency.localeCompare(b.currency),
+    );
+    return { currency: top.currency, configuredCurrency };
+  }
 
   // ─────────────────────────────── Branches ──────────────────────────────── //
 
@@ -225,10 +332,11 @@ export class AnalyticsAggregationService {
     dateStr: string,
   ): Promise<DailyMetrics> {
     const { start, end } = dayRangeUtc(dateStr);
+    const { currency } = await this.resolveReportingCurrency(tenantId);
 
     const [appts, total_revenue, ai_messages_count] = await Promise.all([
       this.countBranchAppointments(tenantId, branchId, start, end),
-      this.sumBranchRevenue(tenantId, branchId, start, end),
+      this.sumBranchRevenue(tenantId, branchId, currency, start, end),
       this.countBranchAiMessages(tenantId, branchId, start, end),
     ]);
 
@@ -251,6 +359,7 @@ export class AnalyticsAggregationService {
     const since = new Date(
       Date.now() - ACTIVE_CONVERSATION_WINDOW_DAYS * 86_400_000,
     );
+    const { currency } = await this.resolveReportingCurrency(tenantId);
 
     const [
       total_customers,
@@ -268,7 +377,7 @@ export class AnalyticsAggregationService {
       this.payments.count({
         where: {
           tenant: { id: tenantId },
-          status: PaymentStatus.PAID,
+          status: In([...COLLECTED_PAYMENT_STATUSES]),
           purpose: In([...CLINIC_REVENUE_PURPOSES]),
         },
       }),
@@ -279,7 +388,7 @@ export class AnalyticsAggregationService {
         },
       }),
       this.aiMessages.count({ where: { tenant: { id: tenantId } } }),
-      this.sumTenantRevenue(tenantId),
+      this.sumTenantRevenue(tenantId, currency),
       this.sumAiTokens(tenantId),
       this.appointments.count({
         where: { tenant: { id: tenantId }, status: AppointmentStatus.NO_SHOW },
@@ -363,6 +472,7 @@ export class AnalyticsAggregationService {
     monthStr: string,
   ): Promise<{ total_appointments: number; total_revenue: number }> {
     const { start, end } = monthRangeUtc(monthStr);
+    const { currency } = await this.resolveReportingCurrency(tenantId);
     const [total_appointments, total_revenue] = await Promise.all([
       this.appointments.count({
         where: {
@@ -371,7 +481,7 @@ export class AnalyticsAggregationService {
           start_at: Between(start, end),
         },
       }),
-      this.sumBranchRevenue(tenantId, branchId, start, end),
+      this.sumBranchRevenue(tenantId, branchId, currency, start, end),
     ]);
     return { total_appointments, total_revenue };
   }
@@ -445,22 +555,22 @@ export class AnalyticsAggregationService {
         .andWhere('b.id IN (:...branchIds)', { branchIds });
     }
 
-    const payQb = this.payments
-      .createQueryBuilder('p')
-      .select(`to_char(p.paid_at AT TIME ZONE 'UTC', 'YYYY-MM')`, 'month')
-      .addSelect('COALESCE(SUM(p.amount), 0)', 'sum')
-      .innerJoin('p.tenant', 't')
-      .where('t.id = :tenantId', { tenantId })
-      .andWhere('p.status = :status', { status: PaymentStatus.PAID })
-      .andWhere('p.purpose IN (:...clinicPurposes)', {
-        clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
-      })
+    const payQb = whereCollectedClinicRevenue(
+      this.payments
+        .createQueryBuilder('p')
+        .select(`to_char(p.paid_at AT TIME ZONE 'UTC', 'YYYY-MM')`, 'month')
+        .addSelect(`COALESCE(SUM(${NET_COLLECTED_SQL}), 0)`, 'sum')
+        .innerJoin('p.tenant', 't')
+        .leftJoin('p.appointment', 'pa')
+        .where('t.id = :tenantId', { tenantId }),
+      null,
+    )
       .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
       .groupBy('month');
     if (branchIds !== null) {
-      payQb
-        .innerJoin('p.branch', 'b')
-        .andWhere('b.id IN (:...branchIds)', { branchIds });
+      payQb.andWhere(`${paymentBranchSql('pa')} IN (:...branchIds)`, {
+        branchIds,
+      });
     }
 
     const [apptRows, payRows] = await Promise.all([
@@ -530,20 +640,20 @@ export class AnalyticsAggregationService {
   private async sumBranchRevenue(
     tenantId: string,
     branchId: string,
+    currency: string,
     start: Date,
     end: Date,
   ): Promise<number> {
-    const row = await this.payments
-      .createQueryBuilder('p')
-      .select('COALESCE(SUM(p.amount), 0)', 'sum')
-      .innerJoin('p.tenant', 't')
-      .innerJoin('p.branch', 'b')
-      .where('t.id = :tenantId', { tenantId })
-      .andWhere('b.id = :branchId', { branchId })
-      .andWhere('p.status = :status', { status: PaymentStatus.PAID })
-      .andWhere('p.purpose IN (:...clinicPurposes)', {
-        clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
-      })
+    const row = await whereCollectedClinicRevenue(
+      this.payments
+        .createQueryBuilder('p')
+        .select(`COALESCE(SUM(${NET_COLLECTED_SQL}), 0)`, 'sum')
+        .innerJoin('p.tenant', 't')
+        .leftJoin('p.appointment', 'pa')
+        .where('t.id = :tenantId', { tenantId })
+        .andWhere(`${paymentBranchSql('pa')} = :branchId`, { branchId }),
+      currency,
+    )
       .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
       .getRawOne<{ sum: string }>();
     return round2(Number(row?.sum ?? 0));
@@ -579,28 +689,21 @@ export class AnalyticsAggregationService {
   }
 
   /**
-   * Sum of PAID payments for a tenant, optionally restricted to a `paid_at`
-   * window. Without `range`, this is the all-time dashboard KPI total; with
-   * it, it's the same PAID-only revenue definition scoped to a period (used
-   * by {@link computeCurrentMonthTenantTotals}) — one query, not a duplicate.
+   * All-time net collected revenue for a tenant in one currency — the
+   * dashboard KPI total. Same collected-revenue rule as every ranged figure.
    */
   private async sumTenantRevenue(
     tenantId: string,
-    range?: { start: Date; end: Date },
+    currency: string,
   ): Promise<number> {
-    let qb = this.payments
-      .createQueryBuilder('p')
-      .select('COALESCE(SUM(p.amount), 0)', 'sum')
-      .innerJoin('p.tenant', 't')
-      .where('t.id = :tenantId', { tenantId })
-      .andWhere('p.status = :status', { status: PaymentStatus.PAID })
-      .andWhere('p.purpose IN (:...clinicPurposes)', {
-        clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
-      });
-    if (range) {
-      qb = qb.andWhere('p.paid_at BETWEEN :start AND :end', range);
-    }
-    const row = await qb.getRawOne<{ sum: string }>();
+    const row = await whereCollectedClinicRevenue(
+      this.payments
+        .createQueryBuilder('p')
+        .select(`COALESCE(SUM(${NET_COLLECTED_SQL}), 0)`, 'sum')
+        .innerJoin('p.tenant', 't')
+        .where('t.id = :tenantId', { tenantId }),
+      currency,
+    ).getRawOne<{ sum: string }>();
     return round2(Number(row?.sum ?? 0));
   }
 
@@ -695,10 +798,11 @@ export class AnalyticsAggregationService {
       ? dayRangeUtc(filters.from).start
       : new Date(Date.now() - 30 * 86_400_000);
     const end = filters.to ? dayRangeUtc(filters.to).end : new Date();
+    const { currency } = await this.resolveReportingCurrency(tenantId);
 
     const [counts, revenue, ratings] = await Promise.all([
       this.countStaffAppointments(tenantId, filters.branchId, start, end),
-      this.sumStaffRevenue(tenantId, filters.branchId, start, end),
+      this.sumStaffRevenue(tenantId, filters.branchId, currency, start, end),
       this.avgStaffRating(tenantId, filters.branchId, start, end),
     ]);
 
@@ -770,21 +874,21 @@ export class AnalyticsAggregationService {
   private async sumStaffRevenue(
     tenantId: string,
     branchId: string | undefined,
+    currency: string,
     start: Date,
     end: Date,
   ): Promise<{ staffId: string; revenue: number }[]> {
-    let qb = this.payments
-      .createQueryBuilder('p')
-      .innerJoin('p.tenant', 't')
-      .innerJoin('p.appointment', 'a')
-      .innerJoin('a.staff', 'staff')
-      .select('staff.id', 'staffId')
-      .addSelect('COALESCE(SUM(p.amount), 0)', 'revenue')
-      .where('t.id = :tenantId', { tenantId })
-      .andWhere('p.status = :status', { status: PaymentStatus.PAID })
-      .andWhere('p.purpose IN (:...clinicPurposes)', {
-        clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
-      })
+    let qb = whereCollectedClinicRevenue(
+      this.payments
+        .createQueryBuilder('p')
+        .innerJoin('p.tenant', 't')
+        .innerJoin('p.appointment', 'a')
+        .innerJoin('a.staff', 'staff')
+        .select('staff.id', 'staffId')
+        .addSelect(`COALESCE(SUM(${NET_COLLECTED_SQL}), 0)`, 'revenue')
+        .where('t.id = :tenantId', { tenantId }),
+      currency,
+    )
       .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
       .groupBy('staff.id');
 
@@ -888,25 +992,22 @@ export class AnalyticsAggregationService {
     end: Date,
   ): Promise<RevenueTrendDay[]> {
     const dateExpr = `to_char(p.paid_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')`;
-    let qb = this.payments
-      .createQueryBuilder('p')
-      .innerJoin('p.tenant', 't')
-      .select(dateExpr, 'date')
-      .addSelect('COALESCE(SUM(p.amount), 0)', 'revenue')
-      .where('t.id = :tenantId', { tenantId })
-      .andWhere('p.status = :status', { status: PaymentStatus.PAID })
-      .andWhere('p.purpose IN (:...clinicPurposes)', {
-        clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
-      })
-      .andWhere('p.currency = :currency', { currency })
+    let qb = whereCollectedClinicRevenue(
+      this.payments
+        .createQueryBuilder('p')
+        .innerJoin('p.tenant', 't')
+        .leftJoin('p.appointment', 'pa')
+        .select(dateExpr, 'date')
+        .addSelect(`COALESCE(SUM(${NET_COLLECTED_SQL}), 0)`, 'revenue')
+        .where('t.id = :tenantId', { tenantId }),
+      currency,
+    )
       .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
       .groupBy(dateExpr)
       .orderBy(dateExpr, 'ASC');
 
     if (branchId) {
-      qb = qb
-        .innerJoin('p.branch', 'b')
-        .andWhere('b.id = :branchId', { branchId });
+      qb = qb.andWhere(`${paymentBranchSql('pa')} = :branchId`, { branchId });
     }
 
     const rows = await qb.getRawMany<{ date: string; revenue: string }>();
@@ -928,23 +1029,21 @@ export class AnalyticsAggregationService {
     start: Date,
     end: Date,
   ): Promise<{ count: number; amount: number }> {
-    let qb = this.payments
-      .createQueryBuilder('p')
-      .innerJoin('p.tenant', 't')
-      .select('COUNT(*)', 'count')
-      .addSelect('COALESCE(SUM(p.amount), 0)', 'amount')
-      .where('t.id = :tenantId', { tenantId })
-      .andWhere('p.status = :status', { status: PaymentStatus.PAID })
-      .andWhere('p.purpose IN (:...clinicPurposes)', {
-        clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
-      })
+    let qb = whereCollectedClinicRevenue(
+      this.payments
+        .createQueryBuilder('p')
+        .innerJoin('p.tenant', 't')
+        .leftJoin('p.appointment', 'pa')
+        .select('COUNT(*)', 'count')
+        .addSelect(`COALESCE(SUM(${NET_COLLECTED_SQL}), 0)`, 'amount')
+        .where('t.id = :tenantId', { tenantId }),
+      null,
+    )
       .andWhere('p.currency != :currency', { currency })
       .andWhere('p.paid_at BETWEEN :start AND :end', { start, end });
 
     if (branchId) {
-      qb = qb
-        .innerJoin('p.branch', 'b')
-        .andWhere('b.id = :branchId', { branchId });
+      qb = qb.andWhere(`${paymentBranchSql('pa')} = :branchId`, { branchId });
     }
 
     const row = await qb.getRawOne<{ count: string; amount: string }>();
@@ -997,7 +1096,9 @@ export class AnalyticsAggregationService {
       .innerJoin('c.tenant', 't')
       .innerJoin('c.appointment', 'a')
       .select('c.origin', 'origin')
-      .addSelect('COUNT(*)', 'count')
+      // DISTINCT appointments, not cancellation rows — the relation is
+      // many-to-one, so a second row for the same booking must not count twice.
+      .addSelect('COUNT(DISTINCT a.id)', 'count')
       .where('t.id = :tenantId', { tenantId })
       .andWhere('a.status = :cancelled', {
         cancelled: AppointmentStatus.CANCELLED,
@@ -1041,6 +1142,9 @@ export class AnalyticsAggregationService {
     chosenStart: Date,
     chosenEnd: Date,
   ): Promise<RetentionRaw> {
+    // Raw SQL bypasses TypeORM's soft-delete filter, so `deleted_at IS NULL`
+    // is spelled out — every other figure on the page already excludes
+    // soft-deleted appointments.
     const branchRetentionClause = branchId ? 'AND a."branchId" = $7' : '';
     const branchRetentionExistsClause = branchId
       ? 'AND a2."branchId" = $7'
@@ -1061,6 +1165,7 @@ export class AnalyticsAggregationService {
          SELECT DISTINCT a."customerId" AS cid
          FROM appointments a
          WHERE a."tenantId" = $1 AND a.status = $2 AND a.start_at BETWEEN $3 AND $4
+           AND a.deleted_at IS NULL
          ${branchRetentionClause}
        )
        SELECT
@@ -1069,6 +1174,7 @@ export class AnalyticsAggregationService {
             SELECT 1 FROM appointments a2
             WHERE a2."tenantId" = $1 AND a2.status = $2 AND a2."customerId" = p.cid
               AND a2.start_at BETWEEN $5 AND $6
+              AND a2.deleted_at IS NULL
               ${branchRetentionExistsClause}
          ))::int AS retained_count`,
       retentionParams,
@@ -1089,6 +1195,7 @@ export class AnalyticsAggregationService {
          SELECT a."customerId" AS cid, COUNT(*) AS visits
          FROM appointments a
          WHERE a."tenantId" = $1 AND a.status = $2 AND a.start_at BETWEEN $3 AND $4
+           AND a.deleted_at IS NULL
          ${branchDistClause}
          GROUP BY a."customerId"
        ) t
@@ -1209,24 +1316,24 @@ export class AnalyticsAggregationService {
       apptRows.map((r) => [r.branchId, Number(r.count)]),
     );
 
-    let payQb = this.payments
-      .createQueryBuilder('p')
-      .innerJoin('p.tenant', 't')
-      .innerJoin('p.branch', 'b')
-      .select('b.id', 'branchId')
-      .addSelect('COALESCE(SUM(p.amount), 0)', 'revenue')
-      .where('t.id = :tenantId', { tenantId })
-      .andWhere('p.status = :status', { status: PaymentStatus.PAID })
-      .andWhere('p.purpose IN (:...clinicPurposes)', {
-        clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
-      })
-      // FR-A021 — same currency-scoping as revenueTrend/sumBranchRevenue's
-      // sibling; a per-branch total must never silently mix currencies.
-      .andWhere('p.currency = :currency', { currency })
+    const branchExpr = paymentBranchSql('pa');
+    // FR-A021 — currency-scoped like revenueTrend; a per-branch total must
+    // never silently mix currencies.
+    let payQb = whereCollectedClinicRevenue(
+      this.payments
+        .createQueryBuilder('p')
+        .innerJoin('p.tenant', 't')
+        .leftJoin('p.appointment', 'pa')
+        .select(branchExpr, 'branchId')
+        .addSelect(`COALESCE(SUM(${NET_COLLECTED_SQL}), 0)`, 'revenue')
+        .where('t.id = :tenantId', { tenantId })
+        .andWhere(`${branchExpr} IS NOT NULL`),
+      currency,
+    )
       .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
-      .groupBy('b.id');
+      .groupBy(branchExpr);
     if (branchIds?.length) {
-      payQb = payQb.andWhere('b.id IN (:...branchIds)', { branchIds });
+      payQb = payQb.andWhere(`${branchExpr} IN (:...branchIds)`, { branchIds });
     }
     const payRows = await payQb.getRawMany<{
       branchId: string;
@@ -1283,24 +1390,24 @@ export class AnalyticsAggregationService {
       ]),
     );
 
-    let payQb = this.payments
-      .createQueryBuilder('p')
-      .innerJoin('p.tenant', 't')
-      .innerJoin('p.appointment', 'a')
-      .select('a.source', 'source')
-      .addSelect('COALESCE(SUM(p.amount), 0)', 'revenue')
-      .where('t.id = :tenantId', { tenantId })
-      .andWhere('p.status = :status', { status: PaymentStatus.PAID })
-      .andWhere('p.purpose IN (:...clinicPurposes)', {
-        clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
-      })
-      // FR-A021 — same currency-scoping as revenueTrend/sumBranchRevenue's
-      // sibling; a per-channel total must never silently mix currencies.
-      .andWhere('p.currency = :currency', { currency })
+    // FR-A021 — currency-scoped like revenueTrend; a per-channel total must
+    // never silently mix currencies.
+    let payQb = whereCollectedClinicRevenue(
+      this.payments
+        .createQueryBuilder('p')
+        .innerJoin('p.tenant', 't')
+        .innerJoin('p.appointment', 'a')
+        .select('a.source', 'source')
+        .addSelect(`COALESCE(SUM(${NET_COLLECTED_SQL}), 0)`, 'revenue')
+        .where('t.id = :tenantId', { tenantId }),
+      currency,
+    )
       .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
       .groupBy('a.source');
     if (branchId) {
-      payQb = payQb.andWhere('a."branchId" = :branchId', { branchId });
+      payQb = payQb.andWhere(`${paymentBranchSql('a')} = :branchId`, {
+        branchId,
+      });
     }
     const payRows = await payQb.getRawMany<{
       source: AppointmentSource;
@@ -1316,5 +1423,39 @@ export class AnalyticsAggregationService {
       completed: apptBySource.get(source)?.completed ?? 0,
       revenue: revenueBySource.get(source) ?? 0,
     }));
+  }
+
+  /**
+   * Collected revenue in range that a breakdown table cannot place in any row,
+   * so the table's rows plus this figure add up to the revenue trend total:
+   *  - `branch`: payments with no branch of their own AND no appointment branch;
+   *  - `channel`: payments not linked to an appointment (no booking source).
+   * Same collected-revenue and currency rule as every other revenue figure.
+   */
+  async unattributedRevenue(
+    tenantId: string,
+    kind: 'branch' | 'channel',
+    branchId: string | undefined,
+    currency: string,
+    start: Date,
+    end: Date,
+  ): Promise<number> {
+    const qb = whereCollectedClinicRevenue(
+      this.payments
+        .createQueryBuilder('p')
+        .innerJoin('p.tenant', 't')
+        .leftJoin('p.appointment', 'pa')
+        .select(`COALESCE(SUM(${NET_COLLECTED_SQL}), 0)`, 'sum')
+        .where('t.id = :tenantId', { tenantId }),
+      currency,
+    ).andWhere('p.paid_at BETWEEN :start AND :end', { start, end });
+    if (kind === 'branch') {
+      qb.andWhere(`${paymentBranchSql('pa')} IS NULL`);
+    } else {
+      qb.andWhere('pa.id IS NULL');
+      if (branchId) qb.andWhere('p."branchId" = :branchId', { branchId });
+    }
+    const row = await qb.getRawOne<{ sum: string }>();
+    return round2(Number(row?.sum ?? 0));
   }
 }
