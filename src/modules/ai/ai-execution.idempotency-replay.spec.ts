@@ -73,6 +73,7 @@ describe('AiExecutionService — idempotent replay is bound to its conversation'
       { get: jest.fn().mockReturnValue(10) } as never, // config
       unused, // platformSettings
       unused, // bookingContext
+      unused, // directives
     );
     return { service, requests, providers };
   }

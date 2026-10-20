@@ -267,3 +267,51 @@ describe('AiPromptBudgetService — clinic agent instructions (F-12)', () => {
     expect(systemMessages(r)[0].content).toBe('CLINIC only');
   });
 });
+
+describe('AiPromptBudgetService — clinic directives', () => {
+  const service = (overrides: Record<string, unknown> = {}) =>
+    new AiPromptBudgetService(new ConfigService({
+      AI_PROMPT_SYSTEM_TOKENS: 60,
+      AI_PROMPT_AGENT_TOKENS: 30,
+      AI_PROMPT_DIRECTIVES_TOKENS: 30,
+      AI_PROMPT_MAX_INPUT_TOKENS: 2000,
+      AI_MODEL_CONTEXT_WINDOW_TOKENS: 4000,
+      ...overrides,
+    }));
+  const core = 'CORE rule one. '.repeat(6).trim();
+  const run = (extra: Record<string, unknown>) =>
+    service().build({ systemPrompt: core, history: [], ragChunks: [], tools: [], ...extra });
+  const systemOf = (r: ReturnType<AiPromptBudgetService['build']>) =>
+    r.messages.filter((m) => m.role === 'system');
+
+  it('puts core, agent text, then directives in ONE system message', () => {
+    const r = run({ agentInstructions: 'AGENT note.', clinicDirectives: 'DIRECTIVES list.' });
+    expect(systemOf(r)).toHaveLength(1);
+    const content = systemOf(r)[0].content ?? '';
+    expect(content.startsWith(core)).toBe(true);
+    expect(content.indexOf('AGENT')).toBeLessThan(content.indexOf('DIRECTIVES'));
+  });
+
+  it('cuts long directives at their own budget without touching the core or the agent text', () => {
+    const r = run({ agentInstructions: 'AGENT note.', clinicDirectives: 'DIRECTIVE filler. '.repeat(100) });
+    const content = systemOf(r)[0].content ?? '';
+    expect(content).toContain(core);
+    expect(content).toContain('AGENT note.');
+    expect(content.length).toBeLessThan(core.length + 'DIRECTIVE filler. '.repeat(100).length);
+    expect(r.telemetry.truncatedSystemTokens).toBeGreaterThan(0);
+  });
+
+  it('a long agent prompt cannot starve the directives', () => {
+    const r = run({ agentInstructions: 'AGENT filler. '.repeat(200), clinicDirectives: 'DIRECTIVE short.' });
+    expect(systemOf(r)[0].content).toContain('DIRECTIVE short.');
+  });
+
+  it('adds nothing and no separator when there are no directives', () => {
+    expect(systemOf(run({}))[0].content).toBe(core);
+  });
+
+  it('keeps the booking context as the second system message', () => {
+    const r = run({ clinicDirectives: 'DIRECTIVES list.', bookingContext: 'BOOKING CTX' });
+    expect(systemOf(r)[1].content).toBe('BOOKING CTX');
+  });
+});

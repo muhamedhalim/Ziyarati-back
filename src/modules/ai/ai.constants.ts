@@ -13,6 +13,22 @@
  *    `handover_requests.status` are free varchars → app-defined below.
  */
 
+/**
+ * Clinic directives (`ai_prompts` rows). They are sent to the model on every
+ * turn, so the bounds are what keep a clinic's standing rules from growing into
+ * an unbounded per-turn token cost. 10 x 400 chars is about 1500 tokens by the
+ * prompt budget's estimator, which is what the default
+ * `AI_PROMPT_DIRECTIVES_TOKENS` is sized to hold.
+ */
+export const AI_DIRECTIVE_LIMITS = {
+  /** Longest single directive (create/update validation and runtime clip). */
+  MAX_CONTENT_CHARS: 400,
+  /** Active directives per clinic that reach the model. */
+  MAX_ACTIVE: 10,
+  /** Stored directives per clinic, active or not. */
+  MAX_TOTAL: 50,
+} as const;
+
 /** Training-file ingestion status (free varchar; default replaced from 'PENDING'). */
 export const TRAINING_FILE_STATUS = {
   PENDING: 'PENDING',

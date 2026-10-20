@@ -30,6 +30,13 @@ export interface PromptBuildInput {
    */
   agentInstructions?: string;
   /**
+   * The clinic's active directives, already framed by `composeClinicDirectives`.
+   * Same system message, third in order (core, agent text, directives), with a
+   * budget of its own (`AI_PROMPT_DIRECTIVES_TOKENS`) so neither a long agent
+   * prompt nor a long core can push a clinic's rules out of the window.
+   */
+  clinicDirectives?: string;
+  /**
    * Server-verified state this conversation has already established — for the
    * public booking assistant, the city/clinic/branch/service/doctor/slot it has
    * confirmed against the database (see
@@ -63,6 +70,7 @@ export class AiPromptBudgetService {
   readonly maxToolOutputTokens: number;
   private readonly systemBudget: number;
   private readonly agentBudget: number;
+  private readonly directivesBudget: number;
   private readonly historyBudget: number;
   private readonly ragBudget: number;
   private readonly bookingContextBudget: number;
@@ -77,6 +85,9 @@ export class AiPromptBudgetService {
     // Before this an agent prompt could use the whole 2000 by REPLACING the core,
     // so this is the same order of size — not a new class of spend.
     this.agentBudget = this.positive(config.get('AI_PROMPT_AGENT_TOKENS'), 1000);
+    // Sized so a clinic at every limit (10 directives x 400 chars, AI_DIRECTIVE_LIMITS)
+    // plus the framing header fits whole under this estimator (~1 token / 3 ASCII chars).
+    this.directivesBudget = this.positive(config.get('AI_PROMPT_DIRECTIVES_TOKENS'), 1600);
     this.historyBudget = this.positive(config.get('AI_PROMPT_HISTORY_TOKENS'), 5000);
     this.ragBudget = this.positive(config.get('AI_PROMPT_RAG_TOKENS'), 2500);
     // Small and fixed: the block is a handful of validated lines (ids + names),
@@ -102,7 +113,7 @@ export class AiPromptBudgetService {
     const messages: AiChatMessage[] = [];
     const tools = this.takeTools(input.tools ?? [], telemetry);
 
-    if (input.systemPrompt || input.agentInstructions) {
+    if (input.systemPrompt || input.agentInstructions || input.clinicDirectives) {
       const core = this.truncate(input.systemPrompt ?? '', this.systemBudget);
       telemetry.truncatedSystemTokens = Math.max(0, this.estimate(input.systemPrompt ?? '') - this.estimate(core));
       let system = core;
@@ -110,6 +121,11 @@ export class AiPromptBudgetService {
         const clinic = this.truncate(input.agentInstructions, this.agentBudget);
         telemetry.truncatedSystemTokens += Math.max(0, this.estimate(input.agentInstructions) - this.estimate(clinic));
         system = core ? `${core}\n\n${clinic}` : clinic;
+      }
+      if (input.clinicDirectives) {
+        const directives = this.truncate(input.clinicDirectives, this.directivesBudget);
+        telemetry.truncatedSystemTokens += Math.max(0, this.estimate(input.clinicDirectives) - this.estimate(directives));
+        system = system ? `${system}\n\n${directives}` : directives;
       }
       if (system) messages.push({ role: 'system', content: system });
     }

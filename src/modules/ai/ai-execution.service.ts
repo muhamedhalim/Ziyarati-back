@@ -69,11 +69,13 @@ import {
   ProcessingDescriptor,
 } from './execution/ai-processing-policy.service';
 import { HandoverCustomerRepliedEvent } from '../../events/handover.events';
+import { AiPromptService } from './ai-prompt.service';
 import {
   AiPromptBudgetService,
   PromptBudgetTelemetry,
 } from './prompt/ai-prompt-budget.service';
 import {
+  composeClinicDirectives,
   composeClinicInstructions,
   DEFAULT_ASSISTANT_SYSTEM_PROMPT,
   DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT,
@@ -237,6 +239,8 @@ export class AiExecutionService {
      * what finally shows them to the model.
      */
     private readonly bookingContext: PublicBookingContextService,
+    /** The clinic's active directives (Prompts tab), loaded per turn. */
+    private readonly directives: AiPromptService,
     /** Fleet-level counters. Optional: a missing counter must never cost a turn. */
     @Optional() private readonly platformMetrics?: MetricsService,
   ) {
@@ -626,8 +630,13 @@ export class AiExecutionService {
       // `applyPromptDisclosureCheck` protects from being recited back. Passing
       // the default to the former but `undefined` to the latter would have made
       // the platform prompt the one prompt the disclosure gate did not cover.
+      const clinicDirectives = await this.loadClinicDirectives(
+        knowledgeTenantId,
+        tenantId,
+        agent,
+      );
       const { corePrompt, clinicInstructions, effectiveSystemPrompt } =
-        this.composeSystemPrompt(channel, agent);
+        this.composeSystemPrompt(channel, agent, clinicDirectives);
       // F-10: the redirect a code reply is swapped for — set only where the guard applies.
       const scopeRedirect = this.scopeGuardActive(channel)
         ? scopeRefusal(dto.content)
@@ -646,6 +655,7 @@ export class AiExecutionService {
       const built = this.budgets.build({
         systemPrompt: corePrompt,
         agentInstructions: clinicInstructions,
+        clinicDirectives,
         bookingContext,
         ragChunks: chunks,
         memories,
@@ -1667,8 +1677,13 @@ export class AiExecutionService {
 
       // Same single source of truth for "the prompt this turn runs under" as
       // the non-streaming path above — see its comment.
+      const clinicDirectives = await this.loadClinicDirectives(
+        knowledgeTenantId,
+        tenantId,
+        agent,
+      );
       const { corePrompt, clinicInstructions, effectiveSystemPrompt } =
-        this.composeSystemPrompt(channel, agent);
+        this.composeSystemPrompt(channel, agent, clinicDirectives);
       // F-10: the redirect a code reply is swapped for — set only where the guard applies.
       const scopeRedirect = this.scopeGuardActive(channel)
         ? scopeRefusal(dto.content)
@@ -1685,6 +1700,7 @@ export class AiExecutionService {
       const built = this.budgets.build({
         systemPrompt: corePrompt,
         agentInstructions: clinicInstructions,
+        clinicDirectives,
         bookingContext,
         ragChunks: chunks,
         memories,
@@ -2417,9 +2433,11 @@ export class AiExecutionService {
   private composeSystemPrompt(
     channel: AiExecutionTransport,
     agent: AiAgent | undefined,
+    clinicDirectives?: string,
   ): {
     corePrompt: string;
     clinicInstructions: string | undefined;
+    clinicDirectives: string | undefined;
     effectiveSystemPrompt: string;
   } {
     const corePrompt = this.defaultSystemPrompt(channel);
@@ -2427,10 +2445,49 @@ export class AiExecutionService {
     return {
       corePrompt,
       clinicInstructions,
-      effectiveSystemPrompt: clinicInstructions
-        ? `${corePrompt}\n\n${clinicInstructions}`
-        : corePrompt,
+      clinicDirectives,
+      // Everything the model is told in the clinic's name is part of what the
+      // disclosure check must keep from being recited back.
+      effectiveSystemPrompt: [corePrompt, clinicInstructions, clinicDirectives]
+        .filter(Boolean)
+        .join('\n\n'),
     };
+  }
+
+  /**
+   * The framed block of this clinic's ACTIVE directives (Prompts tab), or
+   * `undefined`. Read fresh on every turn, so activating, deactivating or
+   * deleting a directive changes the very next reply.
+   *
+   * `scopeTenantId` is the server-resolved owner of the turn: the conversation
+   * tenant, or — on the public widget only — the clinic `resolveKnowledgeScope`
+   * re-validated against live data. Never a request value. A guest still on the
+   * shared discovery tenant has no clinic yet and so no directives.
+   *
+   * Never throws: a failed read degrades to "no directives" (the platform core
+   * is untouched), logged with identifiers only — same posture as
+   * `buildBookingContext`.
+   */
+  private async loadClinicDirectives(
+    scopeTenantId: string,
+    conversationTenantId: string,
+    agent: AiAgent | undefined,
+  ): Promise<string | undefined> {
+    if (this.ctx.getUser()?.guest && scopeTenantId === conversationTenantId) {
+      return undefined;
+    }
+    try {
+      return composeClinicDirectives(
+        await this.directives.findActiveForTurn(scopeTenantId, agent?.id),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `clinic directives unavailable (tenant=${scopeTenantId}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return undefined;
+    }
   }
 
   /**

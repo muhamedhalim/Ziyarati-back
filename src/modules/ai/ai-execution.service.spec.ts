@@ -42,6 +42,7 @@ describe('AiExecutionService — resolveTemperature', () => {
       { get: jest.fn().mockReturnValue(10) } as any, // config
       platformSettings as any,
       unused, // bookingContext
+      unused, // directives
     );
   });
 
@@ -89,6 +90,7 @@ describe('AiExecutionService — resolveDefaultModel', () => {
       { get: jest.fn().mockReturnValue(10) } as any, // config
       platformSettings as any,
       unused, // bookingContext
+      unused, // directives
     );
   });
 
