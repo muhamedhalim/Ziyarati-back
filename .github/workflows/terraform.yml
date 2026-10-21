@@ -68,6 +68,9 @@ jobs:
       - name: deploy-image verifier (offline test of the gate that proves ECS runs the pushed image)
         run: bash infra/scripts/tests/verify-deployed-image.test.sh
 
+      - name: ECS rollout wait (offline test of success / in-progress / failed / rolled back / superseded / timeout / AWS-error outcomes)
+        run: bash infra/scripts/tests/wait-ecs-rollout.test.sh
+
       - name: ECR scan gate (offline test of scan polling, failure reporting and the CRITICAL policy)
         run: bash infra/scripts/tests/ecr-scan-gate.test.sh
 

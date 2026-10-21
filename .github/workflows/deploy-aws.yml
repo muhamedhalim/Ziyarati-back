@@ -12,8 +12,9 @@ name: Deploy backend (AWS)
 # Flow:  pull request → build + typecheck + tests + image (VALIDATION ONLY — no AWS access, no deploy)
 #        push to master → build + typecheck + tests + image → preflight
 #        → [reviewer approves `production`] → push SHA tag to ECR (immutable)
-#        → ecs-deploy.sh (scan gate, migrate, roll, rollback check, image check,
-#          smoke) → verify-deployed-image.sh (ECS runs exactly this image).
+#        → ecs-deploy.sh (scan gate, migrate, roll, wait-ecs-rollout.sh = bounded wait for
+#          PRIMARY+COMPLETED, rollback check, image check, smoke)
+#          → verify-deployed-image.sh (ECS runs exactly this image).
 # Rollback = run this workflow manually with image_tag=<previous sha>.
 #
 # Repository variables (Settings → Variables; none are secrets) — preflight
@@ -252,4 +253,8 @@ jobs:
           IMAGE_SCAN_GATE: ${{ inputs.image_tag != '' && 'skip' || (vars.ALLOW_CRITICAL_IMAGE_FINDINGS == 'true' && 'warn' || 'enforce') }}
           # The digest this run pushed; ecs-deploy.sh requires ECR and ECS to agree with it.
           EXPECTED_IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+          # Overall deadline for the ECS rollout wait (wait-ecs-rollout.sh). Default 900s; the old
+          # `aws ecs wait` budget was 600s. Override with a repository variable only after reading a
+          # real rollout duration from the [rollout] log lines; the job timeout is 45 min.
+          ROLLOUT_TIMEOUT_SECONDS: ${{ vars.ECS_ROLLOUT_TIMEOUT_SECONDS || '900' }}
         run: bash infra/scripts/ecs-deploy.sh production "${{ steps.tag.outputs.tag }}" "${{ vars.API_URL_PRODUCTION }}"

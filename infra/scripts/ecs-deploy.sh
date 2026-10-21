@@ -7,8 +7,9 @@
 #    i.e. whatever Terraform last registered — replace ONLY the image, register.
 # 2. Run the migrate task once and require exit code 0 (schema first; every
 #    migration must be backward-compatible with the previous image).
-# 3. Point both services at their new revisions; wait for steady state (the
-#    ECS deployment circuit breaker rolls back automatically on failure).
+# 3. Point both services at their new revisions; wait (wait-ecs-rollout.sh, bounded) until THOSE
+#    revisions are PRIMARY + COMPLETED (the ECS deployment circuit breaker rolls back automatically
+#    on failure and the wait reports it).
 # 4. verify-deployed-image.sh: both services run exactly this tag (single COMPLETED
 #    deployment, all tasks up, ECR digest == the digest CI pushed).
 # 5. Smoke-test liveness + readiness through the public ALB.
@@ -94,10 +95,17 @@ aws ecs update-service --cluster "$CLUSTER" --service "${CLUSTER}-api" \
   --task-definition "$API_TD" --query 'service.serviceName' --output text >/dev/null
 aws ecs update-service --cluster "$CLUSTER" --service "${CLUSTER}-worker" \
   --task-definition "$WORKER_TD" --query 'service.serviceName' --output text >/dev/null
-log "waiting for services to stabilize (circuit breaker rolls back on failure)"
-aws ecs wait services-stable --cluster "$CLUSTER" --services "${CLUSTER}-api" "${CLUSTER}-worker"
+log "waiting for the rollout of ${API_TD##*/} / ${WORKER_TD##*/} (circuit breaker rolls back on failure)"
+# NOT `aws ecs wait services-stable`: that waiter ignores rolloutState and the task definition, so it
+# can return while the new deployment is still IN_PROGRESS or after a rollback. wait-ecs-rollout.sh
+# polls (bounded by ROLLOUT_TIMEOUT_SECONDS) until THESE task definitions are PRIMARY + COMPLETED and
+# exits 10/11/12/13 for failed-or-rolled-back / superseded / timeout / AWS errors.
+if ! bash "$(dirname "$0")/wait-ecs-rollout.sh" "$CLUSTER" "${CLUSTER}-api=${API_TD}" "${CLUSTER}-worker=${WORKER_TD}"; then
+  log "ROLLOUT NOT COMPLETE - see the [rollout] lines above (events, deployment states)."
+  exit 1
+fi
 
-# A rolled-back deployment also ends "stable" — check which revision won.
+# Independent re-check (cheap, one read each): the revision that won must be the one we registered.
 RUNNING_TD="$(aws ecs describe-services --cluster "$CLUSTER" --services "${CLUSTER}-api" \
   --query 'services[0].taskDefinition' --output text)"
 if [[ "$RUNNING_TD" != "$API_TD" ]]; then
