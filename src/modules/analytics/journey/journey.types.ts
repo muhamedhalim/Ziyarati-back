@@ -446,6 +446,8 @@ export interface JourneyAggregate {
     currency: string;
     remindersEnabled: boolean;
     reminderLeadMinutes: number[];
+    /** The clinic's reporting timezone (whose calendar days the range is). */
+    timezone: string;
   };
   /**
    * Tenant-wide count of active, non-deleted services — lets the duration

@@ -115,7 +115,7 @@ export class AdvancedAnalyticsController {
   @ApiOperation({
     summary: 'Analytics reporting currency',
     description:
-      "**Protected — `analytics.dashboard.read` or `analytics.reports.read`. Clinic active.** The single currency every revenue figure on the analytics page is summed in (`currency`), and the clinic's configured one (`configuredCurrency`). They differ when the clinic has never collected a payment in its configured currency. Amounts in other currencies are never added in.",
+      "**Protected — `analytics.dashboard.read` or `analytics.reports.read`. Clinic active.** The single currency every revenue figure on the analytics page is summed in (`currency`), and the clinic's configured one (`configuredCurrency`). They differ when the clinic has never collected a payment in its configured currency. Amounts in other currencies are never added in. `timezone` is the IANA zone whose calendar days every analytics date range and day/month bucket is in (the zone most of the clinic's active branches use; else the clinic default; else UTC).",
   })
   @ApiOkResponse({ description: 'Reporting currency.' })
   @ApiUnauthorizedResponse(AUTH_RESPONSES.unauthorized)

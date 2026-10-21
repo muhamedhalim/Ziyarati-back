@@ -95,6 +95,17 @@ export class ReportExportService {
     private readonly audit: ReportExportAuditService,
   ) {}
 
+  /** Reporting currency + timezone for a run — the same ones the on-screen tables use. */
+  private async reportingContext(
+    tenantId: string,
+  ): Promise<{ currency: string; timezone: string }> {
+    const [{ currency }, timezone] = await Promise.all([
+      this.aggregation.resolveReportingCurrency(tenantId),
+      this.advanced.reportingTimezone(tenantId),
+    ]);
+    return { currency, timezone };
+  }
+
   /** Which injected instance owns each registry entry's literal `query` method. */
   private instanceFor(key: ReportKey): object {
     switch (key) {
@@ -129,7 +140,12 @@ export class ReportExportService {
     );
     const branchScope = scope.branchId ? { branchId: scope.branchId } : null;
 
-    const ctx: ExportRunContext = { tenantId, branchScope, filters };
+    const ctx: ExportRunContext = {
+      tenantId,
+      branchScope,
+      filters,
+      ...(await this.reportingContext(tenantId)),
+    };
     const instance = this.instanceFor(entry.key);
     const probeSize = exportSyncRowThreshold() + 1;
     const fetchPage = this.buildFetchPage(entry, ctx, instance);
@@ -357,6 +373,7 @@ export class ReportExportService {
         tenantId,
         branchScope: job.branch_scope,
         filters: job.filters,
+        ...(await this.reportingContext(tenantId)),
       };
       const instance = this.instanceFor(entry.key);
       const fetchPage = this.buildFetchPage(entry, ctx, instance);

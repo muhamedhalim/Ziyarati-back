@@ -8,7 +8,7 @@ import type { AuthenticatedUser } from '../../auth/interfaces/authenticated-user
 import { AdvancedAnalyticsService } from '../advanced-analytics.service';
 import { AnalyticsCacheService, CACHE_NS } from '../analytics-cache.service';
 import {
-  dayRangeUtc,
+  dayRangeInZone,
   inclusiveDayCount,
   priorPeriod,
   type ReportDate,
@@ -96,6 +96,7 @@ export class PatientJourneyService {
       to,
       scope.branchId,
       aggregate.settings.currency,
+      aggregate.settings.timezone,
     );
     const cov = shapeJourneyCoverages(aggregate.overall);
     const kpis = shapeKpis(
@@ -236,6 +237,7 @@ export class PatientJourneyService {
       to,
       scope.branchId,
       aggregate.settings.currency,
+      aggregate.settings.timezone,
     );
 
     const dimension = dto.dimension;
@@ -394,17 +396,19 @@ export class PatientJourneyService {
     const settingsRow = await this.tenantSettings.findOne({
       where: { tenant: { id: tenantId } },
     });
-    const currency = settingsRow?.currency ?? 'USD';
+    const currency = settingsRow?.currency ?? 'SAR';
     const remindersEnabled = settingsRow?.reminders_enabled ?? false;
     const reminderLeadMinutes = settingsRow?.reminder_lead_minutes ?? [];
 
+    // Days are the clinic's own calendar days (same rule as every analytics range).
+    const tz = await this.advanced.reportingTimezone(tenantId);
     const rangeDays = inclusiveDayCount(from, to);
     const wantPrior = rangeDays <= JOURNEY_THRESHOLDS.MAX_COMPARISON_RANGE_DAYS;
 
     const opts: JourneyQueryOptions = {
       tenantId,
-      start: dayRangeUtc(from).start,
-      end: dayRangeUtc(to).end,
+      start: dayRangeInZone(from, tz).start,
+      end: dayRangeInZone(to, tz).end,
       branchId,
       staffId,
       serviceId,
@@ -419,8 +423,8 @@ export class PatientJourneyService {
       priorRange = { from: pp.priorFrom, to: pp.priorTo };
       priorOpts = {
         ...opts,
-        start: dayRangeUtc(pp.priorFrom).start,
-        end: dayRangeUtc(pp.priorTo).end,
+        start: dayRangeInZone(pp.priorFrom, tz).start,
+        end: dayRangeInZone(pp.priorTo, tz).end,
       };
     }
 
@@ -471,7 +475,12 @@ export class PatientJourneyService {
         staff: staffLabels,
         service: serviceLabels,
       },
-      settings: { currency, remindersEnabled, reminderLeadMinutes },
+      settings: {
+        currency,
+        remindersEnabled,
+        reminderLeadMinutes,
+        timezone: tz,
+      },
       activeServiceCount,
       now: now.toISOString(),
     };

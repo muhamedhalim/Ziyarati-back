@@ -183,3 +183,125 @@ export function previousMonthUtc(now: Date = new Date()): ReportMonth {
 export function currentMonthUtc(now: Date = new Date()): ReportMonth {
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
 }
+
+// ──────────────────────── Clinic-local calendar days ──────────────────────── //
+//
+// Audit 2026-10-21: every report day/month used to be a UTC calendar day, so
+// for a Riyadh clinic (UTC+3) anything between 00:00 and 03:00 local landed
+// on the previous day. Report days and months are now the clinic's own
+// calendar days in its reporting timezone (see
+// `AnalyticsAggregationService.resolveReportingTimezone`). The helpers below
+// are the zone-aware twins of `dayRangeUtc` / `monthRangeUtc`; with
+// `tz = 'UTC'` they return exactly what those return.
+
+export const DEFAULT_REPORTING_TIMEZONE = 'UTC';
+
+/** True when `tz` is an IANA zone name the runtime (and Postgres) understands. */
+export function isValidTimeZone(tz: string | null | undefined): tz is string {
+  if (!tz) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** `tz`'s offset from UTC at `instant`, in ms (positive east of Greenwich). */
+function zoneOffsetMs(instant: number, tz: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(new Date(instant));
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+  const asUtc = Date.UTC(
+    get('year'),
+    get('month') - 1,
+    get('day'),
+    get('hour'),
+    get('minute'),
+    get('second'),
+  );
+  return asUtc - Math.floor(instant / 1000) * 1000;
+}
+
+/** The UTC instant of local midnight starting 'YYYY-MM-DD' in `tz` (DST-safe). */
+function zonedMidnight(dateStr: string, tz: string): number {
+  const naive = new Date(`${dateStr}T00:00:00.000Z`).getTime();
+  let guess = naive - zoneOffsetMs(naive, tz);
+  // A second pass settles days where the offset changes (DST transitions).
+  guess = naive - zoneOffsetMs(guess, tz);
+  return guess;
+}
+
+/** 'YYYY-MM-DD' one calendar day after `dateStr` (pure calendar arithmetic). */
+function nextDay(dateStr: string): string {
+  return new Date(dayRangeUtc(dateStr).start.getTime() + 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** Inclusive instant range of local calendar day 'YYYY-MM-DD' in `tz`. */
+export function dayRangeInZone(
+  dateStr: string,
+  tz: string,
+): { start: Date; end: Date } {
+  return {
+    start: new Date(zonedMidnight(dateStr, tz)),
+    end: new Date(zonedMidnight(nextDay(dateStr), tz) - 1),
+  };
+}
+
+/** Inclusive instant range of local calendar month 'YYYY-MM' in `tz`. */
+export function monthRangeInZone(
+  monthStr: string,
+  tz: string,
+): { start: Date; end: Date } {
+  const { firstDay, lastDay } = monthDateBounds(monthStr);
+  return {
+    start: dayRangeInZone(firstDay, tz).start,
+    end: dayRangeInZone(lastDay, tz).end,
+  };
+}
+
+/** The local calendar date ('YYYY-MM-DD') of `now` in `tz`. */
+export function todayInZone(tz: string, now: Date = new Date()): ReportDate {
+  return new Date(now.getTime() + zoneOffsetMs(now.getTime(), tz))
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** The local calendar day before `now`'s in `tz` — a day that has fully ended. */
+export function yesterdayInZone(
+  tz: string,
+  now: Date = new Date(),
+): ReportDate {
+  const today = todayInZone(tz, now);
+  return new Date(dayRangeUtc(today).start.getTime() - 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** The local calendar month in progress at `now` in `tz`, as 'YYYY-MM'. */
+export function currentMonthInZone(
+  tz: string,
+  now: Date = new Date(),
+): ReportMonth {
+  return todayInZone(tz, now).slice(0, 7);
+}
+
+/** The local calendar month before the one in progress at `now` in `tz`. */
+export function previousMonthInZone(
+  tz: string,
+  now: Date = new Date(),
+): ReportMonth {
+  const [y, m] = currentMonthInZone(tz, now).split('-').map(Number);
+  const prev = new Date(Date.UTC(y, m - 2, 1));
+  return `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, '0')}`;
+}

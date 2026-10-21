@@ -19,7 +19,7 @@ import { DataSource } from 'typeorm';
 import { SeedDataSource } from '../../seed/data-source';
 import { AnalyticsAggregationService } from './analytics-aggregation.service';
 import { AdvancedAnalyticsService } from './advanced-analytics.service';
-import { dayRangeUtc } from './analytics.constants';
+import { dayRangeInZone } from './analytics.constants';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { ErrorCode } from '../../common/errors';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
@@ -77,15 +77,18 @@ interface PayFixture {
 const RANGE = { from: '2032-03-01', to: '2032-03-07' };
 
 /**
- * Appointments for the main tenant. Times are UTC. Riyadh is UTC+3, so the
- * `late-local` booking (01:00 on 8 March in Riyadh) is 22:00Z on 7 March and
- * falls INSIDE the range — analytics days are UTC days (documented on the page).
+ * Appointments for the main tenant. Times are UTC instants; both branches run
+ * in Asia/Riyadh (UTC+3, no DST), so report days are RIYADH calendar days and
+ * the range [1 Mar, 7 Mar] is [2032-02-29T21:00Z, 2032-03-07T20:59:59.999Z].
+ * `late-local` (01:00 on 8 March in Riyadh = 22:00Z on 7 March) falls OUTSIDE
+ * the range; `early-local` (02:00 on 2 March in Riyadh = 23:00Z on 1 March)
+ * counts on 2 March, not 1 March.
  */
 const APPOINTMENTS: ApptFixture[] = [
   {
     tag: 'first-instant',
     branch: 'BR1',
-    start: '2032-03-01T00:00:00.000Z',
+    start: '2032-02-29T21:00:00.000Z', // 00:00 Riyadh, 1 March
     status: AppointmentStatus.COMPLETED,
     source: AppointmentSource.MANUAL,
     price: 100,
@@ -141,6 +144,14 @@ const APPOINTMENTS: ApptFixture[] = [
     price: 120,
   },
   {
+    tag: 'early-local',
+    branch: 'BR2',
+    start: '2032-03-01T23:00:00.000Z', // 02:00 Riyadh, 2 March
+    status: AppointmentStatus.COMPLETED,
+    source: AppointmentSource.MANUAL,
+    price: 60,
+  },
+  {
     tag: 'late-local',
     branch: 'BR1',
     start: '2032-03-07T22:00:00.000Z',
@@ -151,7 +162,7 @@ const APPOINTMENTS: ApptFixture[] = [
   {
     tag: 'last-instant',
     branch: 'BR2',
-    start: '2032-03-07T23:59:59.999Z',
+    start: '2032-03-07T20:59:59.999Z', // 23:59:59.999 Riyadh, 7 March
     status: AppointmentStatus.COMPLETED,
     source: AppointmentSource.MANUAL,
     price: 90,
@@ -160,7 +171,7 @@ const APPOINTMENTS: ApptFixture[] = [
   {
     tag: 'before',
     branch: 'BR1',
-    start: '2032-02-29T23:40:00.000Z',
+    start: '2032-02-29T20:40:00.000Z', // 23:40 Riyadh, 29 February
     status: AppointmentStatus.COMPLETED,
     source: AppointmentSource.MANUAL,
     price: 500,
@@ -168,7 +179,7 @@ const APPOINTMENTS: ApptFixture[] = [
   {
     tag: 'after',
     branch: 'BR1',
-    start: '2032-03-08T00:30:00.000Z',
+    start: '2032-03-07T21:30:00.000Z', // 00:30 Riyadh, 8 March
     status: AppointmentStatus.COMPLETED,
     source: AppointmentSource.MANUAL,
     price: 500,
@@ -183,7 +194,7 @@ const PAYMENTS: PayFixture[] = [
     status: PaymentStatus.PAID,
     currency: 'SAR',
     purpose: 'BOOKING',
-    paidAt: '2032-03-01T00:00:00.000Z',
+    paidAt: '2032-02-29T21:00:00.000Z', // 00:00 Riyadh, 1 March
     branch: 'BR1',
     appt: 'first-instant',
   },
@@ -264,7 +275,7 @@ const PAYMENTS: PayFixture[] = [
     status: PaymentStatus.PAID,
     currency: 'SAR',
     purpose: 'BOOKING',
-    paidAt: '2032-03-07T23:59:59.999Z',
+    paidAt: '2032-03-07T20:59:59.999Z', // last Riyadh instant of 7 March
     branch: 'BR2',
     appt: 'last-instant',
   },
@@ -275,7 +286,7 @@ const PAYMENTS: PayFixture[] = [
     status: PaymentStatus.PAID,
     currency: 'SAR',
     purpose: 'BOOKING',
-    paidAt: '2032-03-08T00:00:00.000Z',
+    paidAt: '2032-03-07T21:00:00.000Z', // 00:00 Riyadh, 8 March
     branch: 'BR1',
     appt: 'after',
   },
@@ -300,10 +311,12 @@ const COLLECTED = new Set<PaymentStatus>([
 const net = (p: PayFixture) => Math.max(p.amount - p.refunded, 0);
 const isClinicRevenue = (p: PayFixture, currency: string) =>
   COLLECTED.has(p.status) && p.purpose !== 'ADDON' && p.currency === currency;
+/** Riyadh calendar day of an instant — fixed +3h, independent of the service's zone code. */
+const RIYADH_OFFSET_MS = 3 * 3_600_000;
+const riyadhDay = (iso: string) =>
+  new Date(Date.parse(iso) + RIYADH_OFFSET_MS).toISOString().slice(0, 10);
 const inRange = (iso: string | null) =>
-  iso !== null &&
-  iso >= `${RANGE.from}T00:00:00.000Z` &&
-  iso <= `${RANGE.to}T23:59:59.999Z`;
+  iso !== null && riyadhDay(iso) >= RANGE.from && riyadhDay(iso) <= RANGE.to;
 const apptByTag = new Map(APPOINTMENTS.map((a) => [a.tag, a]));
 const branchOf = (p: PayFixture): BranchTag | undefined =>
   p.branch ?? (p.appt ? apptByTag.get(p.appt)?.branch : undefined);
@@ -672,16 +685,17 @@ describe('Analytics accuracy — figures vs an independent oracle over real Post
       currency: 'EUR',
       configuredCurrency: 'SAR',
     });
-    // No payments and no settings row → the settings column default.
+    // No payments and no settings row → the settings column default (SAR
+    // since migration 1730123000000, matching what bookings are charged in).
     await expect(agg.resolveReportingCurrency(emptyTenantId)).resolves.toEqual({
-      currency: 'USD',
-      configuredCurrency: 'USD',
+      currency: 'SAR',
+      configuredCurrency: 'SAR',
     });
   });
 
   // ───────────────────────────── Revenue ──────────────────────────────── //
 
-  it('revenue trend = net collected SAR per UTC day (partial refund netted, full refund 0, pending/failed/platform excluded)', async () => {
+  it('revenue trend = net collected SAR per clinic-local (Riyadh) day (partial refund netted, full refund 0, pending/failed/platform excluded)', async () => {
     const out = await advanced.revenueTrend(tenantId, OWNER, RANGE);
     if (out.empty) throw new Error('expected data');
     expect(out.currency).toBe('SAR');
@@ -754,6 +768,15 @@ describe('Analytics accuracy — figures vs an independent oracle over real Post
     expect(day.total_appointments).toBe(2);
     expect(day.completed_appointments).toBe(1);
     expect(day.cancelled_appointments).toBe(1);
+    // 02:00 Riyadh on 2 March (23:00Z on 1 March) is BR2's 2 March, not 1 March.
+    expect(
+      (await agg.computeDailyMetrics(tenantId, ids.BR2, '2032-03-02'))
+        .total_appointments,
+    ).toBe(1);
+    expect(
+      (await agg.computeDailyMetrics(tenantId, ids.BR2, '2032-03-01'))
+        .total_appointments,
+    ).toBe(0);
     const br2 = await agg.computeDailyMetrics(tenantId, ids.BR2, '2032-03-04');
     expect(br2.total_revenue).toBe(180);
     expect(br2.no_show_appointments).toBe(1);
@@ -795,22 +818,26 @@ describe('Analytics accuracy — figures vs an independent oracle over real Post
 
   // ─────────────────────── Appointments & rates ───────────────────────── //
 
-  it('appointment trend counts every status per UTC day, inclusive of both range edges', async () => {
+  it('appointment trend counts every status per clinic-local (Riyadh) day, inclusive of both range edges', async () => {
     const out = await advanced.appointmentsTrend(tenantId, OWNER, RANGE);
     if (out.empty) throw new Error('expected data');
     expect(sum(out.data.map((d) => d.total))).toBe(inRangeAppts.length);
     expect(sum(out.data.map((d) => d.completed))).toBe(
       countStatus(AppointmentStatus.COMPLETED),
     );
-    const day7 = out.data.find((d) => d.date === '2032-03-07');
-    // 01:00 Riyadh on 8 March is 22:00Z on 7 March — counted on the UTC day.
-    expect(day7?.total).toBe(2);
-    expect(out.data.find((d) => d.date === '2032-03-01')?.total).toBe(1);
+    expect(out.timezone).toBe('Asia/Riyadh');
+    const day = (d: string) => out.data.find((x) => x.date === d)?.total;
+    // 01:00 Riyadh on 8 March (22:00Z on 7 March) is NOT in the range.
+    expect(day('2032-03-07')).toBe(1);
+    // 02:00 Riyadh on 2 March (23:00Z on 1 March) counts on 2 March.
+    expect(day('2032-03-01')).toBe(1);
+    expect(day('2032-03-02')).toBe(3);
   });
 
   it('rates: exact ratios, cancellation split adds up, open appointments make the denominator explicit', async () => {
     const out = await advanced.rates(tenantId, OWNER, RANGE);
-    if (out.empty) throw new Error('expected data');
+    if (out.empty || !('totalAppointments' in out))
+      throw new Error('expected data');
     const total = inRangeAppts.length;
     expect(out.totalAppointments).toBe(total);
     expect(out.completionRate).toBeCloseTo(
@@ -884,6 +911,29 @@ describe('Analytics accuracy — figures vs an independent oracle over real Post
     });
   });
 
+  it('daily/monthly/staff reports are branch-scoped the same way (FR-A016)', async () => {
+    // List endpoints: a restricted caller's request is narrowed to BR2.
+    const scope = await advanced.resolveScope(tenantId, restricted, undefined);
+    expect(scope.branchId).toBe(ids.BR2);
+    const [row] = await agg.computeStaffPerformance(tenantId, {
+      ...RANGE,
+      branchId: scope.branchId,
+    });
+    expect(row.total_appointments).toBe(
+      inRangeAppts.filter((a) => a.branch === 'BR2').length,
+    );
+    // Single-report reads: another branch's report is NOT_FOUND, own branch ok.
+    await expect(
+      advanced.assertBranchVisible(tenantId, restricted, ids.BR1),
+    ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    await expect(
+      advanced.assertBranchVisible(tenantId, restricted, ids.BR2),
+    ).resolves.toBeUndefined();
+    await expect(
+      advanced.assertBranchVisible(tenantId, OWNER, ids.BR1),
+    ).resolves.toBeUndefined();
+  });
+
   it("another tenant's branch id is refused, never silently answered", async () => {
     await expect(
       advanced.appointmentsTrend(tenantId, OWNER, {
@@ -922,12 +972,18 @@ describe('Analytics accuracy — figures vs an independent oracle over real Post
     expect(kpis.every((k) => k.metric_value === 0)).toBe(true);
   });
 
+  it('reporting timezone: majority branch zone, else the clinic default, else UTC', async () => {
+    expect(await agg.resolveReportingTimezone(tenantId)).toBe('Asia/Riyadh');
+    // No branches at all → the tenant's own default_timezone (column default UTC).
+    expect(await agg.resolveReportingTimezone(eurTenantId)).toBe('UTC');
+  });
+
   it('sanity: the range bounds the oracle uses are the ones the service uses', () => {
-    expect(dayRangeUtc(RANGE.from).start.toISOString()).toBe(
-      '2032-03-01T00:00:00.000Z',
+    expect(dayRangeInZone(RANGE.from, 'Asia/Riyadh').start.toISOString()).toBe(
+      '2032-02-29T21:00:00.000Z',
     );
-    expect(dayRangeUtc(RANGE.to).end.toISOString()).toBe(
-      '2032-03-07T23:59:59.999Z',
+    expect(dayRangeInZone(RANGE.to, 'Asia/Riyadh').end.toISOString()).toBe(
+      '2032-03-07T20:59:59.999Z',
     );
   });
 });

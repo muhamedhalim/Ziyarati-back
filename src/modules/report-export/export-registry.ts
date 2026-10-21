@@ -15,7 +15,10 @@ import { QueryDailyReportsDto } from '../analytics/dto/query-daily-reports.dto';
 import { QueryMonthlyReportsDto } from '../analytics/dto/query-monthly-reports.dto';
 import { QueryStaffPerformanceDto } from '../analytics/dto/query-staff-performance.dto';
 import { QueryAdvancedAnalyticsPageDto } from '../analytics/dto/query-advanced-analytics-page.dto';
-import { dayRangeUtc } from '../analytics/analytics.constants';
+import {
+  DEFAULT_REPORTING_TIMEZONE,
+  dayRangeInZone,
+} from '../analytics/analytics.constants';
 
 /**
  * Spec 014 (Clinic Platform Completion) — T180 (US13, FR-X002, FR-X003).
@@ -75,6 +78,22 @@ export interface ExportRunContext {
   branchScope: { branchId?: string } | null;
   /** The requester's own filters, validated against `argsDto`, frozen at request time. */
   filters: Record<string, unknown>;
+  /**
+   * The clinic's reporting currency and timezone, resolved when the export
+   * runs — the same values the on-screen tables use, so an export of a
+   * revenue table sums the same money over the same calendar days.
+   */
+  currency?: string;
+  timezone?: string;
+}
+
+/** `[from 00:00, to 23:59:59.999]` in the run's reporting timezone. */
+function exportRange(ctx: ExportRunContext): [Date, Date] {
+  const tz = ctx.timezone ?? DEFAULT_REPORTING_TIMEZONE;
+  return [
+    dayRangeInZone(String(ctx.filters.from), tz).start,
+    dayRangeInZone(String(ctx.filters.to), tz).end,
+  ];
 }
 
 export interface ExportRegistryEntry<TRow extends SourceRow = SourceRow> {
@@ -253,16 +272,11 @@ export const EXPORT_REGISTRY: Readonly<Record<ReportKey, ExportRegistryEntry>> =
       argsDto: QueryAdvancedAnalyticsPageDto,
       paginated: false,
       query: AnalyticsAggregationService.prototype.servicePerformance,
-      toArgs: (ctx) => {
-        const from = String(ctx.filters.from);
-        const to = String(ctx.filters.to);
-        return [
-          ctx.tenantId,
-          ctx.branchScope?.branchId ?? ctx.filters.branchId,
-          dayRangeUtc(from).start,
-          dayRangeUtc(to).end,
-        ];
-      },
+      toArgs: (ctx) => [
+        ctx.tenantId,
+        ctx.branchScope?.branchId ?? ctx.filters.branchId,
+        ...exportRange(ctx),
+      ],
       serializeRow: (row) => {
         const r = row as ServicePerformanceRow;
         return {
@@ -286,14 +300,12 @@ export const EXPORT_REGISTRY: Readonly<Record<ReportKey, ExportRegistryEntry>> =
       paginated: false,
       query: AnalyticsAggregationService.prototype.branchPerformance,
       toArgs: (ctx) => {
-        const from = String(ctx.filters.from);
-        const to = String(ctx.filters.to);
         const branchId = ctx.branchScope?.branchId ?? ctx.filters.branchId;
         return [
           ctx.tenantId,
           branchId ? [branchId as string] : undefined,
-          dayRangeUtc(from).start,
-          dayRangeUtc(to).end,
+          ctx.currency,
+          ...exportRange(ctx),
         ];
       },
       serializeRow: (row) => {
@@ -319,16 +331,12 @@ export const EXPORT_REGISTRY: Readonly<Record<ReportKey, ExportRegistryEntry>> =
       argsDto: QueryAdvancedAnalyticsPageDto,
       paginated: false,
       query: AnalyticsAggregationService.prototype.channelPerformance,
-      toArgs: (ctx) => {
-        const from = String(ctx.filters.from);
-        const to = String(ctx.filters.to);
-        return [
-          ctx.tenantId,
-          ctx.branchScope?.branchId ?? ctx.filters.branchId,
-          dayRangeUtc(from).start,
-          dayRangeUtc(to).end,
-        ];
-      },
+      toArgs: (ctx) => [
+        ctx.tenantId,
+        ctx.branchScope?.branchId ?? ctx.filters.branchId,
+        ctx.currency,
+        ...exportRange(ctx),
+      ],
       serializeRow: (row) => {
         const r = row as ChannelPerformanceRow;
         return {

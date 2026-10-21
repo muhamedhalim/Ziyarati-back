@@ -292,7 +292,13 @@ describe('Patient Journey — data moves from the database to the API response',
       { assertBranch: async () => undefined } as never,
       { getMembershipBranchIds: async () => [] } as never,
       noSettings as never,
-      { wrap: () => Promise.reject(new Error('advanced cache is not used by journey')) } as never,
+      {
+        // Only the reporting-timezone lookup goes through it; fixtures are UTC days.
+        wrap: (_t: string, _n: string, key: string) =>
+          key === 'reporting-timezone'
+            ? Promise.resolve('UTC')
+            : Promise.reject(new Error('advanced cache is not used by journey')),
+      } as never,
     );
     svc = new PatientJourneyService(
       new JourneyAggregationService(ds.getRepository(Appointment)),

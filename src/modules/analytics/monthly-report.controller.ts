@@ -26,6 +26,9 @@ import { MonthlyReportService } from './monthly-report.service';
 import { GenerateMonthlyReportDto } from './dto/generate-monthly-report.dto';
 import { QueryMonthlyReportsDto } from './dto/query-monthly-reports.dto';
 
+import { AdvancedAnalyticsService } from './advanced-analytics.service';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
@@ -61,6 +64,7 @@ export class MonthlyReportController {
   constructor(
     private readonly reports: MonthlyReportService,
     private readonly ctx: TenantContextService,
+    private readonly advanced: AdvancedAnalyticsService,
   ) {}
 
   @ApiOperation({
@@ -108,8 +112,18 @@ export class MonthlyReportController {
   })
   @Get()
   @RequirePermissions(PERMISSION.ANALYTICS_REPORTS_READ)
-  list(@Query() query: QueryMonthlyReportsDto) {
-    return this.reports.list(this.ctx.requireTenantId(), query);
+  async list(
+    @Query() query: QueryMonthlyReportsDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const tenantId = this.ctx.requireTenantId();
+    // FR-A016 — a branch-restricted caller only ever sees their own branch.
+    const scope = await this.advanced.resolveScope(
+      tenantId,
+      user,
+      query.branchId,
+    );
+    return this.reports.list(tenantId, { ...query, branchId: scope.branchId });
   }
 
   @ApiOperation({
@@ -138,7 +152,13 @@ export class MonthlyReportController {
   })
   @Get(':id')
   @RequirePermissions(PERMISSION.ANALYTICS_REPORTS_READ)
-  get(@Param('id', ParseUUIDPipe) id: string) {
-    return this.reports.get(this.ctx.requireTenantId(), id);
+  async get(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const tenantId = this.ctx.requireTenantId();
+    const report = await this.reports.get(tenantId, id);
+    await this.advanced.assertBranchVisible(tenantId, user, report.branch?.id);
+    return report;
   }
 }

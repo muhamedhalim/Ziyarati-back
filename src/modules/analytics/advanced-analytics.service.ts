@@ -11,8 +11,9 @@ import { BranchScopeService } from '../../core/branch-scope/branch-scope.service
 import { AnalyticsAggregationService } from './analytics-aggregation.service';
 import { AnalyticsCacheService, CACHE_NS } from './analytics-cache.service';
 import {
+  DEFAULT_REPORTING_TIMEZONE,
   MAX_ADVANCED_ANALYTICS_RANGE_DAYS,
-  dayRangeUtc,
+  dayRangeInZone,
   enumerateDays,
   inclusiveDayCount,
   priorPeriod,
@@ -22,11 +23,13 @@ import {
 import { QueryAdvancedAnalyticsDto } from './dto/query-advanced-analytics.dto';
 import { QueryAdvancedAnalyticsPageDto } from './dto/query-advanced-analytics-page.dto';
 
-/** `{ range, scope, currency, generatedAt }` — carried on EVERY F11 payload (FR-A015/FR-A021). */
+/** `{ range, scope, currency, timezone, generatedAt }` — carried on EVERY F11 payload (FR-A015/FR-A021). */
 export interface AdvancedAnalyticsEnvelope {
   range: { from: string; to: string };
   scope: { branchId: string | 'ALL' };
   currency: string;
+  /** IANA zone whose calendar days `range.from`/`range.to` and every bucket are in. */
+  timezone: string;
   generatedAt: string;
 }
 
@@ -155,18 +158,56 @@ export class AdvancedAnalyticsService {
     return { branchId: ownBranchIds[0] };
   }
 
+  /**
+   * FR-A016 for single-record reads (`GET /analytics/reports/{daily,monthly}/:id`):
+   * a branch-restricted caller may only open a report of a branch they belong
+   * to. Anything else is NOT_FOUND, so the response never confirms that
+   * another branch's report exists.
+   */
+  async assertBranchVisible(
+    tenantId: string,
+    user: AuthenticatedUser,
+    branchId: string | undefined,
+  ): Promise<void> {
+    if (user.permissions.includes(PERMISSION.ANALYTICS_DASHBOARD_READ)) return;
+    const ownBranchIds = await this.branchScope.getMembershipBranchIds(
+      tenantId,
+      user.id,
+    );
+    if (!branchId || !ownBranchIds.includes(branchId)) {
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Report not found' });
+    }
+  }
+
   /** The analytics reporting currency — see `AnalyticsAggregationService.resolveReportingCurrency`. */
   private async getCurrency(tenantId: string): Promise<string> {
     return (await this.aggregation.resolveReportingCurrency(tenantId)).currency;
   }
 
-  /** `GET /analytics/currency` — which currency the page's money is in, and why. */
-  reportingCurrency(tenantId: string) {
+  /**
+   * `GET /analytics/currency` — which currency the page's money is in (and
+   * why), plus the timezone whose calendar days its dates are.
+   */
+  async reportingCurrency(tenantId: string) {
+    const [currency, timezone] = await Promise.all([
+      this.cache.wrap(tenantId, CACHE_NS.DASHBOARD, 'reporting-currency', () =>
+        this.aggregation.resolveReportingCurrency(tenantId),
+      ),
+      this.reportingTimezone(tenantId),
+    ]);
+    return { ...currency, timezone };
+  }
+
+  /**
+   * The clinic's reporting timezone — whose calendar days every range and
+   * bucket on the page are — see `AnalyticsAggregationService.resolveReportingTimezone`.
+   */
+  reportingTimezone(tenantId: string): Promise<string> {
     return this.cache.wrap(
       tenantId,
       CACHE_NS.DASHBOARD,
-      'reporting-currency',
-      () => this.aggregation.resolveReportingCurrency(tenantId),
+      'reporting-timezone',
+      () => this.aggregation.resolveReportingTimezone(tenantId),
     );
   }
 
@@ -180,20 +221,29 @@ export class AdvancedAnalyticsService {
     to: ReportDate,
     branchId: string | undefined,
     currency: string,
+    timezone: string = DEFAULT_REPORTING_TIMEZONE,
   ): AdvancedAnalyticsEnvelope {
     return {
       range: { from, to },
       scope: { branchId: branchId ?? 'ALL' },
       currency,
+      timezone,
       generatedAt: new Date().toISOString(),
     };
   }
 
-  private instants(
+  /** `[from 00:00, to 23:59:59.999]` in the clinic's reporting timezone. */
+  private async instants(
+    tenantId: string,
     from: ReportDate,
     to: ReportDate,
-  ): { start: Date; end: Date } {
-    return { start: dayRangeUtc(from).start, end: dayRangeUtc(to).end };
+  ): Promise<{ start: Date; end: Date; tz: string }> {
+    const tz = await this.reportingTimezone(tenantId);
+    return {
+      start: dayRangeInZone(from, tz).start,
+      end: dayRangeInZone(to, tz).end,
+      tz,
+    };
   }
 
   /**
@@ -265,17 +315,16 @@ export class AdvancedAnalyticsService {
       CACHE_NS.DASHBOARD,
       this.trendKey('appointments', from, to, scope.branchId),
       async () => {
-        const [currency, { start, end }] = [
-          await this.getCurrency(tenantId),
-          this.instants(from, to),
-        ];
+        const currency = await this.getCurrency(tenantId);
+        const { start, end, tz } = await this.instants(tenantId, from, to);
         const rows = await this.aggregation.appointmentsTrend(
           tenantId,
           scope.branchId,
           start,
           end,
+          tz,
         );
-        const envelope = this.envelope(from, to, scope.branchId, currency);
+        const envelope = this.envelope(from, to, scope.branchId, currency, tz);
 
         const totalAcrossRange = rows.reduce((s, r) => s + r.total, 0);
         if (totalAcrossRange === 0) {
@@ -313,7 +362,7 @@ export class AdvancedAnalyticsService {
       this.trendKey('revenue', from, to, scope.branchId),
       async () => {
         const currency = await this.getCurrency(tenantId);
-        const { start, end } = this.instants(from, to);
+        const { start, end, tz } = await this.instants(tenantId, from, to);
 
         const [rows, other] = await Promise.all([
           this.aggregation.revenueTrend(
@@ -322,6 +371,7 @@ export class AdvancedAnalyticsService {
             currency,
             start,
             end,
+            tz,
           ),
           this.aggregation.countOtherCurrencyRevenue(
             tenantId,
@@ -331,7 +381,7 @@ export class AdvancedAnalyticsService {
             end,
           ),
         ]);
-        const envelope = this.envelope(from, to, scope.branchId, currency);
+        const envelope = this.envelope(from, to, scope.branchId, currency, tz);
 
         const totalRevenue = rows.reduce((s, r) => s + r.revenue, 0);
         if (totalRevenue === 0 && other.count === 0) {
@@ -382,14 +432,14 @@ export class AdvancedAnalyticsService {
       this.aggregateKey('rates', from, to, scope.branchId),
       async () => {
         const currency = await this.getCurrency(tenantId);
-        const { start, end } = this.instants(from, to);
+        const { start, end, tz } = await this.instants(tenantId, from, to);
         const raw = await this.aggregation.computeRates(
           tenantId,
           scope.branchId,
           start,
           end,
         );
-        const envelope = this.envelope(from, to, scope.branchId, currency);
+        const envelope = this.envelope(from, to, scope.branchId, currency, tz);
 
         if (raw.total === 0) {
           return { ...envelope, empty: true };
@@ -438,8 +488,13 @@ export class AdvancedAnalyticsService {
       async () => {
         const currency = await this.getCurrency(tenantId);
         const { priorFrom, priorTo } = priorPeriod(from, to);
-        const { start: chosenStart, end: chosenEnd } = this.instants(from, to);
-        const { start: priorStart, end: priorEnd } = this.instants(
+        const {
+          start: chosenStart,
+          end: chosenEnd,
+          tz,
+        } = await this.instants(tenantId, from, to);
+        const { start: priorStart, end: priorEnd } = await this.instants(
+          tenantId,
           priorFrom,
           priorTo,
         );
@@ -452,7 +507,7 @@ export class AdvancedAnalyticsService {
           chosenStart,
           chosenEnd,
         );
-        const envelope = this.envelope(from, to, scope.branchId, currency);
+        const envelope = this.envelope(from, to, scope.branchId, currency, tz);
 
         if (raw.priorPeriodPatients === 0) {
           return { ...envelope, empty: true };
@@ -492,7 +547,7 @@ export class AdvancedAnalyticsService {
       this.aggregateKey('perf-services', from, to, scope.branchId),
       async () => {
         const currency = await this.getCurrency(tenantId);
-        const { start, end } = this.instants(from, to);
+        const { start, end, tz } = await this.instants(tenantId, from, to);
         const rows = await this.aggregation.servicePerformance(
           tenantId,
           scope.branchId,
@@ -500,7 +555,7 @@ export class AdvancedAnalyticsService {
           end,
         );
         return {
-          envelope: this.envelope(from, to, scope.branchId, currency),
+          envelope: this.envelope(from, to, scope.branchId, currency, tz),
           rows,
         };
       },
@@ -537,12 +592,13 @@ export class AdvancedAnalyticsService {
     const { from, to } = this.validateRange(dto);
     const scope = await this.resolveScope(tenantId, user, dto.branchId);
     const currency = await this.getCurrency(tenantId);
+    const tz = await this.reportingTimezone(tenantId);
     const rows = await this.aggregation.computeStaffPerformance(tenantId, {
       branchId: scope.branchId,
       from,
       to,
     });
-    const envelope = this.envelope(from, to, scope.branchId, currency);
+    const envelope = this.envelope(from, to, scope.branchId, currency, tz);
 
     if (rows.length === 0) {
       return {
@@ -594,7 +650,7 @@ export class AdvancedAnalyticsService {
       this.aggregateKey('perf-branches', from, to, scope.branchId),
       async () => {
         const currency = await this.getCurrency(tenantId);
-        const { start, end } = this.instants(from, to);
+        const { start, end, tz } = await this.instants(tenantId, from, to);
         const branchIds = scope.branchId ? [scope.branchId] : undefined;
         const [rows, other, unattributedRevenue] = await Promise.all([
           this.aggregation.branchPerformance(
@@ -625,7 +681,7 @@ export class AdvancedAnalyticsService {
               ),
         ]);
         const envelope = {
-          ...this.envelope(from, to, scope.branchId, currency),
+          ...this.envelope(from, to, scope.branchId, currency, tz),
           unattributedRevenue,
         };
         // FR-A021 — never silently summed away; surfaced only when non-zero.
@@ -684,7 +740,7 @@ export class AdvancedAnalyticsService {
       this.aggregateKey('perf-channels', from, to, scope.branchId),
       async () => {
         const currency = await this.getCurrency(tenantId);
-        const { start, end } = this.instants(from, to);
+        const { start, end, tz } = await this.instants(tenantId, from, to);
         const [rows, other, unattributedRevenue] = await Promise.all([
           this.aggregation.channelPerformance(
             tenantId,
@@ -710,7 +766,7 @@ export class AdvancedAnalyticsService {
           ),
         ]);
         const envelope = {
-          ...this.envelope(from, to, scope.branchId, currency),
+          ...this.envelope(from, to, scope.branchId, currency, tz),
           unattributedRevenue,
         };
         // FR-A021 — never silently summed away; surfaced only when non-zero.

@@ -25,8 +25,8 @@ import {
   CACHE_NS,
 } from '../analytics/analytics-cache.service';
 import {
-  currentMonthUtc,
-  monthRangeUtc,
+  currentMonthInZone,
+  monthRangeInZone,
 } from '../analytics/analytics.constants';
 import {
   computeMetricProgress,
@@ -139,20 +139,24 @@ export class TenantTargetsService {
     user: Pick<AuthenticatedUser, 'id' | 'permissions'>,
     q: TargetProgressQueryDto,
   ): Promise<TenantTargetProgress> {
-    const month = this.resolveMonth(q.month);
-    const { start, end } = monthRangeUtc(month);
+    // Months are the clinic's own calendar months (its reporting timezone).
+    const tz = await this.aggregation.resolveReportingTimezone(tenantId);
+    const month = this.resolveMonth(q.month, tz);
+    const { start, end } = monthRangeInZone(month, tz);
     const scope = await this.resolveScope(tenantId, user, q.branchId);
     const currency = await this.currency(tenantId);
 
     const totals = await this.cache.wrap(
       tenantId,
       CACHE_NS.DASHBOARD,
-      `targets:${month}:${this.scopeKey(scope.effective)}`,
+      `targets:${month}:${currency}:${tz}:${this.scopeKey(scope.effective)}`,
       () =>
         this.aggregation.computeCurrentMonthTenantTotals(
           tenantId,
           month,
           scope.effective.branchIds,
+          currency,
+          tz,
         ),
     );
 
@@ -227,11 +231,19 @@ export class TenantTargetsService {
       Map<string, { completed_appointments: number; total_revenue: number }>
     >();
     const months = [...new Set(rows.map((r) => r.period_month))];
+    const currency = await this.currency(tenantId);
+    const tz = await this.aggregation.resolveReportingTimezone(tenantId);
     await Promise.all(
       [...scopes.entries()].map(async ([key, ids]) => {
         actuals.set(
           key,
-          await this.aggregation.computeMonthTotalsBulk(tenantId, months, ids),
+          await this.aggregation.computeMonthTotalsBulk(
+            tenantId,
+            months,
+            ids,
+            currency,
+            tz,
+          ),
         );
       }),
     );
@@ -315,8 +327,9 @@ export class TenantTargetsService {
     user: Pick<AuthenticatedUser, 'id' | 'permissions'>,
     dto: UpdateTenantTargetsDto,
   ): Promise<TenantTargetProgress> {
-    const month = this.resolveMonth(dto.month);
-    const current = currentMonthUtc();
+    const tz = await this.aggregation.resolveReportingTimezone(tenantId);
+    const month = this.resolveMonth(dto.month, tz);
+    const current = currentMonthInZone(tz);
     if (month < current) {
       throw new AppError(ErrorCode.BAD_REQUEST, {
         message: 'Targets for past months cannot be changed',
@@ -434,8 +447,8 @@ export class TenantTargetsService {
 
   // ──────────────────────────── helpers ──────────────────────────── //
 
-  private resolveMonth(month: string | undefined): string {
-    if (!month) return currentMonthUtc();
+  private resolveMonth(month: string | undefined, tz: string): string {
+    if (!month) return currentMonthInZone(tz);
     this.assertMonthFormat(month);
     return month;
   }
@@ -448,12 +461,13 @@ export class TenantTargetsService {
     }
   }
 
+  /**
+   * The analytics reporting currency — the same one the analytics page sums
+   * revenue in, so a target card and the revenue chart never disagree on
+   * which money they count (see `resolveReportingCurrency`).
+   */
   private async currency(tenantId: string): Promise<string> {
-    const s = await this.settings.findOne({
-      where: { tenant: { id: tenantId } },
-      select: { id: true, currency: true },
-    });
-    return s?.currency ?? 'USD'; // TenantSetting column default
+    return (await this.aggregation.resolveReportingCurrency(tenantId)).currency;
   }
 
   private scopeKey(scope: BranchScope): string {

@@ -37,6 +37,41 @@ describe('export-registry (T180)', () => {
     );
   });
 
+  it("maps the run context onto each query's positional args (currency + clinic-local days)", () => {
+    const ctx = {
+      tenantId: 't1',
+      branchScope: { branchId: 'b1' },
+      filters: { from: '2032-03-01', to: '2032-03-07' },
+      currency: 'SAR',
+      timezone: 'Asia/Riyadh',
+    };
+    const start = new Date('2032-02-29T21:00:00.000Z');
+    const end = new Date('2032-03-07T20:59:59.999Z');
+    // (tenantId, branchIds, currency, start, end)
+    expect(EXPORT_REGISTRY['branch-performance'].toArgs(ctx)).toEqual([
+      't1',
+      ['b1'],
+      'SAR',
+      start,
+      end,
+    ]);
+    // (tenantId, branchId, currency, start, end)
+    expect(EXPORT_REGISTRY['channel-performance'].toArgs(ctx)).toEqual([
+      't1',
+      'b1',
+      'SAR',
+      start,
+      end,
+    ]);
+    // (tenantId, branchId, start, end) — booked value, no currency filter
+    expect(EXPORT_REGISTRY['service-performance'].toArgs(ctx)).toEqual([
+      't1',
+      'b1',
+      start,
+      end,
+    ]);
+  });
+
   it('every entry declares at least one format and a non-empty column set', () => {
     for (const key of EXPORT_REGISTRY_KEYS) {
       const entry = EXPORT_REGISTRY[key];

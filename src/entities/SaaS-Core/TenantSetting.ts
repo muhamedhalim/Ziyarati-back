@@ -45,7 +45,8 @@ export class TenantSetting {
   @Column({ default: 'ar' })
   default_language!: string;
 
-  @Column({ default: 'USD' })
+  /** Defaults to SAR — what bookings and payments are charged in (migration 1730123000000). */
+  @Column({ default: 'SAR' })
   currency!: string;
 
   @Column({ default: true })

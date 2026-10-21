@@ -33,12 +33,14 @@ import {
   BOOKING_SOURCE_METRIC_KEY,
   DASHBOARD_PERIOD,
   METRIC_KEY,
-  dayRangeUtc,
-  monthRangeUtc,
+  DEFAULT_REPORTING_TIMEZONE,
+  dayRangeInZone,
+  isValidTimeZone,
+  monthRangeInZone,
   round2,
 } from './analytics.constants';
 
-/** One UTC calendar day's appointment-volume bucket (T145, FR-A004). */
+/** One clinic-local calendar day's appointment-volume bucket (T145, FR-A004). */
 export interface AppointmentTrendDay {
   date: string;
   total: number;
@@ -47,7 +49,7 @@ export interface AppointmentTrendDay {
   no_show: number;
 }
 
-/** One UTC calendar day's settled-revenue bucket (T145, FR-A003). */
+/** One clinic-local calendar day's settled-revenue bucket (T145, FR-A003). */
 export interface RevenueTrendDay {
   date: string;
   revenue: number;
@@ -117,7 +119,7 @@ export interface StaffPerformanceRow {
 
 export interface StaffPerformanceFilters {
   branchId?: string;
-  /** Inclusive UTC day bounds ('YYYY-MM-DD'); default is the trailing 30 days. */
+  /** Inclusive clinic-local day bounds ('YYYY-MM-DD'); default is the trailing 30 days. */
   from?: string;
   to?: string;
 }
@@ -163,6 +165,30 @@ export const NET_COLLECTED_SQL = 'GREATEST(p.amount - p.refunded_amount, 0)';
  * Many payment writers only stamp the appointment, so filtering on
  * `p.branchId` alone silently drops their revenue from every branch view.
  */
+/**
+ * When a collected payment counts. Every live path that marks a payment PAID
+ * also stamps `paid_at`; rows without one are legacy/imported data. Rather
+ * than silently dropping them from every dated figure (while the all-time
+ * KPI still counts them), they fall back to `created_at`. The range check is
+ * written as an OR so the `paid_at` index stays usable for normal rows.
+ */
+export const PAID_AT_SQL = 'COALESCE(p.paid_at, p.created_at)';
+
+/**
+ * `tz` as a SQL string literal for `AT TIME ZONE`. Inlined rather than bound
+ * so the same bucket expression can appear in SELECT, GROUP BY and ORDER BY;
+ * safe because only a runtime-validated IANA name (letters, digits, `_/+-`)
+ * is ever accepted.
+ */
+export function tzSql(tz: string): string {
+  if (!isValidTimeZone(tz) || !/^[A-Za-z0-9_/+-]+$/.test(tz)) {
+    throw new Error(`Invalid reporting timezone: ${tz}`);
+  }
+  return `'${tz}'`;
+}
+export const PAID_IN_RANGE_SQL =
+  '(p.paid_at BETWEEN :start AND :end OR (p.paid_at IS NULL AND p.created_at BETWEEN :start AND :end))';
+
 export const paymentBranchSql = (apptAlias: string): string =>
   `COALESCE(p."branchId", ${apptAlias}."branchId")`;
 
@@ -186,7 +212,7 @@ function whereCollectedClinicRevenue<T extends object>(
 }
 
 /** Default when a tenant has no `tenant_settings` row (the column's own default). */
-const SETTINGS_CURRENCY_DEFAULT = 'USD';
+const SETTINGS_CURRENCY_DEFAULT = 'SAR'; // TenantSetting column default
 
 /**
  * Analytics computation engine — the ONLY place heavy aggregation runs.
@@ -294,6 +320,40 @@ export class AnalyticsAggregationService {
     return { currency: top.currency, configuredCurrency };
   }
 
+  /**
+   * The ONE timezone that defines a report "day" and "month" for a clinic.
+   * Rule: the timezone most of the clinic's active branches run in (ties →
+   * alphabetical); a clinic with no active branch uses its own
+   * `default_timezone`; anything invalid falls back to UTC. Branch timezones
+   * win because they are where appointments actually happen — the tenant
+   * default is `'UTC'` for most clinics simply because nobody set it.
+   */
+  async resolveReportingTimezone(tenantId: string): Promise<string> {
+    const rows: {
+      tenant_tz: string | null;
+      branch_tz: string | null;
+      n: string;
+    }[] = await this.branches.manager.query(
+      `SELECT t.default_timezone AS tenant_tz, b.timezone AS branch_tz, COUNT(b.id) AS n
+           FROM tenants t
+           LEFT JOIN branches b
+             ON b."tenantId" = t.id AND b.is_active = true AND b.deleted_at IS NULL
+          WHERE t.id = $1
+          GROUP BY t.default_timezone, b.timezone`,
+      [tenantId],
+    );
+    const branchZones = rows
+      .filter((r) => r.branch_tz && isValidTimeZone(r.branch_tz))
+      .sort(
+        (a, b) =>
+          Number(b.n) - Number(a.n) ||
+          (a.branch_tz as string).localeCompare(b.branch_tz as string),
+      );
+    if (branchZones.length > 0) return branchZones[0].branch_tz as string;
+    const tenantTz = rows[0]?.tenant_tz;
+    return isValidTimeZone(tenantTz) ? tenantTz : DEFAULT_REPORTING_TIMEZONE;
+  }
+
   // ─────────────────────────────── Branches ──────────────────────────────── //
 
   async assertBranch(tenantId: string, branchId: string): Promise<Branch> {
@@ -331,7 +391,8 @@ export class AnalyticsAggregationService {
     branchId: string,
     dateStr: string,
   ): Promise<DailyMetrics> {
-    const { start, end } = dayRangeUtc(dateStr);
+    const tz = await this.resolveReportingTimezone(tenantId);
+    const { start, end } = dayRangeInZone(dateStr, tz);
     const { currency } = await this.resolveReportingCurrency(tenantId);
 
     const [appts, total_revenue, ai_messages_count] = await Promise.all([
@@ -449,7 +510,8 @@ export class AnalyticsAggregationService {
     branchId: string,
     monthStr: string,
   ): Promise<MonthlyExtras> {
-    const { start, end } = monthRangeUtc(monthStr);
+    const tz = await this.resolveReportingTimezone(tenantId);
+    const { start, end } = monthRangeInZone(monthStr, tz);
     const [avg_rating, top_services] = await Promise.all([
       this.avgRating(tenantId, branchId, start, end),
       this.topServices(tenantId, branchId, start, end),
@@ -463,7 +525,7 @@ export class AnalyticsAggregationService {
    * Computing from source keeps the monthly snapshot internally consistent with
    * its source-derived extras (avg_rating / top_services) and immune to missing
    * or stale daily reports — a monthly regeneration no longer silently reads 0
-   * because the dailies weren't (re)built first. Same UTC month window as the
+   * because the dailies weren't (re)built first. Same clinic-local month window as the
    * extras, so every monthly field reflects the same instant.
    */
   async computeMonthlyTotals(
@@ -471,7 +533,8 @@ export class AnalyticsAggregationService {
     branchId: string,
     monthStr: string,
   ): Promise<{ total_appointments: number; total_revenue: number }> {
-    const { start, end } = monthRangeUtc(monthStr);
+    const tz = await this.resolveReportingTimezone(tenantId);
+    const { start, end } = monthRangeInZone(monthStr, tz);
     const { currency } = await this.resolveReportingCurrency(tenantId);
     const [total_appointments, total_revenue] = await Promise.all([
       this.appointments.count({
@@ -487,7 +550,7 @@ export class AnalyticsAggregationService {
   }
 
   /**
-   * Tenant-WIDE (every branch) totals for the CURRENT, in-progress UTC
+   * Tenant-WIDE (every branch) totals for the CURRENT, in-progress
    * calendar month — completed appointments (by `start_at`, same status
    * definition as every other "completed" figure in this file) and PAID
    * revenue (by `paid_at`). Backs the dashboard's appointment/revenue target
@@ -502,26 +565,35 @@ export class AnalyticsAggregationService {
     tenantId: string,
     monthStr: string,
     branchIds: string[] | null = null,
+    currency: string | null = null,
+    tz: string = DEFAULT_REPORTING_TIMEZONE,
   ): Promise<{ completed_appointments: number; total_revenue: number }> {
     const map = await this.computeMonthTotalsBulk(
       tenantId,
       [monthStr],
       branchIds,
+      currency,
+      tz,
     );
     return map.get(monthStr) ?? { completed_appointments: 0, total_revenue: 0 };
   }
 
   /**
-   * Completed-appointment counts and PAID revenue for MANY UTC months in two
+   * Completed-appointment counts and PAID revenue for MANY clinic-local months (`tz`) in two
    * grouped queries (no N+1), optionally confined to `branchIds`
    * (`null` = every branch, `[]` = none → all zeros). Months with no activity
    * are present with zeros. Same definitions as every other figure here:
    * completed by `start_at`, revenue by `paid_at` over clinic purposes.
+   * `currency` confines revenue to one currency (the reporting currency) so
+   * amounts in different currencies are never added together; `null` keeps
+   * the old any-currency sum for callers that have not resolved one.
    */
   async computeMonthTotalsBulk(
     tenantId: string,
     months: string[],
     branchIds: string[] | null,
+    currency: string | null = null,
+    tz: string = DEFAULT_REPORTING_TIMEZONE,
   ): Promise<
     Map<string, { completed_appointments: number; total_revenue: number }>
   > {
@@ -535,12 +607,15 @@ export class AnalyticsAggregationService {
       return out;
 
     const sorted = [...months].sort();
-    const start = monthRangeUtc(sorted[0]).start;
-    const end = monthRangeUtc(sorted[sorted.length - 1]).end;
+    const start = monthRangeInZone(sorted[0], tz).start;
+    const end = monthRangeInZone(sorted[sorted.length - 1], tz).end;
 
     const apptQb = this.appointments
       .createQueryBuilder('a')
-      .select(`to_char(a.start_at AT TIME ZONE 'UTC', 'YYYY-MM')`, 'month')
+      .select(
+        `to_char(a.start_at AT TIME ZONE ${tzSql(tz)}, 'YYYY-MM')`,
+        'month',
+      )
       .addSelect('COUNT(*)', 'count')
       .innerJoin('a.tenant', 't')
       .where('t.id = :tenantId', { tenantId })
@@ -558,14 +633,17 @@ export class AnalyticsAggregationService {
     const payQb = whereCollectedClinicRevenue(
       this.payments
         .createQueryBuilder('p')
-        .select(`to_char(p.paid_at AT TIME ZONE 'UTC', 'YYYY-MM')`, 'month')
+        .select(
+          `to_char(${PAID_AT_SQL} AT TIME ZONE ${tzSql(tz)}, 'YYYY-MM')`,
+          'month',
+        )
         .addSelect(`COALESCE(SUM(${NET_COLLECTED_SQL}), 0)`, 'sum')
         .innerJoin('p.tenant', 't')
         .leftJoin('p.appointment', 'pa')
         .where('t.id = :tenantId', { tenantId }),
-      null,
+      currency,
     )
-      .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
+      .andWhere(PAID_IN_RANGE_SQL, { start, end })
       .groupBy('month');
     if (branchIds !== null) {
       payQb.andWhere(`${paymentBranchSql('pa')} IN (:...branchIds)`, {
@@ -654,7 +732,7 @@ export class AnalyticsAggregationService {
         .andWhere(`${paymentBranchSql('pa')} = :branchId`, { branchId }),
       currency,
     )
-      .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
+      .andWhere(PAID_IN_RANGE_SQL, { start, end })
       .getRawOne<{ sum: string }>();
     return round2(Number(row?.sum ?? 0));
   }
@@ -794,10 +872,14 @@ export class AnalyticsAggregationService {
     tenantId: string,
     filters: StaffPerformanceFilters,
   ): Promise<StaffPerformanceRow[]> {
+    const tz =
+      filters.from || filters.to
+        ? await this.resolveReportingTimezone(tenantId)
+        : DEFAULT_REPORTING_TIMEZONE;
     const start = filters.from
-      ? dayRangeUtc(filters.from).start
+      ? dayRangeInZone(filters.from, tz).start
       : new Date(Date.now() - 30 * 86_400_000);
-    const end = filters.to ? dayRangeUtc(filters.to).end : new Date();
+    const end = filters.to ? dayRangeInZone(filters.to, tz).end : new Date();
     const { currency } = await this.resolveReportingCurrency(tenantId);
 
     const [counts, revenue, ratings] = await Promise.all([
@@ -889,7 +971,7 @@ export class AnalyticsAggregationService {
         .where('t.id = :tenantId', { tenantId }),
       currency,
     )
-      .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
+      .andWhere(PAID_IN_RANGE_SQL, { start, end })
       .groupBy('staff.id');
 
     if (branchId) qb = qb.andWhere('a."branchId" = :branchId', { branchId });
@@ -935,14 +1017,15 @@ export class AnalyticsAggregationService {
   // stays defined as settled (PAID) `Payment` rows exactly as `sumBranchRevenue`
   // above computes it; nothing here introduces a second revenue definition.
 
-  /** FR-A004 — appointment-volume trend, one row per UTC day WITH data. */
+  /** FR-A004 — appointment-volume trend, one row per clinic-local day WITH data. */
   async appointmentsTrend(
     tenantId: string,
     branchId: string | undefined,
     start: Date,
     end: Date,
+    tz: string = DEFAULT_REPORTING_TIMEZONE,
   ): Promise<AppointmentTrendDay[]> {
-    const dateExpr = `to_char(a.start_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')`;
+    const dateExpr = `to_char(a.start_at AT TIME ZONE ${tzSql(tz)}, 'YYYY-MM-DD')`;
     let qb = this.appointments
       .createQueryBuilder('a')
       .innerJoin('a.tenant', 't')
@@ -983,15 +1066,16 @@ export class AnalyticsAggregationService {
     }));
   }
 
-  /** FR-A003 — settled-revenue trend, one row per UTC day WITH data. */
+  /** FR-A003 — settled-revenue trend, one row per clinic-local day WITH data. */
   async revenueTrend(
     tenantId: string,
     branchId: string | undefined,
     currency: string,
     start: Date,
     end: Date,
+    tz: string = DEFAULT_REPORTING_TIMEZONE,
   ): Promise<RevenueTrendDay[]> {
-    const dateExpr = `to_char(p.paid_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')`;
+    const dateExpr = `to_char(${PAID_AT_SQL} AT TIME ZONE ${tzSql(tz)}, 'YYYY-MM-DD')`;
     let qb = whereCollectedClinicRevenue(
       this.payments
         .createQueryBuilder('p')
@@ -1002,7 +1086,7 @@ export class AnalyticsAggregationService {
         .where('t.id = :tenantId', { tenantId }),
       currency,
     )
-      .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
+      .andWhere(PAID_IN_RANGE_SQL, { start, end })
       .groupBy(dateExpr)
       .orderBy(dateExpr, 'ASC');
 
@@ -1040,7 +1124,7 @@ export class AnalyticsAggregationService {
       null,
     )
       .andWhere('p.currency != :currency', { currency })
-      .andWhere('p.paid_at BETWEEN :start AND :end', { start, end });
+      .andWhere(PAID_IN_RANGE_SQL, { start, end });
 
     if (branchId) {
       qb = qb.andWhere(`${paymentBranchSql('pa')} = :branchId`, { branchId });
@@ -1330,7 +1414,7 @@ export class AnalyticsAggregationService {
         .andWhere(`${branchExpr} IS NOT NULL`),
       currency,
     )
-      .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
+      .andWhere(PAID_IN_RANGE_SQL, { start, end })
       .groupBy(branchExpr);
     if (branchIds?.length) {
       payQb = payQb.andWhere(`${branchExpr} IN (:...branchIds)`, { branchIds });
@@ -1402,7 +1486,7 @@ export class AnalyticsAggregationService {
         .where('t.id = :tenantId', { tenantId }),
       currency,
     )
-      .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
+      .andWhere(PAID_IN_RANGE_SQL, { start, end })
       .groupBy('a.source');
     if (branchId) {
       payQb = payQb.andWhere(`${paymentBranchSql('a')} = :branchId`, {
@@ -1448,7 +1532,7 @@ export class AnalyticsAggregationService {
         .select(`COALESCE(SUM(${NET_COLLECTED_SQL}), 0)`, 'sum')
         .where('t.id = :tenantId', { tenantId }),
       currency,
-    ).andWhere('p.paid_at BETWEEN :start AND :end', { start, end });
+    ).andWhere(PAID_IN_RANGE_SQL, { start, end });
     if (kind === 'branch') {
       qb.andWhere(`${paymentBranchSql('pa')} IS NULL`);
     } else {

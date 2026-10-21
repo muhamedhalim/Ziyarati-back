@@ -121,7 +121,7 @@ export const METRIC_REGISTRY: Record<MetricKey, MetricDefinition> = {
     key: 'revenue.total',
     label: 'Revenue',
     definition:
-      'Net collected money in the period (by `paid_at`): every PAID or PARTIALLY_REFUNDED clinic payment (purpose BOOKING/MANUAL), counted at `amount − refunded_amount`. Pending and failed payments are never counted; a fully refunded payment counts 0; a partial refund reduces its payment by the refunded amount. Gross of gateway/platform fees. Summed in ONE reporting currency (see `GET /analytics/currency`) — other currencies are excluded, never added in. A payment belongs to its own branch, else to the branch of the appointment it pays for. Never derived from `Appointment.total_amount` (a booking price, not money received).',
+      'Net collected money in the period (by `paid_at`; a legacy payment with no `paid_at` counts on its `created_at`): every PAID or PARTIALLY_REFUNDED clinic payment (purpose BOOKING/MANUAL), counted at `amount − refunded_amount`. Pending and failed payments are never counted; a fully refunded payment counts 0; a partial refund reduces its payment by the refunded amount. Gross of gateway/platform fees. Summed in ONE reporting currency (see `GET /analytics/currency`) — other currencies are excluded, never added in. A payment belongs to its own branch, else to the branch of the appointment it pays for. Never derived from `Appointment.total_amount` (a booking price, not money received).',
     source: 'AnalyticsAggregationService.sumBranchRevenue',
   },
   'customers.new': {
@@ -242,14 +242,14 @@ export const METRIC_REGISTRY: Record<MetricKey, MetricDefinition> = {
     key: 'trends.appointments_daily',
     label: 'Appointment volume trend',
     definition:
-      'Appointment counts (total/completed/cancelled/no-show) bucketed by UTC calendar day, for every day in the requested [from, to] range and the requested branch (or the whole clinic) — never a fixed row count. Fixes R13: the previous UI read the last N *rows* of the per-branch daily report table, which silently mixed branches for a multi-branch clinic.',
+      'Appointment counts (total/completed/cancelled/no-show) bucketed by calendar day in the clinic reporting timezone (`GET /analytics/currency` → `timezone`), for every day in the requested [from, to] range and the requested branch (or the whole clinic) — never a fixed row count. Fixes R13: the previous UI read the last N *rows* of the per-branch daily report table, which silently mixed branches for a multi-branch clinic.',
     source: 'AnalyticsAggregationService.appointmentsTrend',
   },
   'trends.revenue_daily': {
     key: 'trends.revenue_daily',
     label: 'Revenue trend',
     definition:
-      'Net collected money (revenue.total) bucketed by UTC calendar day of `paid_at`, for every day in the requested range and branch, in the reporting currency. Payments in other currencies are counted in a visible exclusion notice, never added in.',
+      'Net collected money (revenue.total) bucketed by the clinic-local calendar day of `paid_at` (reporting timezone), for every day in the requested range and branch, in the reporting currency. Payments in other currencies are counted in a visible exclusion notice, never added in.',
     source: 'AnalyticsAggregationService.revenueTrend',
   },
   'rates.cancellation': {

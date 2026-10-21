@@ -193,6 +193,12 @@ export class AnalyticsProcessor extends WorkerHost {
   }
 
   private async sweepReports(template: AnalyticsGenerateReportJob) {
+    // The report DAY is the clinic's local calendar day (generation measures
+    // it in the clinic's reporting timezone). The tick fires at 00:30 UTC, when
+    // "yesterday in UTC" has fully ended for every clinic at or ahead of UTC
+    // (all current clinics: UTC / Asia/Riyadh). A clinic BEHIND UTC would have
+    // its day still open at this tick and need a later tick or a manual
+    // regenerate — documented, not handled, since none exists today.
     const date =
       template.date ??
       new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);

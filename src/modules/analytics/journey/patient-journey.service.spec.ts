@@ -120,6 +120,7 @@ function emptyAggregate(
       currency: 'SAR',
       remindersEnabled: false,
       reminderLeadMinutes: [],
+      timezone: 'UTC',
     },
     now: '2026-09-01T00:00:00.000Z',
     ...overrides,
@@ -169,10 +170,13 @@ function build(options: { cached?: JourneyAggregate } = {}) {
     branchScope as never,
     tenantSettings as never,
     {
-      wrap: () =>
-        Promise.reject(
-          new Error('advanced cache must not be used by journey tests'),
-        ),
+      // Only the (tiny) reporting-timezone lookup may go through it.
+      wrap: (_tenant: string, _ns: string, key: string) =>
+        key === 'reporting-timezone'
+          ? Promise.resolve('UTC')
+          : Promise.reject(
+              new Error('advanced cache must not be used by journey tests'),
+            ),
     } as never,
   );
 
@@ -573,7 +577,11 @@ describe('PatientJourneyService — duration suggestion explanation in the summa
           branch: {},
           staff: {},
           service: {
-            'svc-1': { name: 'Dentistry', inactive: false, configuredMinutes: 30 },
+            'svc-1': {
+              name: 'Dentistry',
+              inactive: false,
+              configuredMinutes: 30,
+            },
           },
         },
         activeServiceCount: 2,

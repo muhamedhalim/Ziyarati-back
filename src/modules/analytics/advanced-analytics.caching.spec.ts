@@ -51,6 +51,7 @@ function build(options: { cached?: unknown } = {}) {
     // The currency read now lives on the aggregation engine
     // (`resolveReportingCurrency`); it still reads tenant settings, so the
     // "no currency read on a cache hit" assertions below keep their meaning.
+    resolveReportingTimezone: jest.fn(async () => 'UTC'),
     resolveReportingCurrency: jest.fn(async () => {
       const settings = (await tenantSettings.findOne()) as { currency: string };
       return {
@@ -555,7 +556,11 @@ describe('AdvancedAnalyticsService — aggregate caching (T056, P8, CACHE-002)',
     await service.performanceBranches(TENANT, TENANT_WIDE, PAGE_DTO as never);
     await service.performanceChannels(TENANT, TENANT_WIDE, PAGE_DTO as never);
 
-    expect(new Set(cacheKeys).size).toBe(cacheKeys.length);
+    // The shared reporting-timezone lookup is one tenant-level entry every
+    // aggregate reads; only the aggregates' OWN keys must be distinct.
+    const aggregateKeys = cacheKeys.filter((k) => k !== 'reporting-timezone');
+    expect(aggregateKeys).toHaveLength(5);
+    expect(new Set(aggregateKeys).size).toBe(aggregateKeys.length);
   });
 
   it('a Redis outage (cache.wrap failing open to producer()) still returns correct data', async () => {

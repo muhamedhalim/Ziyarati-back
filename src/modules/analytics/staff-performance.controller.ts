@@ -11,6 +11,9 @@ import {
 import { StaffPerformanceService } from './staff-performance.service';
 import { QueryStaffPerformanceDto } from './dto/query-staff-performance.dto';
 
+import { AdvancedAnalyticsService } from './advanced-analytics.service';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
@@ -46,6 +49,7 @@ export class StaffPerformanceController {
   constructor(
     private readonly staffPerformance: StaffPerformanceService,
     private readonly ctx: TenantContextService,
+    private readonly advanced: AdvancedAnalyticsService,
   ) {}
 
   @ApiOperation({
@@ -64,7 +68,20 @@ export class StaffPerformanceController {
   })
   @Get()
   @RequirePermissions(PERMISSION.ANALYTICS_REPORTS_READ)
-  list(@Query() query: QueryStaffPerformanceDto) {
-    return this.staffPerformance.list(this.ctx.requireTenantId(), query);
+  async list(
+    @Query() query: QueryStaffPerformanceDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const tenantId = this.ctx.requireTenantId();
+    // FR-A016 — a branch-restricted caller only ever sees their own branch.
+    const scope = await this.advanced.resolveScope(
+      tenantId,
+      user,
+      query.branchId,
+    );
+    return this.staffPerformance.list(tenantId, {
+      ...query,
+      branchId: scope.branchId,
+    });
   }
 }

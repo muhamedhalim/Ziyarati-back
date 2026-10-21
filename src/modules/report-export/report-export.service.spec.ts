@@ -79,7 +79,7 @@ describe('ReportExportService (T181/T183/T184)', () => {
     query: jest.Mock;
     findOneOrFail: jest.Mock;
   };
-  let advanced: { resolveScope: jest.Mock };
+  let advanced: { resolveScope: jest.Mock; reportingTimezone: jest.Mock };
   let storage: {
     upload: jest.Mock;
     getSignedDownloadUrl: jest.Mock;
@@ -104,7 +104,10 @@ describe('ReportExportService (T181/T183/T184)', () => {
       query: jest.fn(),
       findOneOrFail: jest.fn(),
     });
-    advanced = { resolveScope: jest.fn().mockResolvedValue({}) };
+    advanced = {
+      resolveScope: jest.fn().mockResolvedValue({}),
+      reportingTimezone: jest.fn().mockResolvedValue('UTC'),
+    };
     storage = {
       upload: jest
         .fn()
@@ -130,7 +133,15 @@ describe('ReportExportService (T181/T183/T184)', () => {
         { provide: DailyReportService, useValue: {} },
         { provide: MonthlyReportService, useValue: {} },
         { provide: StaffPerformanceService, useValue: {} },
-        { provide: AnalyticsAggregationService, useValue: {} },
+        {
+          provide: AnalyticsAggregationService,
+          useValue: {
+            resolveReportingCurrency: jest.fn().mockResolvedValue({
+              currency: 'SAR',
+              configuredCurrency: 'SAR',
+            }),
+          },
+        },
         XlsxWriterService,
         { provide: StorageService, useValue: storage },
         { provide: QueueService, useValue: queue },

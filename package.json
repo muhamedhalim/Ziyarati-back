@@ -27,6 +27,7 @@
     "dev": "concurrently -n api,worker -c blue,green \"npm:start:dev\" \"npm:start:worker:dev\"",
     "dev:prod-build": "concurrently -n api,worker -c blue,green \"npm:start:prod\" \"npm:start:worker\"",
     "seed": "ts-node --project tsconfig.seed.json src/seed/seed.ts",
+    "analytics:rebuild-reports": "ts-node -T -r tsconfig-paths/register scripts/rebuild-analytics-reports.ts",
     "seed:rtl": "ts-node --project tsconfig.seed.json src/seed/rtl-fixture.seed.ts",
     "seed:perf": "ts-node --project tsconfig.seed.json src/seed/perf-fixture.seed.ts",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
