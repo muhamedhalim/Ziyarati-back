@@ -85,6 +85,10 @@ describe('subprocessor register ↔ code', () => {
    * (an inbound server, or a destination check that makes no call).
    */
   const OUTBOUND: Record<string, string> = {
+    // Type-only `import type { Server | IncomingHttpHeaders } from 'node:http'`:
+    // timeouts on, and header parsing for, the INBOUND server. No client, no call.
+    'config/http-timeouts.ts': 'internal',
+    'config/trust-proxy.ts': 'internal',
     // The log event name `http.request.completed` matches `https?\.request`;
     // neither file makes a call (LOGGING.md).
     'common/logging/log-events.ts': 'internal',
