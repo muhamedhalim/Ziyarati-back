@@ -472,6 +472,20 @@ describe('QueueService (producer facade)', () => {
       await expect(service.redisPing()).resolves.toEqual(expect.any(Number));
     });
 
+    // RL-08: INFO memory on the fail-fast application client, default 85 %.
+    it('hasEnqueueHeadroom reads INFO memory against the configured threshold', async () => {
+      const info = jest
+        .fn()
+        .mockResolvedValue('used_memory:860\r\nmaxmemory:1000\r\n');
+      (appRedis.application as unknown as { info: jest.Mock }).info = info;
+      await expect(service.hasEnqueueHeadroom()).resolves.toBe(false);
+      expect(info).toHaveBeenCalledWith('memory');
+      expect(config.get).toHaveBeenCalledWith(
+        'QUEUE_ENQUEUE_MAX_REDIS_MEMORY_PERCENT',
+        85,
+      );
+    });
+
     it('dlqDepth defaults to the campaigns DLQ but accepts any queue', async () => {
       record[QUEUE.CAMPAIGNS_DLQ].getJobCounts.mockResolvedValueOnce({
         waiting: 1,

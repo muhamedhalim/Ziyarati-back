@@ -126,6 +126,7 @@ module "waf" {
   name                          = local.name
   alb_arn                       = module.alb.alb_arn
   mode                          = var.waf_mode
+  edge_proxy_token              = var.edge_proxy_token
   rate_limit_auth_per_5min      = var.waf_rate_limits.auth
   rate_limit_public_per_5min    = var.waf_rate_limits.public
   rate_limit_socketio_per_5min  = var.waf_rate_limits.socketio
@@ -211,8 +212,11 @@ module "ecs" {
   api_security_group_id    = module.network.security_group_ids.api
   worker_security_group_id = module.network.security_group_ids.worker
   target_group_arn         = module.alb.target_group_arn
-  api                      = var.api
-  worker                   = var.worker
+  # RL-03: scale the API on ALB requests per target as well as CPU.
+  alb_request_count_resource_label = "${module.alb.alb_arn_suffix}/${module.alb.target_group_arn_suffix}"
+  api_requests_per_target_per_min  = var.api_requests_per_target_per_min
+  api                              = var.api
+  worker                           = var.worker
 
   common_environment = local.common_env
   api_environment    = local.api_env
@@ -275,6 +279,7 @@ module "monitoring" {
   nat_gateway_ids              = module.network.nat_gateway_ids
   api_domain                   = local.api_domain
   enable_external_health_check = var.enable_external_health_check
+  waf_mode                     = var.waf_mode
   tags                         = local.tags
 }
 

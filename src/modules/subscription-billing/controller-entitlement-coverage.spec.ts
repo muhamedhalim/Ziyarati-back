@@ -102,6 +102,10 @@ const PLATFORM_AND_PUBLIC_SURFACES = new Set([
   // throttles, not a subscription gate.
   'patient-actions/patient-action.controller.ts',
   'public-discovery/public-discovery.controller.ts',
+  // The anonymous pricing catalogue (`GET /public/plans`) — what is for sale
+  // is, by definition, readable by someone with no tenant and no
+  // subscription. Read-only; abuse is bounded by its per-route throttle.
+  'subscription-billing/public-plans.controller.ts',
   // T065-T068 (spec 014, S4) — the deterministic step-by-step counterpart to
   // the public AI booking flow. Same reasoning as guest-chat above: an
   // anonymous visitor has no tenant principal until a clinic is selected, and

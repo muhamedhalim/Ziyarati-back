@@ -40,6 +40,40 @@ run "only_the_alb_is_open_to_the_internet" {
   }
 }
 
+# RL-13: with TRUST_PROXY_HOPS=1 the API trusts the last X-Forwarded-For entry,
+# which only the ALB can be relied on to write. A task reachable from anything
+# but the ALB lets a caller forge its client address and dodge every per-IP
+# limit, so the only API ingress must name the ALB security group, on the
+# container port, with no CIDR. `apply` (mocked) so the ids are known values.
+run "api_tasks_accept_only_the_alb" {
+  command = apply
+
+  assert {
+    condition = (
+      aws_vpc_security_group_ingress_rule.api_from_alb.security_group_id == aws_security_group.api.id &&
+      aws_vpc_security_group_ingress_rule.api_from_alb.referenced_security_group_id == aws_security_group.alb.id
+    )
+    error_message = "The API ingress rule must admit the ALB security group and nothing else"
+  }
+
+  assert {
+    condition = (
+      aws_vpc_security_group_ingress_rule.api_from_alb.cidr_ipv4 == null &&
+      aws_vpc_security_group_ingress_rule.api_from_alb.cidr_ipv6 == null &&
+      aws_vpc_security_group_ingress_rule.api_from_alb.prefix_list_id == null
+    )
+    error_message = "No CIDR or prefix list may reach the API tasks directly"
+  }
+
+  assert {
+    condition = (
+      aws_vpc_security_group_ingress_rule.api_from_alb.from_port == var.api_container_port &&
+      aws_vpc_security_group_ingress_rule.api_from_alb.to_port == var.api_container_port
+    )
+    error_message = "The ALB may reach the API on the container port only"
+  }
+}
+
 run "subnets_and_nat" {
   command = plan
 

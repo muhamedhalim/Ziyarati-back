@@ -285,6 +285,35 @@ describe('AuthService', () => {
       commercialRegistrationNumber: 'CR-1',
     } as any;
 
+    // RL-07: opt-in per-client layer, consulted before the endpoint ceiling.
+    it('skips the per-client layer when AUTH_REGISTER_OWNER_MAX_PER_CLIENT is unset', async () => {
+      limiter.consume.mockResolvedValueOnce({ allowed: true, count: 1 });
+      limiter.consume.mockResolvedValueOnce({ allowed: false, count: 1001 });
+      await expect(
+        service.registerOwner(dto, { ipAddress: '198.51.100.7' }),
+      ).rejects.toMatchObject({ code: ErrorCode.RATE_LIMITED });
+      const scopes = limiter.consume.mock.calls.map((c) => c[0]);
+      expect(scopes).toEqual(['register_identity', 'register_endpoint']);
+    });
+
+    it('refuses at the per-client layer without touching the endpoint ceiling', async () => {
+      config.get.mockImplementation((key: string, def?: unknown) =>
+        key === 'AUTH_REGISTER_OWNER_MAX_PER_CLIENT' ? 5 : def,
+      );
+      limiter.consume.mockResolvedValueOnce({ allowed: true, count: 1 });
+      limiter.consume.mockResolvedValueOnce({ allowed: false, count: 6 });
+      await expect(
+        service.registerOwner(dto, { ipAddress: '198.51.100.7' }),
+      ).rejects.toMatchObject({ code: ErrorCode.RATE_LIMITED });
+      const calls = limiter.consume.mock.calls;
+      expect(calls.map((c) => c[0])).toEqual([
+        'register_identity',
+        'register_client',
+      ]);
+      expect(calls[1][1]).not.toContain('198.51.100.7'); // digested, never raw
+      expect(calls[1][2]).toBe(5);
+    });
+
     it('creates tenant + owner atomically and returns tokens + principal (success path)', async () => {
       tenants.findOne.mockResolvedValueOnce(null); // slug free
       dataSource.manager.findOne.mockResolvedValueOnce({
@@ -614,7 +643,10 @@ describe('AuthService', () => {
 
       // The identity passed to the protection layer must be normalised
       // (trim + lower-case) the SAME way validateCredentials normalises it.
-      expect(loginProtection.isLocked).toHaveBeenCalledWith('owner@clinic.com');
+      expect(loginProtection.isLocked).toHaveBeenCalledWith(
+        'owner@clinic.com',
+        undefined,
+      );
       const isLockedOrder =
         loginProtection.isLocked.mock.invocationCallOrder[0];
       const findOrder = users.find.mock.invocationCallOrder[0];
@@ -653,6 +685,7 @@ describe('AuthService', () => {
       ).rejects.toMatchObject({ code: ErrorCode.INVALID_CREDENTIALS });
       expect(loginProtection.recordFailure).toHaveBeenCalledWith(
         'nope@clinic.com',
+        undefined,
       );
     });
 
@@ -665,6 +698,7 @@ describe('AuthService', () => {
       ).rejects.toMatchObject({ code: ErrorCode.INVALID_CREDENTIALS });
       expect(loginProtection.recordFailure).toHaveBeenCalledWith(
         'owner@clinic.com',
+        undefined,
       );
     });
 
@@ -675,7 +709,40 @@ describe('AuthService', () => {
 
       await service.login({ email: 'owner@clinic.com', password: 'pw' } as any);
 
-      expect(loginProtection.clear).toHaveBeenCalledWith('owner@clinic.com');
+      expect(loginProtection.clear).toHaveBeenCalledWith(
+        'owner@clinic.com',
+        undefined,
+      );
+    });
+
+    // RL-05: the request's resolved address reaches every protection call.
+    it('passes the client address to the lockout check, failure and clear', async () => {
+      users.find.mockResolvedValueOnce([credUser]);
+      bcryptCompare.mockResolvedValueOnce(false);
+      await expect(
+        service.login({ email: 'owner@clinic.com', password: 'wrong' } as any, {
+          ipAddress: '203.0.113.7',
+        }),
+      ).rejects.toMatchObject({ code: ErrorCode.INVALID_CREDENTIALS });
+      expect(loginProtection.isLocked).toHaveBeenCalledWith(
+        'owner@clinic.com',
+        '203.0.113.7',
+      );
+      expect(loginProtection.recordFailure).toHaveBeenCalledWith(
+        'owner@clinic.com',
+        '203.0.113.7',
+      );
+    });
+
+    // RL-16: an unknown email pays the same bcrypt cost as a wrong password.
+    it('runs one bcrypt compare even when no account matches', async () => {
+      users.find.mockResolvedValueOnce([]);
+      bcryptCompare.mockClear();
+      await expect(
+        service.login({ email: 'ghost@clinic.com', password: 'pw' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.INVALID_CREDENTIALS });
+      expect(bcryptCompare).toHaveBeenCalledTimes(1);
+      expect(bcryptCompare.mock.calls[0][1]).toMatch(/^\$2[aby]\$12\$/);
     });
 
     // ─────────────────────── FND-008: safe audit records ──────────────────────

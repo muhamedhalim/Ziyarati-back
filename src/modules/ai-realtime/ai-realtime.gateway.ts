@@ -1,4 +1,10 @@
-import { Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+  Optional,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import {
   ConnectedSocket,
@@ -32,6 +38,7 @@ import {
   type AiWsRateLimitTier,
 } from './ai-ws-rate-limit.service';
 import { parseAllowedOrigins } from '../../config/cors-origins';
+import { resolveHandshakeClientAddress } from '../../config/trust-proxy';
 import { AI_PUBLIC_TOOL } from '../ai/tools/ai-public-booking-tools.constants';
 import { AI_MESSAGE_MAX_CHARS } from '../ai/ai.constants';
 
@@ -297,6 +304,9 @@ export class AiRealtimeGateway
   @WebSocketServer()
   server!: Server;
 
+  private readonly trustProxyHops: number;
+  private readonly edgeToken: string | undefined;
+
   constructor(
     private readonly wsAuth: WsAuthService,
     private readonly orchestrator: AiOrchestratorService,
@@ -307,7 +317,14 @@ export class AiRealtimeGateway
     private readonly access: AiConversationAccessService,
     private readonly entitlements: AccessControlService,
     private readonly wsRateLimit: AiWsRateLimitService,
-  ) {}
+    @Optional() config?: ConfigService,
+  ) {
+    // RL-04: the guest per-source bound must key on the same client address
+    // the HTTP throttler trusts, not the TCP peer (the ALB). Read once — both
+    // are boot-time settings.
+    this.trustProxyHops = Number(config?.get('TRUST_PROXY_HOPS') ?? 0);
+    this.edgeToken = config?.get<string>('EDGE_PROXY_TOKEN') || undefined;
+  }
 
   /**
    * Capability gate for the events that actually EXECUTE something.
@@ -1119,7 +1136,11 @@ export class AiRealtimeGateway
     //  - a platform-wide daily ceiling, which holds whatever the address shows
     //    (a botnet, or a proxy that hides it) and so caps the spend.
     if (user?.guest) {
-      const source = client.handshake?.address;
+      const source = resolveHandshakeClientAddress(
+        client.handshake,
+        this.trustProxyHops,
+        this.edgeToken,
+      );
       const bounds: [AiWsRateLimitTier, string][] = [
         ...(source
           ? [['guest-source', source] as [AiWsRateLimitTier, string]]

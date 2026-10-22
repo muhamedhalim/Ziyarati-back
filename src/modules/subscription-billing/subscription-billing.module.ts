@@ -44,12 +44,14 @@ import { PlanLimitStatusService } from './plan-limit-status.service';
 import { TenantEntitlementLedgerService } from './tenant-entitlement-ledger.service';
 import { TenantMetricCreditsService } from './tenant-metric-credits.service';
 
+import { PublicPlansService } from './public-plans.service';
 import { SubscriptionController } from './subscription.controller';
 import { BillingController } from './billing.controller';
 import { UsageController } from './usage.controller';
 import { FeatureFlagController } from './feature-flag.controller';
 import { PlatformFeatureFlagController } from './platform-feature-flag.controller';
 import { PlatformBillingAdminController } from './platform-billing-admin.controller';
+import { PublicPlansController } from './public-plans.controller';
 
 import { FeatureGuard } from './guards/feature.guard';
 import { SubscriptionAccessGuard } from './guards/subscription-access.guard';
@@ -130,6 +132,7 @@ export function resolveSubscriptionPaymentProvider(
     FeatureFlagController,
     PlatformFeatureFlagController,
     PlatformBillingAdminController,
+    PublicPlansController,
   ],
   providers: [
     SubscriptionService,
@@ -155,6 +158,7 @@ export function resolveSubscriptionPaymentProvider(
     AccessControlService,
     PlanAdminService,
     PlanLimitStatusService,
+    PublicPlansService,
     // Phase 1.3 (Pricing Catalog plan) — standalone raw-SQL primitives over
     // tenant_entitlement_ledger / tenant_metric_credits. No entity, no
     // TypeOrmModule.forFeature() registration needed (same reasoning as

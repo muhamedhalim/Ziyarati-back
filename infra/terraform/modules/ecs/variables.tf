@@ -60,6 +60,18 @@ variable "target_group_arn" {
   type        = string
 }
 
+variable "alb_request_count_resource_label" {
+  description = "RL-03: \"<alb arn suffix>/<target group arn suffix>\" for ALBRequestCountPerTarget scaling; required only when api_requests_per_target_per_min is set"
+  type        = string
+  default     = null
+}
+
+variable "api_requests_per_target_per_min" {
+  description = "RL-03: request-count scaling target per API task per minute; null = no request-count policy"
+  type        = number
+  default     = null
+}
+
 variable "api" {
   description = "API sizing and scaling"
   type = object({

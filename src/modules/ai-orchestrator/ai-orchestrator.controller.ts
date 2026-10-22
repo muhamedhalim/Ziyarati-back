@@ -34,6 +34,8 @@ import { RequireActiveSubscription } from '../subscription-billing/decorators/re
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
 import { FeatureKey } from '../subscription-billing/feature-registry';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { AppError, ErrorCode } from '../../common/errors';
+import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
 
 /**
  * AI Orchestrator — the single cross-channel entry point (Phase 2).
@@ -54,6 +56,7 @@ export class AiOrchestratorController {
     private readonly orchestrator: AiOrchestratorService,
     private readonly sessions: ConversationSessionService,
     private readonly ctx: TenantContextService,
+    private readonly turnLimit: AiWsRateLimitService,
   ) {}
 
   @ApiOperation({
@@ -65,8 +68,27 @@ export class AiOrchestratorController {
   @Post('message')
   @HttpCode(HttpStatus.CREATED)
   @RequirePermissions(PERMISSION.AI_CONVERSATIONS_MANAGE)
-  message(@Body() dto: OrchestrateMessageDto) {
-    return this.orchestrator.handle(this.ctx.requireTenantId(), {
+  async message(@Body() dto: OrchestrateMessageDto) {
+    const tenantId = this.ctx.requireTenantId();
+    // RL-11: the same per-user turn budget the `/ai` socket enforces, keyed on
+    // the same identity (the authenticated user id), so REST and socket turns
+    // draw from ONE allowance instead of REST being unlimited.
+    const userId = this.ctx.getUser()?.id;
+    if (userId) {
+      const decision = await this.turnLimit.checkAndRecord(
+        userId,
+        'authenticated',
+      );
+      if (!decision.allowed) {
+        throw new AppError(decision.code ?? ErrorCode.RATE_LIMITED, {
+          message:
+            decision.code === ErrorCode.SERVICE_UNAVAILABLE
+              ? 'The AI assistant is temporarily unavailable. Please try again shortly.'
+              : 'Too many AI messages. Please wait a moment and try again.',
+        });
+      }
+    }
+    return this.orchestrator.handle(tenantId, {
       channel: dto.channel,
       content: dto.content,
       idempotencyKey: dto.idempotencyKey,

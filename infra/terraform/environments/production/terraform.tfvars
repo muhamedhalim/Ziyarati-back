@@ -71,7 +71,12 @@ redis = {
   snapshot_retention_days = 7
 }
 
-waf_mode  = "count" # switch to "block" after 14 clean days (SECURITY.md §4)
+# RL-02 — owner-approved 2026-10-22: switch to "block" only AFTER the edge
+# token is live (RL-01) and the edge-aware rules have run a few days in "count"
+# with acceptable counts (see docs/RATE-LIMITING-DOS-AUDIT.md G.9 step 5).
+# Already in place for block mode: NoUserAgent_HEADER pinned to COUNT, and
+# /api/v1/integrations/* exempt from ip-reputation.
+waf_mode  = "count"
 dmarc_rua = "dmarc@ziyaratech.com"
 
 # Non-secret application config. Fixed platform keys (NODE_ENV, DB_SSL_CA,
@@ -81,11 +86,14 @@ app_environment = {
   EMAIL_FROM_NAME                      = "ZiyaraTech"
   EMAIL_ENABLED                        = "true"
   PAYMENT_PROVIDER                     = "tap"
-  AUTH_REGISTER_OWNER_ENDPOINT_CEILING = "1000" # copy the live Railway value
-  DEFAULT_LOCALE                       = "ar"
-  ENABLE_API_DOCS                      = "false"
-  ENABLE_INTEGRATION_DOCS              = "false"
-  PLATFORM_API_LOG_ENABLED             = "false"
+  AUTH_REGISTER_OWNER_ENDPOINT_CEILING = "60" # RL-07: owner-approved 2026-10-22 (was 1000); 1 sign-up in 14 days
+  # RL-07 FLIP — owner-approved 5/h per client; uncomment ONLY after RL-01 is
+  # live (before that, browser sign-ups share Vercel's egress addresses).
+  # AUTH_REGISTER_OWNER_MAX_PER_CLIENT = "5"
+  DEFAULT_LOCALE           = "ar"
+  ENABLE_API_DOCS          = "false"
+  ENABLE_INTEGRATION_DOCS  = "false"
+  PLATFORM_API_LOG_ENABLED = "false"
 
   # Tap — production boots only with the credentials below (env.validation.ts fails closed).
   # Follow the checklist in infra/runbooks/tap-payments-rollout.md §5 before the first deploy.
@@ -112,6 +120,10 @@ app_secret_keys = [
   "META_EMBEDDED_SIGNUP_CONFIG_ID",
   "META_WEBHOOK_VERIFY_TOKEN",
   "EMAIL_UNSUBSCRIBE_SECRET",
+  # RL-01 FLIP — uncomment ONLY after the EDGE_PROXY_TOKEN key exists in
+  # zt/production/app (a listed key that is absent stops every task from
+  # starting). Until Vercel sends the header, the API ignores it.
+  # "EDGE_PROXY_TOKEN",
   # PHASE 8 FLIP — add ONLY after `aws secretsmanager put-secret-value` has stored the key in
   # zt/production/app; a key listed here but absent from the JSON stops every ECS task from
   # starting. Production carries the LIVE key only (never TAP_TEST_SECRET_KEY).

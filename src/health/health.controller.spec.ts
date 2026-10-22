@@ -15,6 +15,7 @@ describe('HealthController', () => {
   let dataSource: { driver: { master: { waitingCount: number } } };
   let schemaGuards: SchemaGuardRegistry;
   let config: { get: jest.Mock };
+  let failReadiness: string;
   let readinessClient: {
     connect: jest.Mock;
     query: jest.Mock;
@@ -40,7 +41,14 @@ describe('HealthController', () => {
     // Defaults to the same off-by-default value Joi gives
     // SCHEMA_GUARD_FAIL_READINESS in production — a test that forgets to
     // stub this must still exercise the common case, not silently 503.
-    config = { get: jest.fn().mockReturnValue('false') };
+    // Key-aware so METRICS_TOKEN / NODE_ENV read as unset (dev: details
+    // visible, RL-17); the RL-17 block below sets them explicitly.
+    failReadiness = 'false';
+    config = {
+      get: jest.fn((key: string) =>
+        key === 'SCHEMA_GUARD_FAIL_READINESS' ? failReadiness : undefined,
+      ),
+    };
     readinessClient = freshReadinessClient();
     createReadinessClient = jest.fn(() => readinessClient);
     controller = new HealthController(
@@ -166,7 +174,7 @@ describe('HealthController', () => {
         requiredChecked: 43,
         requiredFailed: 1,
       });
-      config.get.mockReturnValue('true');
+      failReadiness = 'true';
 
       await expect(controller.readiness()).rejects.toBeInstanceOf(
         ServiceUnavailableException,
@@ -181,7 +189,7 @@ describe('HealthController', () => {
         requiredChecked: 43,
         requiredFailed: 1,
       });
-      config.get.mockReturnValue('false');
+      failReadiness = 'false';
 
       const res = await controller.readiness();
       expect(res.status).toBe('degraded');
@@ -323,6 +331,64 @@ describe('HealthController', () => {
       it('is a no-op if the connection was never opened', async () => {
         await controller.onModuleDestroy();
         expect(readinessClient.end).not.toHaveBeenCalled();
+      });
+    });
+  });
+  // ── RL-17: anonymous callers get the status alone ──────────────────────
+  describe('readiness details need the metrics token (RL-17)', () => {
+    const TOKEN = 'test-metrics-token';
+    const withAuth = (authorization?: string) =>
+      ({ headers: authorization ? { authorization } : {} }) as never;
+
+    beforeEach(() => {
+      config.get.mockImplementation((key: string) => {
+        if (key === 'METRICS_TOKEN') return TOKEN;
+        if (key === 'NODE_ENV') return 'production';
+        if (key === 'SCHEMA_GUARD_FAIL_READINESS') return failReadiness;
+        return undefined;
+      });
+    });
+
+    it('returns only the status to an anonymous caller', async () => {
+      queues.redisPing.mockResolvedValueOnce(5);
+      await expect(controller.readiness(withAuth())).resolves.toEqual({
+        status: 'ok',
+      });
+    });
+
+    it('ignores a wrong token', async () => {
+      queues.redisPing.mockResolvedValueOnce(5);
+      await expect(
+        controller.readiness(withAuth('Bearer nope')),
+      ).resolves.toEqual({ status: 'ok' });
+    });
+
+    it('returns the full body with the metrics bearer token', async () => {
+      queues.redisPing.mockResolvedValueOnce(5);
+      const res = await controller.readiness(withAuth(`Bearer ${TOKEN}`));
+      expect(res.redis).toEqual({ status: 'up', latencyMs: 5 });
+      expect(res.schemaGuards).toBeDefined();
+    });
+
+    it('still answers 503 on an outage, with the status alone', async () => {
+      queues.redisPing.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+      await expect(controller.readiness(withAuth())).rejects.toMatchObject({
+        response: { status: 'degraded' },
+      });
+      queues.redisPing.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+      const err = (await controller
+        .readiness(withAuth())
+        .catch((e: unknown) => e)) as ServiceUnavailableException;
+      expect(err.getResponse()).toEqual({ status: 'degraded' });
+    });
+
+    it('hides details in production when METRICS_TOKEN is unset', async () => {
+      config.get.mockImplementation((key: string) =>
+        key === 'NODE_ENV' ? 'production' : undefined,
+      );
+      queues.redisPing.mockResolvedValueOnce(5);
+      await expect(controller.readiness(withAuth())).resolves.toEqual({
+        status: 'ok',
       });
     });
   });

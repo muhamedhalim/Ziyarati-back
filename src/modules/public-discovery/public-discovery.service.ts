@@ -75,6 +75,17 @@ const BRANCH_OFFERS_SERVICE = `(
    )`;
 
 /** Upper bound on the public category index (busiest first). */
+/**
+ * RL-14 — highest page any public listing serves. 500 × 24 rows is far beyond
+ * the catalogue; above it a crafted `page` only forced deep OFFSET scans (and,
+ * past int range, an error path) on unauthenticated routes.
+ */
+export const MAX_PUBLIC_PAGE = 500;
+export const clampPublicPage = (v: number | undefined): number =>
+  Number.isFinite(v)
+    ? Math.min(Math.max(1, Math.floor(v as number)), MAX_PUBLIC_PAGE)
+    : 1;
+
 const MAX_PUBLIC_CATEGORIES = 60;
 /** Real services shown inside a category's folder on the Marketplace. */
 const SAMPLE_SERVICES_PER_CATEGORY = 3;
@@ -225,7 +236,7 @@ export class PublicDiscoveryService {
     const like = query?.trim() ? `%${query.trim()}%` : null;
     const city = cityId?.trim() || null;
     const paginated = Boolean(pagination);
-    const page = paginated ? Math.max(1, pagination!.page) : 1;
+    const page = paginated ? clampPublicPage(pagination!.page) : 1;
     const pageSize = paginated
       ? Math.min(Math.max(1, pagination!.pageSize), 24)
       : Math.min(limit, 24);
@@ -431,7 +442,7 @@ export class PublicDiscoveryService {
     } = {},
   ) {
     const trimmed = idOrSlug.trim();
-    const page = (v: number | undefined) => Math.max(1, v ?? 1);
+    const page = clampPublicPage;
     const size = (v: number | undefined) => Math.min(Math.max(1, v ?? 20), 50);
 
     const bPage = page(pagination.branchesPage);
@@ -1335,12 +1346,12 @@ export class PublicDiscoveryService {
     }
 
     const city = opts.cityId?.trim() || null;
-    const clinicsPage = Math.max(1, opts.clinicsPage ?? 1);
+    const clinicsPage = clampPublicPage(opts.clinicsPage);
     const clinicsPageSize = Math.min(
       Math.max(1, opts.clinicsPageSize ?? 24),
       24,
     );
-    const doctorsPage = Math.max(1, opts.doctorsPage ?? 1);
+    const doctorsPage = clampPublicPage(opts.doctorsPage);
     const doctorsPageSize = Math.min(
       Math.max(1, opts.doctorsPageSize ?? 24),
       24,
@@ -1474,7 +1485,7 @@ export class PublicDiscoveryService {
     const city = filters.cityId?.trim() || null;
     const specialtySlug = filters.specialtySlug?.trim() || null;
     const clinicSlug = filters.clinicSlug?.trim() || null;
-    const page = Math.max(1, filters.page ?? 1);
+    const page = clampPublicPage(filters.page);
     const pageSize = Math.min(Math.max(1, filters.pageSize ?? 24), 24);
 
     // Independently-numbered WHERE fragments per query — a shared fragment
@@ -1662,7 +1673,7 @@ export class PublicDiscoveryService {
     const like = filters.q?.trim() ? `%${filters.q.trim()}%` : null;
     const city = filters.cityId?.trim() || null;
     const specialtySlug = filters.specialtySlug?.trim() || null;
-    const page = Math.max(1, filters.page ?? 1);
+    const page = clampPublicPage(filters.page);
     const pageSize = Math.min(Math.max(1, filters.pageSize ?? 24), 24);
 
     // A category slug that resolves to nothing is an empty page, not a 404 and

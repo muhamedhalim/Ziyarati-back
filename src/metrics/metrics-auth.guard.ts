@@ -55,6 +55,23 @@ export class MetricsAuthGuard implements CanActivate {
   }
 }
 
+/**
+ * The same decision as {@link MetricsAuthGuard}, as a boolean, for routes that
+ * stay public but reveal more to an operator (RL-17: readiness details).
+ */
+export function hasMetricsAccess(
+  config: ConfigService,
+  authorization: string | undefined,
+): boolean {
+  const token = config.get<string>('METRICS_TOKEN');
+  if (!token) return config.get<string>('NODE_ENV') !== 'production';
+  const header = authorization ?? '';
+  const presented = header.startsWith('Bearer ')
+    ? header.slice('Bearer '.length)
+    : '';
+  return !!presented && constantTimeEquals(presented, token);
+}
+
 /** Constant-time string comparison — avoids a timing side-channel on the token check. */
 function constantTimeEquals(a: string, b: string): boolean {
   const bufA = Buffer.from(a);

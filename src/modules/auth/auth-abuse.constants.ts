@@ -18,6 +18,8 @@ export const AUTH_ABUSE_LIMITER_SCOPE = {
   RESET_ACCOUNT: 'reset_account',
   RESET_INVALID: 'reset_invalid',
   REGISTER_IDENTITY: 'register_identity',
+  // RL-07: per resolved client address, opt-in (AUTH_REGISTER_OWNER_MAX_PER_CLIENT).
+  REGISTER_CLIENT: 'register_client',
   REGISTER_ENDPOINT: 'register_endpoint',
 } as const;
 

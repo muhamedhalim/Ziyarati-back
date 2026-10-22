@@ -156,3 +156,30 @@ run "log_groups_are_retained_and_encrypted" {
     error_message = "api, worker, migrate and ops log groups are expected"
   }
 }
+
+# RL-03: the request-count policy is opt-in — off unless a target is given.
+run "request_count_scaling_is_off_by_default" {
+  command = plan
+
+  assert {
+    condition     = length(aws_appautoscaling_policy.api_requests) == 0
+    error_message = "No request-count policy may exist unless api_requests_per_target_per_min is set"
+  }
+}
+
+run "request_count_scaling_tracks_alb_requests_when_enabled" {
+  command = plan
+
+  variables {
+    api_requests_per_target_per_min  = 1200
+    alb_request_count_resource_label = "app/zt-test/abc/targetgroup/zt/abc"
+  }
+
+  assert {
+    condition = (
+      aws_appautoscaling_policy.api_requests[0].target_tracking_scaling_policy_configuration[0].predefined_metric_specification[0].predefined_metric_type == "ALBRequestCountPerTarget" &&
+      aws_appautoscaling_policy.api_requests[0].target_tracking_scaling_policy_configuration[0].target_value == 1200
+    )
+    error_message = "Enabled request-count scaling must track ALBRequestCountPerTarget at the given target"
+  }
+}

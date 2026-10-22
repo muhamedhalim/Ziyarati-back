@@ -187,3 +187,21 @@ variable "enable_log_silence_alarms" {
   type        = bool
   default     = true
 }
+
+variable "waf_mode" {
+  description = "RL-09: the WAF mode (count|block) — WAF rate-rule alarms watch CountedRequests in count mode, BlockedRequests in block mode"
+  type        = string
+  default     = "count"
+}
+
+variable "http_429_burst_threshold" {
+  description = "RL-09: app HTTP 429 responses per 5 minutes that raise the 429-burst alarm (14-day baseline: 0)"
+  type        = number
+  default     = 200
+}
+
+variable "waf_rate_rule_threshold" {
+  description = "RL-09: requests per 5 minutes one WAF rate rule may count/block before alarming (14-day baseline: 0)"
+  type        = number
+  default     = 50
+}

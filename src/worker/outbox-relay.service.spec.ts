@@ -13,19 +13,24 @@ import {
 describe('OutboxRelayService', () => {
   let service: OutboxRelayService;
   let dataSource: MockDataSource;
-  let queue: { publish: jest.Mock };
+  let queue: { publish: jest.Mock; hasEnqueueHeadroom: jest.Mock };
   /** The claim-phase query builder (SELECT ... FOR UPDATE SKIP LOCKED, then the PUBLISHING UPDATE) — built via `mgr.createQueryBuilder()` inside the short claim transaction. */
   let claimQb: MockQueryBuilder;
   /** The mark-phase query builder (PUBLISHED/PENDING/FAILED UPDATE) — built directly via `dataSource.createQueryBuilder()`, with NO transaction open. */
   let markQb: MockQueryBuilder;
 
   /** Invokes the private batch drainer directly (no interval/timer started). */
-  const drain = () => (service as unknown as { drainBatch: () => Promise<void> }).drainBatch();
-  const recover = () => (service as unknown as { runRecovery: () => Promise<void> }).runRecovery();
+  const drain = () =>
+    (service as unknown as { drainBatch: () => Promise<void> }).drainBatch();
+  const recover = () =>
+    (service as unknown as { runRecovery: () => Promise<void> }).runRecovery();
 
   beforeEach(() => {
     dataSource = createMockDataSource();
-    queue = { publish: jest.fn().mockResolvedValue({ id: 'job-1' }) };
+    queue = {
+      publish: jest.fn().mockResolvedValue({ id: 'job-1' }),
+      hasEnqueueHeadroom: jest.fn().mockResolvedValue(true),
+    };
     claimQb = createMockQueryBuilder();
     markQb = createMockQueryBuilder();
     dataSource.manager.createQueryBuilder.mockReturnValue(claimQb);
@@ -194,6 +199,19 @@ describe('OutboxRelayService', () => {
       claimQb.getMany.mockRejectedValueOnce(new Error('db down'));
       await (service as unknown as { tick: () => Promise<void> }).tick();
       expect((service as unknown as { running: boolean }).running).toBe(false);
+    });
+
+    // RL-08: rows wait in Postgres while Redis is near maxmemory.
+    it('tick claims nothing while Redis has no enqueue headroom, then resumes', async () => {
+      queue.hasEnqueueHeadroom.mockResolvedValueOnce(false);
+      await (service as unknown as { tick: () => Promise<void> }).tick();
+      expect(claimQb.getMany).not.toHaveBeenCalled();
+      expect(queue.publish).not.toHaveBeenCalled();
+      expect((service as unknown as { running: boolean }).running).toBe(false);
+
+      claimQb.getMany.mockResolvedValueOnce([]);
+      await (service as unknown as { tick: () => Promise<void> }).tick();
+      expect(claimQb.getMany).toHaveBeenCalledTimes(1);
     });
   });
 });

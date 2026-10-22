@@ -4,10 +4,12 @@ import {
   Inject,
   Logger,
   OnModuleDestroy,
+  Req,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { Request } from 'express';
 import { DataSource } from 'typeorm';
 
 import { Public } from '../modules/auth/decorators/public.decorator';
@@ -15,6 +17,7 @@ import { QueueService } from '../queue/queue.service';
 import { withTimeout } from '../common/utils/with-timeout.util';
 import { SchemaGuardRegistry } from '../config/schema-guard.registry';
 import { getAppRevision } from '../common/utils/app-revision.util';
+import { hasMetricsAccess } from '../metrics/metrics-auth.guard';
 
 /**
  * The subset of `pg.Client` the readiness probe actually uses — an
@@ -52,6 +55,16 @@ const UNREACHABLE = 'unreachable';
  *  docs/CACHING_QUEUES_AUDIT.md §0.5 / original audit M6). Public, unauthenticated
  *  route: it must answer fast and cheaply even during a real outage. */
 const READINESS_TIMEOUT_MS = 1500;
+
+type ReadinessStatus = 'ok' | 'degraded' | 'busy';
+
+/** Full readiness body; an anonymous caller gets `status` alone (RL-17). */
+interface ReadinessBody {
+  status: ReadinessStatus;
+  database?: { status: 'up' | 'down'; poolWaiting?: number; error?: string };
+  redis?: { status: 'up' | 'down'; latencyMs?: number; error?: string };
+  schemaGuards?: ReturnType<SchemaGuardRegistry['summary']>;
+}
 
 /**
  * Infra health for orchestrators (ECS / ALB target groups / probes). Mounted at
@@ -165,6 +178,14 @@ export class HealthController implements OnModuleDestroy {
    *    amplification MS-009 documented; load here is meant to be shed by
    *    the request path's own timeouts, not by readiness evicting healthy
    *    capacity.
+   *
+   * ── RL-17: details for operators only ─────────────────────────────────────
+   *
+   * An anonymous caller gets `{ status }` and the same HTTP code — enough for
+   * an orchestrator or deploy smoke test. Redis latency, pool queueing and the
+   * schema-guard counts tell an attacker when the instance is saturated or
+   * which integrity class is weak, so they need the metrics bearer token
+   * (`METRICS_TOKEN`, the same rule as `GET /metrics`).
    */
   @ApiOperation({
     summary:
@@ -173,7 +194,28 @@ export class HealthController implements OnModuleDestroy {
   @ApiOkResponse({ description: 'DB and Redis reachable.' })
   @Public()
   @Get('readiness')
-  async readiness() {
+  async readiness(@Req() req?: Request): Promise<ReadinessBody> {
+    const body = await this.readinessBody();
+    const visible = hasMetricsAccess(this.config, req?.headers?.authorization)
+      ? body
+      : { status: body.status };
+    if (this.shouldFailReadiness(body)) {
+      throw new ServiceUnavailableException(visible);
+    }
+    return visible;
+  }
+
+  private shouldFailReadiness(body: ReadinessBody): boolean {
+    if (body.database?.status === 'down' || body.redis?.status === 'down') {
+      return true;
+    }
+    return (
+      body.schemaGuards?.status !== 'ok' &&
+      this.config.get<string>('SCHEMA_GUARD_FAIL_READINESS') === 'true'
+    );
+  }
+
+  private async readinessBody(): Promise<ReadinessBody> {
     const [db, redis] = await Promise.allSettled([
       withTimeout(this.pingDb(), READINESS_TIMEOUT_MS, 'DB readiness check'),
       withTimeout(
@@ -185,7 +227,7 @@ export class HealthController implements OnModuleDestroy {
     const schema = this.schemaGuards.summary();
 
     if (db.status === 'rejected' || redis.status === 'rejected') {
-      throw new ServiceUnavailableException({
+      return {
         status: 'degraded',
         database:
           db.status === 'fulfilled'
@@ -196,30 +238,22 @@ export class HealthController implements OnModuleDestroy {
             ? { status: 'up', latencyMs: redis.value }
             : { status: 'down', error: UNREACHABLE },
         schemaGuards: schema,
-      });
+      };
     }
 
     const poolWaiting = this.poolWaitingCount();
-    const status: 'ok' | 'degraded' | 'busy' =
+    const status: ReadinessStatus =
       schema.status !== 'ok' ? 'degraded' : poolWaiting > 0 ? 'busy' : 'ok';
 
-    const body = {
+    return {
       status,
       database: {
-        status: 'up' as const,
+        status: 'up',
         ...(poolWaiting > 0 ? { poolWaiting } : {}),
       },
       redis: { status: 'up', latencyMs: redis.value },
       schemaGuards: schema,
     };
-
-    if (
-      schema.status !== 'ok' &&
-      this.config.get<string>('SCHEMA_GUARD_FAIL_READINESS') === 'true'
-    ) {
-      throw new ServiceUnavailableException(body);
-    }
-    return body;
   }
 
   /** Reads `waitingCount` straight off the live `pg-pool` instance behind

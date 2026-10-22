@@ -73,7 +73,11 @@ const pick = (r) => (r && r.data && (r.data.data || r.data.customer || r.data.fi
   const t2 = await new Actor('t').call('GET', '/system/health/readiness', { auth: false });
   const rem1 = Number(t1.headers['x-ratelimit-remaining']), rem2 = Number(t2.headers['x-ratelimit-remaining']);
   check('Redis: rate-limit counter decrements across requests', Number.isFinite(rem1) && Number.isFinite(rem2) && rem2 < rem1, `remaining ${rem1} -> ${rem2}`);
-  check('Redis: readiness reports redis up', t1.data && t1.data.redis && t1.data.redis.status === 'up', JSON.stringify(t1.data.redis));
+  // RL-17: the public body is { status } only; per-dependency detail needs METRICS_TOKEN.
+  const ready = process.env.METRICS_TOKEN
+    ? await new Actor('t').call('GET', '/system/health/readiness', { auth: false, headers: { Authorization: 'Bearer ' + process.env.METRICS_TOKEN } })
+    : t1;
+  check('Redis: readiness reports redis up', ready.data && (ready.data.redis ? ready.data.redis.status === 'up' : ready.status === 200 && ready.data.status !== 'degraded'), JSON.stringify(ready.data));
 
   // ---- uploads / S3
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');

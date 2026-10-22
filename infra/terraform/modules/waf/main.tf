@@ -18,10 +18,21 @@ locals {
   tags     = merge(var.tags, { Component = "waf" })
   blocking = var.mode == "block"
 
+  # RL-01/RL-02: header-aware rules only once the edge token exists. Whether it
+  # is set is not secret, so it may drive dynamic blocks.
+  edge_aware  = nonsensitive(var.edge_proxy_token != null)
+  edge_header = "x-zt-edge-token"
+
   webhook_prefixes = [
     "/api/v1/whatsapp/webhooks/",
     "/api/v1/payments/webhooks/",
   ]
+
+  # RL-02 (owner decision 2026-10-22): API-key clients often run on cloud
+  # addresses the reputation list flags (16 hits in 14 days, all on these
+  # paths). They are authenticated per key and rate-limited per key in-app,
+  # and every WAF rate rule still applies to them.
+  ip_reputation_exempt_prefix = "/api/v1/integrations/"
 }
 
 resource "aws_wafv2_web_acl" "this" {
@@ -54,6 +65,25 @@ resource "aws_wafv2_web_acl" "this" {
       managed_rule_group_statement {
         vendor_name = "AWS"
         name        = "AWSManagedRulesAmazonIpReputationList"
+
+        scope_down_statement {
+          not_statement {
+            statement {
+              byte_match_statement {
+                search_string         = local.ip_reputation_exempt_prefix
+                positional_constraint = "STARTS_WITH"
+                field_to_match {
+                  uri_path {}
+                }
+                # Express matches routes case-insensitively, so the exemption must too.
+                text_transformation {
+                  priority = 0
+                  type     = "LOWERCASE"
+                }
+              }
+            }
+          }
+        }
       }
     }
 
@@ -140,6 +170,16 @@ resource "aws_wafv2_web_acl" "this" {
           }
         }
 
+        # RL-02: 14 days of WAF logs (to 2026-10-22) show this rule matching
+        # our own API routes (/api/v1/auth, /crm, /platform, /socket.io): API
+        # clients and scripts that send no User-Agent. Not worth blocking on.
+        rule_action_override {
+          name = "NoUserAgent_HEADER"
+          action_to_use {
+            count {}
+          }
+        }
+
         scope_down_statement {
           not_statement {
             statement {
@@ -175,6 +215,11 @@ resource "aws_wafv2_web_acl" "this" {
   }
 
   # ── 4. Rate: auth endpoints, per forwarded client IP ──────────────────────
+  #    RL-02: once `edge_proxy_token` is set, X-Forwarded-For is trusted ONLY
+  #    on requests carrying the secret edge header (added by the Vercel proxy,
+  #    never by a browser). Without it a direct caller could rotate the first
+  #    XFF entry freely; those requests are counted by rule 4b on the
+  #    unforgeable source IP. Token unset = the original, header-blind rule.
   rule {
     name     = "rate-auth"
     priority = 40
@@ -202,15 +247,51 @@ resource "aws_wafv2_web_acl" "this" {
         }
 
         scope_down_statement {
-          byte_match_statement {
-            search_string         = "/api/v1/auth/"
-            positional_constraint = "STARTS_WITH"
-            field_to_match {
-              uri_path {}
+          dynamic "byte_match_statement" {
+            for_each = local.edge_aware ? [] : ["/api/v1/auth/"]
+            content {
+              search_string         = byte_match_statement.value
+              positional_constraint = "STARTS_WITH"
+              field_to_match {
+                uri_path {}
+              }
+              text_transformation {
+                priority = 0
+                type     = "LOWERCASE"
+              }
             }
-            text_transformation {
-              priority = 0
-              type     = "LOWERCASE"
+          }
+          dynamic "and_statement" {
+            for_each = local.edge_aware ? ["/api/v1/auth/"] : []
+            content {
+              statement {
+                byte_match_statement {
+                  search_string         = and_statement.value
+                  positional_constraint = "STARTS_WITH"
+                  field_to_match {
+                    uri_path {}
+                  }
+                  text_transformation {
+                    priority = 0
+                    type     = "LOWERCASE"
+                  }
+                }
+              }
+              statement {
+                byte_match_statement {
+                  search_string         = var.edge_proxy_token
+                  positional_constraint = "EXACTLY"
+                  field_to_match {
+                    single_header {
+                      name = local.edge_header
+                    }
+                  }
+                  text_transformation {
+                    priority = 0
+                    type     = "NONE"
+                  }
+                }
+              }
             }
           }
         }
@@ -224,14 +305,10 @@ resource "aws_wafv2_web_acl" "this" {
     }
   }
 
-  # ── 4b. Rate: auth endpoints, per SOURCE IP ───────────────────────────────
-  #    Rule 4 trusts the FIRST X-Forwarded-For entry. That is correct behind
-  #    Vercel, but a client calling api.<domain> directly controls that value
-  #    (the ALB appends, WAF reads the first) and can rotate it to dodge rule 4,
-  #    or omit it (NO_MATCH => never counted). This rule keys on the TCP source,
-  #    which cannot be forged. The limit is deliberately high: Vercel egress IPs
-  #    front many users, so it only trips on one source hammering /auth/. It
-  #    does not replace origin verification (WELL-ARCHITECTED-REVIEW.md SEC-01).
+  # ── 4b. Rate: auth endpoints, per SOURCE IP (unforgeable). Token unset: every
+  #    request, and the limit must stay high because Vercel's few egress IPs
+  #    front all browsers. Token set: DIRECT callers only (no edge header), so
+  #    the stricter `rate_limit_auth_direct_per_5min` applies.
   rule {
     name     = "rate-auth-source-ip"
     priority = 45
@@ -249,20 +326,60 @@ resource "aws_wafv2_web_acl" "this" {
 
     statement {
       rate_based_statement {
-        limit                 = var.rate_limit_auth_source_ip_per_5min
+        limit                 = local.edge_aware ? var.rate_limit_auth_direct_per_5min : var.rate_limit_auth_source_ip_per_5min
         evaluation_window_sec = 300
         aggregate_key_type    = "IP"
 
         scope_down_statement {
-          byte_match_statement {
-            search_string         = "/api/v1/auth/"
-            positional_constraint = "STARTS_WITH"
-            field_to_match {
-              uri_path {}
+          dynamic "byte_match_statement" {
+            for_each = local.edge_aware ? [] : ["/api/v1/auth/"]
+            content {
+              search_string         = byte_match_statement.value
+              positional_constraint = "STARTS_WITH"
+              field_to_match {
+                uri_path {}
+              }
+              text_transformation {
+                priority = 0
+                type     = "LOWERCASE"
+              }
             }
-            text_transformation {
-              priority = 0
-              type     = "LOWERCASE"
+          }
+          dynamic "and_statement" {
+            for_each = local.edge_aware ? ["/api/v1/auth/"] : []
+            content {
+              statement {
+                byte_match_statement {
+                  search_string         = and_statement.value
+                  positional_constraint = "STARTS_WITH"
+                  field_to_match {
+                    uri_path {}
+                  }
+                  text_transformation {
+                    priority = 0
+                    type     = "LOWERCASE"
+                  }
+                }
+              }
+              statement {
+                not_statement {
+                  statement {
+                    byte_match_statement {
+                      search_string         = var.edge_proxy_token
+                      positional_constraint = "EXACTLY"
+                      field_to_match {
+                        single_header {
+                          name = local.edge_header
+                        }
+                      }
+                      text_transformation {
+                        priority = 0
+                        type     = "NONE"
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
         }
@@ -276,7 +393,7 @@ resource "aws_wafv2_web_acl" "this" {
     }
   }
 
-  # ── 5. Rate: anonymous public surface (booking, guest AI REST) ────────────
+  # ── 5. Rate: public discovery/booking, per forwarded client IP ────────────
   rule {
     name     = "rate-public"
     priority = 50
@@ -303,16 +420,53 @@ resource "aws_wafv2_web_acl" "this" {
           fallback_behavior = "NO_MATCH"
         }
 
+        # RL-02: forwarded IP trusted only with the edge header (see rule 4).
         scope_down_statement {
-          byte_match_statement {
-            search_string         = "/api/v1/public/"
-            positional_constraint = "STARTS_WITH"
-            field_to_match {
-              uri_path {}
+          dynamic "byte_match_statement" {
+            for_each = local.edge_aware ? [] : ["/api/v1/public/"]
+            content {
+              search_string         = byte_match_statement.value
+              positional_constraint = "STARTS_WITH"
+              field_to_match {
+                uri_path {}
+              }
+              text_transformation {
+                priority = 0
+                type     = "LOWERCASE"
+              }
             }
-            text_transformation {
-              priority = 0
-              type     = "LOWERCASE"
+          }
+          dynamic "and_statement" {
+            for_each = local.edge_aware ? ["/api/v1/public/"] : []
+            content {
+              statement {
+                byte_match_statement {
+                  search_string         = and_statement.value
+                  positional_constraint = "STARTS_WITH"
+                  field_to_match {
+                    uri_path {}
+                  }
+                  text_transformation {
+                    priority = 0
+                    type     = "LOWERCASE"
+                  }
+                }
+              }
+              statement {
+                byte_match_statement {
+                  search_string         = var.edge_proxy_token
+                  positional_constraint = "EXACTLY"
+                  field_to_match {
+                    single_header {
+                      name = local.edge_header
+                    }
+                  }
+                  text_transformation {
+                    priority = 0
+                    type     = "NONE"
+                  }
+                }
+              }
             }
           }
         }
@@ -323,6 +477,78 @@ resource "aws_wafv2_web_acl" "this" {
       cloudwatch_metrics_enabled = true
       metric_name                = "${var.name}-rate-public"
       sampled_requests_enabled   = true
+    }
+  }
+
+  # ── 5b. Rate: public surface, DIRECT callers (no edge header), per source
+  #    IP. Exists only with the edge token: without it rule 5 already sees all.
+  dynamic "rule" {
+    for_each = local.edge_aware ? ["/api/v1/public/"] : []
+    content {
+      name     = "rate-public-source-ip"
+      priority = 55
+
+      action {
+        dynamic "block" {
+          for_each = local.blocking ? [1] : []
+          content {}
+        }
+        dynamic "count" {
+          for_each = local.blocking ? [] : [1]
+          content {}
+        }
+      }
+
+      statement {
+        rate_based_statement {
+          limit                 = var.rate_limit_public_direct_per_5min
+          evaluation_window_sec = 300
+          aggregate_key_type    = "IP"
+
+          scope_down_statement {
+            and_statement {
+              statement {
+                byte_match_statement {
+                  search_string         = rule.value
+                  positional_constraint = "STARTS_WITH"
+                  field_to_match {
+                    uri_path {}
+                  }
+                  text_transformation {
+                    priority = 0
+                    type     = "LOWERCASE"
+                  }
+                }
+              }
+              statement {
+                not_statement {
+                  statement {
+                    byte_match_statement {
+                      search_string         = var.edge_proxy_token
+                      positional_constraint = "EXACTLY"
+                      field_to_match {
+                        single_header {
+                          name = local.edge_header
+                        }
+                      }
+                      text_transformation {
+                        priority = 0
+                        type     = "NONE"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      visibility_config {
+        cloudwatch_metrics_enabled = true
+        metric_name                = "${var.name}-rate-public-source-ip"
+        sampled_requests_enabled   = true
+      }
     }
   }
 
@@ -397,6 +623,26 @@ resource "aws_wafv2_web_acl" "this" {
           header_name       = "X-Forwarded-For"
           fallback_behavior = "NO_MATCH"
         }
+
+        # RL-02: forwarded IP trusted only with the edge header (see rule 4).
+        dynamic "scope_down_statement" {
+          for_each = local.edge_aware ? [1] : []
+          content {
+            byte_match_statement {
+              search_string         = var.edge_proxy_token
+              positional_constraint = "EXACTLY"
+              field_to_match {
+                single_header {
+                  name = local.edge_header
+                }
+              }
+              text_transformation {
+                priority = 0
+                type     = "NONE"
+              }
+            }
+          }
+        }
       }
     }
 
@@ -407,22 +653,54 @@ resource "aws_wafv2_web_acl" "this" {
     }
   }
 
-  # ── 8. Rate: per SOURCE IP flood guard. Vercel egress IPs carry all REST
-  #    traffic, so this limit must stay far above aggregate REST volume.
-  #    Always COUNT until measured (S-01 / F-2).
+  # ── 8. Rate: per SOURCE IP flood guard.
+  #    Token unset: Vercel egress IPs carry all REST traffic, so this stays a
+  #    very high, COUNT-only signal (S-01 / F-2) whatever `mode` says.
+  #    Token set: Vercel traffic is excluded (counted per real client by rule
+  #    7), so it covers DIRECT callers only and follows `mode`.
   rule {
     name     = "rate-source-ip-flood"
     priority = 80
 
     action {
-      count {}
+      dynamic "block" {
+        for_each = local.blocking && local.edge_aware ? [1] : []
+        content {}
+      }
+      dynamic "count" {
+        for_each = local.blocking && local.edge_aware ? [] : [1]
+        content {}
+      }
     }
 
     statement {
       rate_based_statement {
-        limit                 = var.rate_limit_source_ip_per_5min
+        limit                 = local.edge_aware ? var.rate_limit_direct_flood_per_5min : var.rate_limit_source_ip_per_5min
         evaluation_window_sec = 300
         aggregate_key_type    = "IP"
+
+        dynamic "scope_down_statement" {
+          for_each = local.edge_aware ? [1] : []
+          content {
+            not_statement {
+              statement {
+                byte_match_statement {
+                  search_string         = var.edge_proxy_token
+                  positional_constraint = "EXACTLY"
+                  field_to_match {
+                    single_header {
+                      name = local.edge_header
+                    }
+                  }
+                  text_transformation {
+                    priority = 0
+                    type     = "NONE"
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
 
@@ -468,6 +746,12 @@ resource "aws_wafv2_web_acl_logging_configuration" "this" {
   redacted_fields {
     single_header {
       name = "cookie"
+    }
+  }
+  # RL-01: the edge token is a shared secret; never write it to the WAF log.
+  redacted_fields {
+    single_header {
+      name = "x-zt-edge-token"
     }
   }
 

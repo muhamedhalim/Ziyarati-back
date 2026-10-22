@@ -5,6 +5,8 @@ import type { Request } from 'express';
 import { ApiKeyService, AuthenticatedApiKey } from '../api-key.service';
 import { TenantContextService } from '../../../core/tenant-context/tenant-context.service';
 import { TenantRateLimiterService } from '../../../queue/tenant-rate-limiter.service';
+import { BoundedLocalCounter } from '../../../queue/bounded-local-counter';
+import { DegradedModeLogLimiter } from '../../../queue/degraded-mode-log-limiter';
 import { MetricsService } from '../../../metrics/metrics.service';
 import { ApiLogService } from '../api-log.service';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
@@ -37,9 +39,11 @@ const REJECTED_REASONS: readonly RejectedReason[] = ['missing', 'unknown', 'inac
  * (TenantRateLimiterService), namespaced `apikey:<keyId>` so it never collides
  * with a tenant's campaign-sending buckets. The limit is configurable
  * (`INTEGRATION_API_RATE_LIMIT_PER_MINUTE`, default 120/min) rather than
- * hardcoded. If Redis itself is unavailable, the request is ALLOWED — a
- * deliberate fail-open choice for this read-only API so a Redis outage never
- * takes down external integrations platform-wide; the failure is logged.
+ * hardcoded. If Redis itself is unavailable, a Redis outage must never take
+ * down external integrations platform-wide, so the request is NOT refused for
+ * that reason — but it is no longer unlimited either (RL-15): a fixed-memory
+ * per-process counter applies the same per-key rate on each task until Redis
+ * returns, and the outage is logged at a bounded rate.
  *
  * Rejections are observable (SEC-06). `ApiLoggingInterceptor` runs AFTER the
  * guards, so a 401 from here never reached `api_logs`. This guard therefore
@@ -57,6 +61,16 @@ export class ApiKeyAuthGuard implements CanActivate {
   private readonly ratePerMinute: number;
   /** keyId → last time a rejection row was written for it (per process). */
   private readonly lastRejectionLoggedAt = new Map<string, number>();
+  /** Fixed-memory per-key minute counter, used only while Redis errors (RL-15). */
+  private readonly fallback = new BoundedLocalCounter({
+    width: 4096,
+    depth: 3,
+    windowMs: 60_000,
+  });
+  private readonly degradedLog = new DegradedModeLogLimiter(
+    this.logger,
+    'Integration API rate limiter',
+  );
 
   constructor(
     private readonly apiKeys: ApiKeyService,
@@ -148,13 +162,21 @@ export class ApiKeyAuthGuard implements CanActivate {
         monthlyCap: null,
       });
     } catch (err) {
-      // Redis unavailable — fail OPEN (see class docstring) rather than 500ing
-      // every integration request over an infra dependency of a rate LIMIT.
-      this.logger.warn(
-        `Rate limiter unavailable for API key ${auth.keyId}, allowing request: ${(err as Error)?.message}`,
-      );
+      // Redis unavailable — never 500 every integration request over an infra
+      // dependency of a rate LIMIT, but never go unlimited either (RL-15): the
+      // bounded per-process counter enforces the same per-key rate per task.
+      this.degradedLog.recordFailure((err as Error)?.message ?? String(err));
+      if (
+        this.fallback.increment(`apikey:${auth.keyId}`) > this.ratePerMinute
+      ) {
+        throw new AppError(ErrorCode.RATE_LIMITED, {
+          message: 'API key rate limit exceeded — slow down and retry later',
+          publicContext: { retryAfterMs: 60_000 },
+        });
+      }
       return;
     }
+    this.degradedLog.recordSuccess();
     if (!decision.allowed) {
       const retryAfterMs = decision.reason === 'RATE' ? decision.retryAfterMs : 60_000;
       throw new AppError(ErrorCode.RATE_LIMITED, {

@@ -48,6 +48,16 @@ import { formatClientIp } from '../../common/logging/http-access-log';
 
 const BCRYPT_ROUNDS = 12;
 
+/**
+ * RL-16 — a cost-12 hash of discarded random bytes. Comparing against it when
+ * no account matches makes an unknown email cost the same bcrypt work as a
+ * wrong password, so response time no longer tells the two apart and a flood
+ * of made-up emails is no cheaper than one aimed at real accounts. It can
+ * never match: nobody knows the input.
+ */
+const DUMMY_PASSWORD_HASH =
+  '$2b$12$MHyGgAC.atV2OacDBMUA.eLCmKAdp.uvTRhtGwWIMhkYjOf3k8TIi';
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -122,6 +132,27 @@ export class AuthService {
       throw new AppError(ErrorCode.RATE_LIMITED, {
         message: 'Too many requests. Please try again later.',
       });
+    }
+    // RL-07: per-client layer, BEFORE the endpoint-wide ceiling so one
+    // client's refused attempts never use up everybody's sign-up budget (the
+    // ceiling counts every attempt, so without this a low ceiling is itself a
+    // way to block all onboarding). Opt-in: until the edge token (RL-01) is
+    // live, browser sign-ups share Vercel's egress addresses.
+    const maxPerClient = this.config.get<number>(
+      'AUTH_REGISTER_OWNER_MAX_PER_CLIENT',
+    );
+    if (maxPerClient && context?.ipAddress) {
+      const clientDecision = await this.limiter.consume(
+        AUTH_ABUSE_LIMITER_SCOPE.REGISTER_CLIENT,
+        this.abuseSubjectDigest(context.ipAddress),
+        maxPerClient,
+        registerWindowSeconds,
+      );
+      if (!clientDecision.allowed) {
+        throw new AppError(ErrorCode.RATE_LIMITED, {
+          message: 'Too many requests. Please try again later.',
+        });
+      }
     }
     const endpointDecision = await this.limiter.consume(
       AUTH_ABUSE_LIMITER_SCOPE.REGISTER_ENDPOINT,
@@ -345,8 +376,11 @@ export class AuthService {
    */
   async login(dto: LoginDto, context?: TokenContext): Promise<AuthResult> {
     const identity = this.normalizeEmail(dto.email);
+    // RL-05: the trusted-proxy-resolved address (req.ip), so a lock earned
+    // from one address does not refuse the owner on another.
+    const client = context?.ipAddress;
 
-    if (await this.loginProtection.isLocked(identity)) {
+    if (await this.loginProtection.isLocked(identity, client)) {
       throw new AppError(ErrorCode.RATE_LIMITED, {
         message: 'Too many failed login attempts. Please try again later.',
       });
@@ -360,7 +394,10 @@ export class AuthService {
         dto.tenantSlug,
       );
     } catch (err) {
-      const justEngaged = await this.loginProtection.recordFailure(identity);
+      const justEngaged = await this.loginProtection.recordFailure(
+        identity,
+        client,
+      );
       if (justEngaged) {
         await this.auditLoginProtectionEvent(
           'auth.login.protection_engaged',
@@ -371,7 +408,7 @@ export class AuthService {
       throw err;
     }
 
-    const hadState = await this.loginProtection.clear(identity);
+    const hadState = await this.loginProtection.clear(identity, client);
     if (hadState) {
       await this.auditLoginProtectionEvent(
         'auth.login.protection_cleared',
@@ -525,6 +562,9 @@ export class AuthService {
       if (await bcrypt.compare(password, user.password_hash)) {
         return user;
       }
+    }
+    if (activeCandidates.length === 0) {
+      await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
     }
     throw new AppError(ErrorCode.INVALID_CREDENTIALS);
   }

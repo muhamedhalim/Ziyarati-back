@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
+import { getClientAddress } from '../../config/trust-proxy';
 import { isIP } from 'node:net';
 
 import { ROLE } from '../../rbac/rbac.constants';
@@ -118,7 +119,7 @@ function writeAccessLog(
   }
   const bytes = Number(res.getHeader('content-length'));
   if (Number.isFinite(bytes) && bytes >= 0) record.response_bytes = bytes;
-  const ip = formatClientIp(req.ip, ipMode);
+  const ip = formatClientIp(getClientAddress(req), ipMode);
   if (ip) record.client_ip = ip;
   if (aborted) record.aborted = true;
 

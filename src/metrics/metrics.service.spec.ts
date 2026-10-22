@@ -140,6 +140,7 @@ describe('MetricsService (M14)', () => {
       'reset_account',
       'reset_invalid',
       'register_identity',
+      'register_client',
       'register_endpoint',
     ];
     const events: Array<Parameters<MetricsService['recordAuthAbuseLimiterEvent']>[1]> = [

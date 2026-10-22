@@ -20,6 +20,12 @@ declare module 'ioredis' {
   }
 }
 
+/** One failure counter and the count at which it locks. */
+interface LoginBucket {
+  key: string;
+  threshold: number;
+}
+
 /**
  * Account-aware login brute-force protection (FND-008, refactored under
  * 009-auth-abuse-resistance / ZT-002 for a bounded degraded-mode fallback).
@@ -112,17 +118,20 @@ export class LoginProtectionService {
    * MUST be called before credential validation (see AuthService.login) so
    * the response is identical whether or not the account actually exists.
    */
-  async isLocked(identity: string): Promise<boolean> {
-    const key = this.keyFor(identity);
+  async isLocked(identity: string, client?: string): Promise<boolean> {
+    const buckets = this.bucketsFor(identity, client);
     try {
-      const raw = await this.appRedis.rateLimiter.get(key);
-      const count = raw ? Number(raw) : 0;
-      const locked = count >= this.threshold();
+      let locked = false;
+      for (const bucket of buckets) {
+        const raw = await this.appRedis.rateLimiter.get(bucket.key);
+        const count = raw ? Number(raw) : 0;
+        if (count >= bucket.threshold) locked = true;
+      }
       this.degradedLog.recordSuccess();
       if (locked) this.metrics.recordLoginProtectionEvent('blocked');
       return locked;
     } catch (err) {
-      return this.degradedIsLocked(key, err);
+      return this.degradedIsLocked(buckets, err);
     }
   }
 
@@ -132,21 +141,24 @@ export class LoginProtectionService {
    * (the "engaged" transition), so the caller can write a single audit
    * record for it rather than one per failed attempt.
    */
-  async recordFailure(identity: string): Promise<boolean> {
-    const key = this.keyFor(identity);
+  async recordFailure(identity: string, client?: string): Promise<boolean> {
+    const buckets = this.bucketsFor(identity, client);
     try {
-      const count = await this.appRedis.rateLimiter.loginFailRecord(
-        key,
-        String(this.ttlSeconds()),
-      );
+      let justEngaged = false;
+      for (const bucket of buckets) {
+        const count = await this.appRedis.rateLimiter.loginFailRecord(
+          bucket.key,
+          String(this.ttlSeconds()),
+        );
+        if (count === bucket.threshold) justEngaged = true;
+      }
       this.degradedLog.recordSuccess();
-      const justEngaged = count === this.threshold();
       if (justEngaged) {
         this.metrics.recordLoginProtectionEvent('engaged');
       }
       return justEngaged;
     } catch (err) {
-      return this.degradedRecordFailure(key, err);
+      return this.degradedRecordFailure(buckets, err);
     }
   }
 
@@ -156,10 +168,10 @@ export class LoginProtectionService {
    * actually existed to clear, so the caller can audit a meaningful
    * "recovery" event rather than one row per ordinary successful login.
    */
-  async clear(identity: string): Promise<boolean> {
-    const key = this.keyFor(identity);
+  async clear(identity: string, client?: string): Promise<boolean> {
+    const keys = this.bucketsFor(identity, client).map((b) => b.key);
     try {
-      const removed = await this.appRedis.rateLimiter.del(key);
+      const removed = await this.appRedis.rateLimiter.del(...keys);
       this.degradedLog.recordSuccess();
       const hadState = Number(removed) > 0;
       if (hadState) {
@@ -197,8 +209,46 @@ export class LoginProtectionService {
     return `${cacheKeyPrefix()}auth:login:fail:${hash}`;
   }
 
+  /**
+   * RL-05 — the counters one attempt touches. Without a client address the
+   * email alone is locked at the normal threshold (the original behaviour).
+   * With one, the normal threshold applies to (email + client), so failures
+   * sent from an attacker's address no longer lock the owner out from
+   * theirs, and the email alone keeps a higher backstop so rotating
+   * addresses still cannot guess without bound.
+   *
+   * `client` must be the trusted-proxy-resolved address (`req.ip` under
+   * `TRUST_PROXY_HOPS`), never a raw header — a forgeable value would give
+   * an attacker a fresh pair bucket per request and leave only the backstop.
+   */
+  private bucketsFor(identity: string, client?: string): LoginBucket[] {
+    const emailKey = this.keyFor(identity);
+    const address = client?.trim().replace(/^::ffff:/, '');
+    if (!address) return [{ key: emailKey, threshold: this.threshold() }];
+    const normalized = identity.trim().toLowerCase();
+    const pairHash = createHash('sha256')
+      .update(`${normalized}\n${address}`)
+      .digest('hex');
+    return [
+      {
+        key: `${cacheKeyPrefix()}auth:login:fail:pair:${pairHash}`,
+        threshold: this.threshold(),
+      },
+      { key: emailKey, threshold: this.identityBackstop() },
+    ];
+  }
+
   private threshold(): number {
     return this.config.get<number>('AUTH_LOGIN_MAX_FAILED_ATTEMPTS', 5);
+  }
+
+  /** Email-wide ceiling when a client address is known; never below the per-pair threshold. */
+  private identityBackstop(): number {
+    const backstop = this.config.get<number>(
+      'AUTH_LOGIN_IDENTITY_BACKSTOP_ATTEMPTS',
+      20,
+    );
+    return Math.max(this.threshold(), backstop);
   }
 
   private ttlSeconds(): number {
@@ -206,9 +256,9 @@ export class LoginProtectionService {
   }
 
   /** Degraded-mode limit — always stricter than or equal to the healthy threshold (FR-028a). */
-  private degradedThreshold(): number {
+  private degradedThreshold(threshold: number): number {
     const factor = this.config.get<number>('AUTH_ABUSE_DEGRADED_FACTOR', 0.5);
-    return Math.max(1, Math.ceil(this.threshold() * factor));
+    return Math.max(1, Math.ceil(threshold * factor));
   }
 
   /**
@@ -219,18 +269,25 @@ export class LoginProtectionService {
    * failures (the common case: most users, most of the time) still reads as
    * not-locked, so a legitimate login is never denied by the outage itself.
    */
-  private degradedIsLocked(key: string, err: unknown): boolean {
+  private degradedIsLocked(buckets: LoginBucket[], err: unknown): boolean {
     this.failOpenIsLocked(err);
-    const locked = this.fallback.peek(key) >= this.degradedThreshold();
+    const locked = buckets.some(
+      (b) => this.fallback.peek(b.key) >= this.degradedThreshold(b.threshold),
+    );
     this.metrics.recordAuthAbuseLimiterEvent('login', locked ? 'degraded_refused' : 'degraded_allowed');
     return locked;
   }
 
   /** Degraded failure recording — increments the SAME bounded local table isLocked() reads. */
-  private degradedRecordFailure(key: string, err: unknown): boolean {
+  private degradedRecordFailure(buckets: LoginBucket[], err: unknown): boolean {
     this.failOpenRecordFailure(err);
-    const count = this.fallback.increment(key);
-    return count === this.degradedThreshold();
+    let justEngaged = false;
+    for (const bucket of buckets) {
+      const count = this.fallback.increment(bucket.key);
+      if (count === this.degradedThreshold(bucket.threshold))
+        justEngaged = true;
+    }
+    return justEngaged;
   }
 
   /**

@@ -253,5 +253,10 @@
     "method": "POST",
     "path": "/public/unsubscribe/:token",
     "reason": "Marketing unsubscribe: suppresses that one address for that one clinic's marketing mail and clears the matching customer's marketing opt-in. Authorised by the stateless HMAC-SHA256 token over (tenantId, email) (UnsubscribeTokenService.verify — constant-time compare, so it cannot be forged or altered); every invalid token is the same uniform 404. Must work without signing in, permanently (FR-E006). Idempotent; takes no body and can affect only the (tenant, address) pair the token encodes. @SkipCsrf because the credential is the token in the URL. Per-IP @Throttle; not JWT (the recipient has no account)."
+  },
+  {
+    "method": "GET",
+    "path": "/public/plans",
+    "reason": "Public pricing catalogue for the marketing /pricing page: ACTIVE subscription plans only (name, price, billing cycle, configured limits, included feature names) read through SubscriptionService.listPlans — no tenant, subscriber, invoice or finance data. Read-only; plan mutation stays on the super-admin-only /platform/billing/plans routes. Per-IP @Throttle (PUBLIC_PLANS_THROTTLE); Cache-Control: no-store so a deactivation shows on the next request."
   }
 ]

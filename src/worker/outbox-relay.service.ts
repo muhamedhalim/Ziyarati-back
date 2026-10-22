@@ -48,6 +48,8 @@ export class OutboxRelayService implements OnApplicationBootstrap, OnModuleDestr
   private running = false;
   private recovering = false;
   private stopped = false;
+  private pausedSince?: number;
+  private lastPauseLogAt?: number;
 
   private readonly intervalMs = Number(process.env.OUTBOX_POLL_MS ?? '1000');
   private readonly batchSize = Number(process.env.OUTBOX_BATCH ?? '100');
@@ -81,12 +83,33 @@ export class OutboxRelayService implements OnApplicationBootstrap, OnModuleDestr
     if (this.running || this.stopped) return;
     this.running = true;
     try {
+      // RL-08: while Redis is near maxmemory, leave rows PENDING in Postgres
+      // rather than pushing Redis into noeviction write failures. Nothing is
+      // claimed, so the next tick with headroom simply picks them up.
+      if (!(await this.queue.hasEnqueueHeadroom())) {
+        this.logPaused();
+        return;
+      }
+      this.pausedSince = undefined;
       await this.drainBatch();
     } catch (err) {
       this.logger.error(`relay tick error: ${(err as Error)?.message}`);
     } finally {
       this.running = false;
     }
+  }
+
+  /** One warning when a pause starts, then at most one a minute while it lasts. */
+  private logPaused(): void {
+    const now = Date.now();
+    if (this.pausedSince === undefined) this.pausedSince = now;
+    if (this.lastPauseLogAt !== undefined && now - this.lastPauseLogAt < 60_000)
+      return;
+    this.lastPauseLogAt = now;
+    this.logger.warn(
+      `Outbox relay paused: Redis memory is above the enqueue threshold ` +
+        `(paused for ${Math.round((now - this.pausedSince) / 1000)}s)`,
+    );
   }
 
   private async drainBatch(): Promise<void> {

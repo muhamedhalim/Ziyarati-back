@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { getClientAddress } from '../../config/trust-proxy';
 
 import { AppError } from '../errors/app-error';
 import { normalizeException } from '../errors/error-normalizer';
@@ -216,7 +217,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
       // LSA-08: the /24 (/48) network, not the full address joined to a user
       // and clinic. Browser traffic arrives through the Vercel rewrite, so for
       // it this is Vercel's shared egress network, not the end user's.
-      payload.client_ip = formatClientIp(request.ip, 'truncated');
+      payload.client_ip = formatClientIp(
+        getClientAddress(request),
+        'truncated',
+      );
       if (classification.reason) payload.reason = classification.reason;
     }
 

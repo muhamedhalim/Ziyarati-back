@@ -10,6 +10,7 @@ import { AiSessionModule } from '../ai-session/ai-session.module';
 import { AiOrchestratorService } from './ai-orchestrator.service';
 import { AgentRouterService } from './agent-router.service';
 import { AiOrchestratorController } from './ai-orchestrator.controller';
+import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
 
 /**
  * AI Orchestration layer (Phases 2, 3, 5) — the cross-channel entry point + the
@@ -28,7 +29,9 @@ import { AiOrchestratorController } from './ai-orchestrator.controller';
     AiSessionModule,
   ],
   controllers: [AiOrchestratorController],
-  providers: [AiOrchestratorService, AgentRouterService],
+  // AiWsRateLimitService: RL-11 — the REST turn endpoint shares the socket's
+  // per-user turn budget (same Redis keys), as WhatsappModule already does.
+  providers: [AiOrchestratorService, AgentRouterService, AiWsRateLimitService],
   // Re-export AiSessionModule so importers keep resolving
   // ConversationSessionService from this module, unchanged.
   exports: [AiOrchestratorService, AiSessionModule, AgentRouterService],

@@ -101,6 +101,44 @@ describe('ApiKeyAuthGuard', () => {
     ).resolves.toBe(true);
   });
 
+  // RL-15: an outage no longer means unlimited — the local counter takes over.
+  it('applies the per-key rate locally while the rate limiter errors', async () => {
+    config.get.mockReturnValue('3');
+    const g = makeGuard();
+    rateLimiter.consume.mockRejectedValue(new Error('redis down'));
+    const call = () =>
+      g.canActivate(
+        createMockExecutionContext(request({ 'x-api-key': 'zk_abc' })),
+      );
+    for (let i = 0; i < 3; i++) await expect(call()).resolves.toBe(true);
+    await expect(call()).rejects.toMatchObject({
+      code: ErrorCode.RATE_LIMITED,
+    });
+  });
+
+  it('keeps the local fallback per key — one busy key does not refuse another', async () => {
+    config.get.mockReturnValue('1');
+    const g = makeGuard();
+    rateLimiter.consume.mockRejectedValue(new Error('redis down'));
+    apiKeys.authenticate
+      .mockResolvedValueOnce(AUTH)
+      .mockResolvedValueOnce(AUTH);
+    await g.canActivate(
+      createMockExecutionContext(request({ 'x-api-key': 'zk_abc' })),
+    );
+    await expect(
+      g.canActivate(
+        createMockExecutionContext(request({ 'x-api-key': 'zk_abc' })),
+      ),
+    ).rejects.toMatchObject({ code: ErrorCode.RATE_LIMITED });
+    apiKeys.authenticate.mockResolvedValueOnce({ ...AUTH, keyId: 'k2' });
+    await expect(
+      g.canActivate(
+        createMockExecutionContext(request({ 'x-api-key': 'zk_other' })),
+      ),
+    ).resolves.toBe(true);
+  });
+
   it('reads the configured per-minute limit from ConfigService', () => {
     config.get.mockReturnValue('42');
     const g = makeGuard();

@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { TenantContextService } from '../core/tenant-context/tenant-context.service';
 import { ProducerQueues } from './producer-queues';
 import { AppRedisService } from './app-redis.service';
+import { RedisHeadroomProbe } from './redis-headroom';
 import {
   ALL_QUEUES,
   BACKOFF_EXPO_JITTER,
@@ -64,6 +65,7 @@ import {
 export class QueueService {
   private readonly logger = new Logger('QueueService');
   private readonly queues: Record<QueueName, Queue>;
+  private headroom?: RedisHeadroomProbe;
 
   constructor(
     private readonly producers: ProducerQueues,
@@ -750,6 +752,23 @@ export class QueueService {
   async kvMget(keys: string[]): Promise<(string | null)[]> {
     if (keys.length === 0) return [];
     return this.appRedis.application.mget(...keys);
+  }
+
+  /**
+   * RL-08: `false` once Redis memory is at or above
+   * `QUEUE_ENQUEUE_MAX_REDIS_MEMORY_PERCENT` of `maxmemory`. Producers that
+   * can wait (outbox relay, on-demand exports) check this and hold back.
+   * Fails open — see {@link RedisHeadroomProbe}.
+   */
+  hasEnqueueHeadroom(): Promise<boolean> {
+    this.headroom ??= new RedisHeadroomProbe({
+      info: () => this.appRedis.application.info('memory'),
+      maxPercent: this.config.get<number>(
+        'QUEUE_ENQUEUE_MAX_REDIS_MEMORY_PERCENT',
+        85,
+      ),
+    });
+    return this.headroom.hasHeadroom();
   }
 
   async redisPing(): Promise<number> {

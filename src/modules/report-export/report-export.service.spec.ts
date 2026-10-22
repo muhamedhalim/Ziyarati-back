@@ -85,7 +85,10 @@ describe('ReportExportService (T181/T183/T184)', () => {
     getSignedDownloadUrl: jest.Mock;
     deleteObject: jest.Mock;
   };
-  let queue: { enqueueAnalyticsExportGenerate: jest.Mock };
+  let queue: {
+    enqueueAnalyticsExportGenerate: jest.Mock;
+    hasEnqueueHeadroom: jest.Mock;
+  };
   let audit: {
     recordRequested: jest.Mock;
     recordCompleted: jest.Mock;
@@ -119,6 +122,7 @@ describe('ReportExportService (T181/T183/T184)', () => {
     };
     queue = {
       enqueueAnalyticsExportGenerate: jest.fn().mockResolvedValue(undefined),
+      hasEnqueueHeadroom: jest.fn().mockResolvedValue(true),
     };
     audit = {
       recordRequested: jest.fn().mockResolvedValue(undefined),
@@ -202,6 +206,59 @@ describe('ReportExportService (T181/T183/T184)', () => {
       // resolveScope is called exactly ONCE — at request time. The generation
       // path (exercised in the async/claim tests below) never calls it again.
       expect(advanced.resolveScope).toHaveBeenCalledTimes(1);
+    });
+
+    it('RL-10: refuses a new background export once the tenant has 10 unfinished ones — no row, no queue job', async () => {
+      advanced.resolveScope.mockResolvedValueOnce({ branchId: null });
+      mockQuery.mockResolvedValueOnce(
+        Array.from({ length: 1001 }, (_, i) => ({ name: `Row ${i}` })),
+      );
+      exportJobs.count.mockResolvedValueOnce(10);
+
+      await expect(
+        service.requestExport('tenant-1', USER, {
+          report: 'staff-performance',
+          filters: {},
+        }),
+      ).rejects.toMatchObject({ code: ErrorCode.RATE_LIMITED });
+
+      expect(exportJobs.count).toHaveBeenCalledWith({
+        where: expect.objectContaining({ tenant: { id: 'tenant-1' } }),
+      });
+      expect(exportJobs.save).not.toHaveBeenCalled();
+      expect(queue.enqueueAnalyticsExportGenerate).not.toHaveBeenCalled();
+    });
+
+    it('RL-08: refuses a background export while Redis has no enqueue headroom — no row, no queue job', async () => {
+      advanced.resolveScope.mockResolvedValueOnce({ branchId: null });
+      mockQuery.mockResolvedValueOnce(
+        Array.from({ length: 1001 }, (_, i) => ({ name: `Row ${i}` })),
+      );
+      exportJobs.count.mockResolvedValueOnce(0);
+      queue.hasEnqueueHeadroom.mockResolvedValueOnce(false);
+
+      await expect(
+        service.requestExport('tenant-1', USER, {
+          report: 'staff-performance',
+          filters: {},
+        }),
+      ).rejects.toMatchObject({ code: ErrorCode.SERVICE_UNAVAILABLE });
+      expect(exportJobs.save).not.toHaveBeenCalled();
+      expect(queue.enqueueAnalyticsExportGenerate).not.toHaveBeenCalled();
+    });
+
+    it('RL-10: a sync-sized export is never counted against the background cap', async () => {
+      advanced.resolveScope.mockResolvedValueOnce({ branchId: null });
+      mockQuery.mockResolvedValueOnce([{ name: 'Alice' }]);
+      exportJobs.count.mockResolvedValue(999);
+
+      const result = await service.requestExport('tenant-1', USER, {
+        report: 'staff-performance',
+        filters: {},
+      });
+
+      expect(result.kind).toBe('sync');
+      expect(exportJobs.count).not.toHaveBeenCalled();
     });
 
     it('creates a PENDING ExportJob with frozen filters/branch_scope and enqueues generation above the threshold', async () => {

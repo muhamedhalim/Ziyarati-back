@@ -387,6 +387,20 @@ export const validate = (config: Record<string, unknown>) => {
     // failure rather than a silently disabled control or a zero-TTL key.
     AUTH_LOGIN_MAX_FAILED_ATTEMPTS: Joi.number().integer().min(1).default(5),
     AUTH_LOGIN_LOCKOUT_TTL_SECONDS: Joi.number().integer().min(1).default(900),
+    // RL-05: when the client address is known the threshold above applies
+    // to (email + client); this is the email-wide ceiling across addresses.
+    AUTH_LOGIN_IDENTITY_BACKSTOP_ATTEMPTS: Joi.number()
+      .integer()
+      .min(1)
+      .default(20),
+
+    // RL-08: the outbox relay and on-demand exports hold back once Redis
+    // memory reaches this share of maxmemory (noeviction fails every write
+    // at 100 %). Kept above the 75 % CloudWatch alarm so the alarm fires first.
+    QUEUE_ENQUEUE_MAX_REDIS_MEMORY_PERCENT: Joi.number()
+      .min(50)
+      .max(99)
+      .default(85),
 
     // ── Refresh-token rotation (AUTH-001/002/003 remediation) ─────────────
     // The bounded retry window that lets a client whose refresh RESPONSE was
@@ -465,6 +479,10 @@ export const validate = (config: Record<string, unknown>) => {
     // telemetry in either repository can supply, so guessing a production
     // default here is exactly the condition that fail-fast removes.
     AUTH_REGISTER_OWNER_ENDPOINT_CEILING: Joi.number().integer().min(1),
+    // RL-07: optional per-client (resolved address) layer, checked before the
+    // ceiling above. Unset = off. Enable only once the edge token (RL-01) is
+    // live — before that, browser sign-ups share Vercel egress addresses.
+    AUTH_REGISTER_OWNER_MAX_PER_CLIENT: Joi.number().integer().min(1),
     AUTH_REGISTER_OWNER_WINDOW_SECONDS: Joi.number()
       .integer()
       .min(60)

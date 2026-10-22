@@ -28,7 +28,11 @@ import { mountApiDocs } from './config/api-docs';
 import { getAppRevision } from './common/utils/app-revision.util';
 import { registerSecurityHeaders } from './config/security-headers';
 import { buildCorsOptions, parseAllowedOrigins } from './config/cors-origins';
-import { applyTrustProxy } from './config/trust-proxy';
+import {
+  applyTrustProxy,
+  createClientAddressMiddleware,
+} from './config/trust-proxy';
+import { applyHttpTimeouts, resolveHttpTimeouts } from './config/http-timeouts';
 
 async function bootstrap() {
   // Every Logger call in the process goes through the structured logger: one
@@ -53,6 +57,13 @@ async function bootstrap() {
   // Terraform) so `req.ip` stops being the load balancer's own address for
   // every caller. A hop COUNT, never `true` — see src/config/trust-proxy.ts.
   applyTrustProxy(app, Number(app.get(ConfigService).get('TRUST_PROXY_HOPS') ?? 0));
+  // RL-19: one resolved client address per request (edge-proven client, else
+  // req.ip) for the lockout, session rows and logs — see getClientAddress().
+  app.use(
+    createClientAddressMiddleware(
+      app.get(ConfigService).get<string>('EDGE_PROXY_TOKEN') || undefined,
+    ),
+  );
 
   // ---------------- HTTP request duration (PERF-BE-002) ----------------
   // Registered before every other middleware/guard so it observes 100% of
@@ -242,6 +253,10 @@ async function bootstrap() {
 
   // ---------------- Start Server ----------------
   const port = process.env.PORT ?? 3000;
+  // RL-12: explicit server timeouts, set before the first connection is
+  // accepted. keep-alive outlives the ALB idle timeout (no 502 on reuse) and
+  // a slow request body can no longer hold a socket for Node's 300 s default.
+  applyHttpTimeouts(app.getHttpServer(), resolveHttpTimeouts());
   await app.listen(port, '0.0.0.0');
 
   // Startup is reported only once the port is bound. Dependency state is what

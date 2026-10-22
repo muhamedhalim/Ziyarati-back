@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { randomUUID } from 'node:crypto';
@@ -32,6 +32,7 @@ import { FetchExportPage, XlsxWriterService } from './xlsx-writer.service';
 import { ReportExportAuditService } from './report-export-audit.service';
 import {
   exportConcurrencyCapPerTenant,
+  exportPendingCapPerTenant,
   exportRetentionDays,
   exportSyncRowThreshold,
 } from './report-export.constants';
@@ -192,6 +193,30 @@ export class ReportExportService {
         filename: `${entry.key}.xlsx`,
         contentType: XLSX_MIME,
       };
+    }
+
+    // RL-10: bound unfinished background exports per tenant BEFORE creating
+    // another row + queue job. A count-then-insert, so a burst of concurrent
+    // requests can overshoot by at most that burst — it bounds volume, it is
+    // not an exact quota (sync exports above are unaffected).
+    const unfinished = await this.exportJobs.count({
+      where: {
+        tenant: { id: tenantId },
+        state: In([ExportJobState.PENDING, ExportJobState.RUNNING]),
+      },
+    });
+    if (unfinished >= exportPendingCapPerTenant()) {
+      throw new AppError(ErrorCode.RATE_LIMITED, {
+        message:
+          'Too many exports are already being prepared for this clinic. Download or wait for them to finish, then try again.',
+      });
+    }
+    // RL-08: an on-demand export can wait; Redis near maxmemory cannot.
+    if (!(await this.queue.hasEnqueueHeadroom())) {
+      throw new AppError(ErrorCode.SERVICE_UNAVAILABLE, {
+        message:
+          'Exports are temporarily paused while the system is busy. Please try again in a few minutes.',
+      });
     }
 
     const job = await this.exportJobs.save(

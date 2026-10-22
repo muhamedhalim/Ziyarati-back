@@ -11,6 +11,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { getClientAddress } from '../../config/trust-proxy';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -659,7 +660,8 @@ is required.
 
   private tokenContext(req: Request): TokenContext {
     return {
-      ipAddress: req.ip,
+      // RL-19: the edge-proven client when present, else req.ip.
+      ipAddress: getClientAddress(req),
       deviceInfo: req.headers['user-agent'],
     };
   }

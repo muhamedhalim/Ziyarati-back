@@ -132,6 +132,13 @@ variable "waf_mode" {
   type = string
 }
 
+# RL-01/RL-02: from TF_VAR_edge_proxy_token (zt/staging/app EDGE_PROXY_TOKEN).
+variable "edge_proxy_token" {
+  type      = string
+  default   = null
+  sensitive = true
+}
+
 variable "dmarc_rua" {
   type = string
 }

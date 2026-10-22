@@ -225,6 +225,19 @@ variable "waf_mode" {
   default     = "count"
 }
 
+variable "edge_proxy_token" {
+  description = "RL-01/RL-02: shared secret between the Vercel proxy, the WAF and the API (EDGE_PROXY_TOKEN). From TF_VAR_edge_proxy_token, sourced from Secrets Manager. null = header-blind WAF (pre-RL-02)."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
+variable "api_requests_per_target_per_min" {
+  description = "RL-03: ALBRequestCountPerTarget scaling target per API task per minute; null (default) = CPU scaling only. If enabled, ~1200 sits under the measured ~50-100 req/s per-core knee for a 0.5 vCPU task."
+  type        = number
+  default     = null
+}
+
 variable "waf_rate_limits" {
   description = "Requests per 5 min"
   type = object({

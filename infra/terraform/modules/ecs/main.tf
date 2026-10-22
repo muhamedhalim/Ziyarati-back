@@ -370,3 +370,37 @@ resource "aws_appautoscaling_policy" "cpu" {
     }
   }
 }
+
+# RL-03: optional second policy on requests per target; whichever policy
+# asks for more tasks wins (AWS evaluates target-tracking policies
+# independently). OFF by default: 14 days of production data (to 2026-10-22)
+# show the busiest windows (~430 req/min/task, mostly scanner 404s) at 1.6 %
+# CPU, so a request target would scale on cheap floods and add cost without
+# protecting anything; CPU tracking already covers the expensive routes.
+# max_count still caps either policy.
+resource "aws_appautoscaling_policy" "api_requests" {
+  count              = var.api_requests_per_target_per_min == null ? 0 : 1
+  name               = "${var.name}-api-requests"
+  policy_type        = "TargetTrackingScaling"
+  service_namespace  = aws_appautoscaling_target.this["api"].service_namespace
+  resource_id        = aws_appautoscaling_target.this["api"].resource_id
+  scalable_dimension = aws_appautoscaling_target.this["api"].scalable_dimension
+
+  target_tracking_scaling_policy_configuration {
+    target_value       = var.api_requests_per_target_per_min
+    scale_out_cooldown = 60
+    scale_in_cooldown  = 300
+
+    predefined_metric_specification {
+      predefined_metric_type = "ALBRequestCountPerTarget"
+      resource_label         = var.alb_request_count_resource_label
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.alb_request_count_resource_label != null
+      error_message = "alb_request_count_resource_label is required when api_requests_per_target_per_min is set."
+    }
+  }
+}

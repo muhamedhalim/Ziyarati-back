@@ -136,6 +136,15 @@ variable "waf_mode" {
   type = string
 }
 
+# RL-01/RL-02: from TF_VAR_edge_proxy_token, read from the EDGE_PROXY_TOKEN key
+# of zt/production/app at plan time. Never put the value in tfvars. null keeps
+# the WAF header-blind (pre-RL-02 behaviour) until the token exists.
+variable "edge_proxy_token" {
+  type      = string
+  default   = null
+  sensitive = true
+}
+
 variable "dmarc_rua" {
   type = string
 }

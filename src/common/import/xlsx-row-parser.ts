@@ -8,6 +8,10 @@ import {
   policyAllowsMime,
   type UploadPolicy,
 } from '../../modules/storage/storage.constants';
+import {
+  assertZipInflationBounded,
+  ZipInflationError,
+} from './zip-inflation-bound';
 
 /**
  * Shared `.xlsx` parsing for the owner-facing Excel imports (customers,
@@ -36,7 +40,19 @@ export interface XlsxParseOptions {
   maxRows: number;
   /** Physical worksheet rows we are willing to iterate over. */
   scanRowCeiling: number;
+  /** RL-06: total bytes the workbook may inflate to. Default {@link XLSX_MAX_UNCOMPRESSED_BYTES}. */
+  maxUncompressedBytes?: number;
 }
+
+/**
+ * RL-06 — an import workbook of a few thousand rows inflates to a few MB of
+ * XML; 16 MiB leaves wide headroom (embedded images are stored, not
+ * re-inflated, and count once) while keeping what `exceljs` then builds in
+ * memory far below the API task's 1 GB.
+ */
+export const XLSX_MAX_UNCOMPRESSED_BYTES = 16 * 1024 * 1024;
+/** A normal workbook has a few dozen parts; this only stops pathological archives. */
+export const XLSX_MAX_ZIP_ENTRIES = 1000;
 
 export interface XlsxDataRow {
   /** 1-based spreadsheet row number (header is row 1). */
@@ -146,6 +162,28 @@ export async function parseXlsxRows(
     });
   }
   assertMagicBytes(file.buffer, file.mimetype);
+
+  // RL-06: bound the INFLATED size before exceljs builds the whole workbook —
+  // the row ceiling below runs only after that, too late to protect memory.
+  try {
+    assertZipInflationBounded(file.buffer, {
+      maxUncompressedBytes:
+        opts.maxUncompressedBytes ?? XLSX_MAX_UNCOMPRESSED_BYTES,
+      maxEntries: XLSX_MAX_ZIP_ENTRIES,
+    });
+  } catch (err) {
+    if (!(err instanceof ZipInflationError)) throw err;
+    throw err.reason === 'too_large' || err.reason === 'too_many_entries'
+      ? new AppError(ErrorCode.FILE_TOO_LARGE, {
+          message:
+            'The workbook expands to more data than this import can process. Remove unused sheets, formatting or images, or split the file.',
+          cause: err,
+        })
+      : new AppError(ErrorCode.UNSUPPORTED_FILE_TYPE, {
+          message: 'The file could not be read as a valid Excel workbook.',
+          cause: err,
+        });
+  }
 
   const ExcelJS = loadExcelJs();
   const workbook = new ExcelJS.Workbook();

@@ -1,4 +1,8 @@
-import { PublicDiscoveryService } from './public-discovery.service';
+import {
+  clampPublicPage,
+  MAX_PUBLIC_PAGE,
+  PublicDiscoveryService,
+} from './public-discovery.service';
 
 /**
  * Contract C1 (BE-6) — `searchClinics()` pagination. The AI calls this method
@@ -116,5 +120,29 @@ describe('PublicDiscoveryService.searchClinics — pagination (C1, BE-6)', () =>
       expect(sql).toContain("t.approval_status = 'APPROVED'");
       expect(sql).toContain('COALESCE(ts.public_booking_enabled, false) = true');
     }
+  });
+});
+
+/** RL-14 — public listings never serve beyond MAX_PUBLIC_PAGE. */
+describe('public page clamp (RL-14)', () => {
+  it('clampPublicPage bounds to [1, MAX_PUBLIC_PAGE] and maps junk to page 1', () => {
+    expect(clampPublicPage(undefined)).toBe(1);
+    expect(clampPublicPage(Number.NaN)).toBe(1);
+    expect(clampPublicPage(-5)).toBe(1);
+    expect(clampPublicPage(3.7)).toBe(3);
+    expect(clampPublicPage(MAX_PUBLIC_PAGE + 1)).toBe(MAX_PUBLIC_PAGE);
+    expect(clampPublicPage(1e12)).toBe(MAX_PUBLIC_PAGE);
+  });
+
+  it('a huge page never reaches SQL as a huge OFFSET', async () => {
+    const { service, query } = build([], { total: 0 });
+
+    await service.searchClinics(undefined, 12, undefined, {
+      page: 1e12,
+      pageSize: 24,
+    });
+
+    const [, params] = query.mock.calls[0];
+    expect(params[3]).toBe((MAX_PUBLIC_PAGE - 1) * 24);
   });
 });

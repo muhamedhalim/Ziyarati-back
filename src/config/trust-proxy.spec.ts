@@ -4,8 +4,11 @@ import { ThrottlerGuard } from '@nestjs/throttler';
 
 import {
   applyTrustProxy,
+  createClientAddressMiddleware,
   EDGE_TOKEN_HEADER,
+  getClientAddress,
   resolveEdgeClientAddress,
+  resolveHandshakeClientAddress,
 } from './trust-proxy';
 
 /**
@@ -153,5 +156,123 @@ describe('resolveEdgeClientAddress (opt-in, proof-based per-user key)', () => {
       .set(EDGE_TOKEN_HEADER, TOKEN)
       .set('X-Forwarded-For', '198.51.100.1, 203.0.113.77');
     expect(res.body.edge).toBe('198.51.100.1');
+  });
+});
+
+/**
+ * RL-04 — Socket.IO handshakes never pass through Express, so the same trust
+ * rules are applied by hand. The peer here plays the ALB's private address.
+ */
+describe('resolveHandshakeClientAddress (RL-04)', () => {
+  const TOKEN = 'edge-secret-for-tests-only';
+  const ALB = '::ffff:10.0.1.25';
+  const hs = (xff?: string, extra: Record<string, string> = {}) => ({
+    address: ALB,
+    headers: { ...(xff ? { 'x-forwarded-for': xff } : {}), ...extra },
+  });
+
+  it('hops=0 keeps the legacy behaviour: the TCP peer, IPv4-mapped prefix removed', () => {
+    expect(
+      resolveHandshakeClientAddress(hs('198.51.100.1'), 0, undefined),
+    ).toBe('10.0.1.25');
+  });
+
+  it('hops=1 uses the ALB-appended (last) entry', () => {
+    expect(
+      resolveHandshakeClientAddress(hs('198.51.100.1'), 1, undefined),
+    ).toBe('198.51.100.1');
+  });
+
+  it('hops=1 ignores anything the caller put to the left of the ALB entry', () => {
+    expect(
+      resolveHandshakeClientAddress(
+        hs('7.7.7.7, 1.2.3.4, 198.51.100.1'),
+        1,
+        undefined,
+      ),
+    ).toBe('198.51.100.1');
+  });
+
+  it('hops=1 falls back to the peer when there is no header or the last entry is not an IP', () => {
+    expect(resolveHandshakeClientAddress(hs(), 1, undefined)).toBe('10.0.1.25');
+    expect(
+      resolveHandshakeClientAddress(
+        hs('198.51.100.1, not-an-ip'),
+        1,
+        undefined,
+      ),
+    ).toBe('10.0.1.25');
+  });
+
+  it('an edge-proven request is keyed on the client the edge forwarded', () => {
+    const res = resolveHandshakeClientAddress(
+      hs('203.0.113.5, 76.76.21.21', { [EDGE_TOKEN_HEADER]: TOKEN }),
+      1,
+      TOKEN,
+    );
+    expect(res).toBe('203.0.113.5');
+  });
+
+  it('a wrong edge token is not trusted — the ALB-appended entry is used', () => {
+    const res = resolveHandshakeClientAddress(
+      hs('203.0.113.5, 76.76.21.21', { [EDGE_TOKEN_HEADER]: 'guess' }),
+      1,
+      TOKEN,
+    );
+    expect(res).toBe('76.76.21.21');
+  });
+
+  it('no peer at all → undefined (callers skip the per-address bound)', () => {
+    expect(resolveHandshakeClientAddress({}, 1, undefined)).toBeUndefined();
+    expect(
+      resolveHandshakeClientAddress(undefined, 0, undefined),
+    ).toBeUndefined();
+  });
+});
+
+describe('createClientAddressMiddleware / getClientAddress (RL-19)', () => {
+  function appWithMiddleware(token: string | undefined) {
+    const app = express();
+    applyTrustProxy(
+      { getHttpAdapter: () => ({ getInstance: () => app }) } as never,
+      1,
+    );
+    app.use(createClientAddressMiddleware(token));
+    app.get('/ip', (req, res) =>
+      res.json({ client: getClientAddress(req) ?? null }),
+    );
+    return app;
+  }
+  // supertest's socket peer is loopback; the ALB-appended entry is last.
+  const LOOPBACK = '::ffff:127.0.0.1';
+
+  it('returns the edge-proven client when the token matches', async () => {
+    const res = await request(appWithMiddleware(TOKEN))
+      .get('/ip')
+      .set('X-Forwarded-For', `198.51.100.20, ${LOOPBACK}`)
+      .set(EDGE_TOKEN_HEADER, TOKEN);
+    expect(res.body.client).toBe('198.51.100.20');
+  });
+
+  it('falls back to req.ip (the ALB-appended entry) with a wrong token', async () => {
+    const res = await request(appWithMiddleware(TOKEN))
+      .get('/ip')
+      .set('X-Forwarded-For', '198.51.100.20, 203.0.113.5')
+      .set(EDGE_TOKEN_HEADER, 'x'.repeat(40));
+    expect(res.body.client).toBe('203.0.113.5');
+  });
+
+  it('ignores a forged left-hand entry when no token is configured', async () => {
+    const res = await request(appWithMiddleware(undefined))
+      .get('/ip')
+      .set('X-Forwarded-For', '1.2.3.4, 203.0.113.5')
+      .set(EDGE_TOKEN_HEADER, TOKEN);
+    expect(res.body.client).toBe('203.0.113.5');
+  });
+
+  it('getClientAddress falls back to req.ip when the middleware did not run', () => {
+    expect(getClientAddress({ ip: '203.0.113.9' } as never)).toBe(
+      '203.0.113.9',
+    );
   });
 });

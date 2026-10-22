@@ -230,4 +230,114 @@ describe('LoginProtectionService', () => {
     expect(logged).toContain('ECONNREFUSED'); // the real store error IS present — useful, not silent
     warnSpy.mockRestore();
   });
+  // ─────────────── RL-05: per-(email + client) lock with a backstop ───────────────
+  describe('with a client address (RL-05)', () => {
+    const BACKSTOP = 20;
+    let store: Map<string, number>;
+
+    beforeEach(() => {
+      store = new Map();
+      getCountMock.mockImplementation(async (k: string) =>
+        store.has(k) ? String(store.get(k)) : null,
+      );
+      recordFailureMock.mockImplementation(async (k: string) => {
+        const n = (store.get(k) ?? 0) + 1;
+        store.set(k, n);
+        return n;
+      });
+      delMock.mockImplementation(
+        async (...keys: string[]) => keys.filter((k) => store.delete(k)).length,
+      );
+      config.get.mockImplementation((key: string, def?: unknown) => {
+        if (key === 'AUTH_LOGIN_MAX_FAILED_ATTEMPTS') return THRESHOLD;
+        if (key === 'AUTH_LOGIN_LOCKOUT_TTL_SECONDS') return TTL_SECONDS;
+        if (key === 'AUTH_LOGIN_IDENTITY_BACKSTOP_ATTEMPTS') return BACKSTOP;
+        return def;
+      });
+    });
+
+    it('failures from one address do not lock the same email on another address', async () => {
+      for (let i = 0; i < THRESHOLD; i++)
+        await service.recordFailure('owner@b.com', '198.51.100.1');
+      await expect(
+        service.isLocked('owner@b.com', '198.51.100.1'),
+      ).resolves.toBe(true);
+      await expect(
+        service.isLocked('owner@b.com', '203.0.113.9'),
+      ).resolves.toBe(false);
+    });
+
+    it('rotating addresses still hit the email-wide backstop', async () => {
+      for (let i = 0; i < BACKSTOP - 1; i++)
+        await service.recordFailure('owner@b.com', `198.51.100.${i}`);
+      await expect(
+        service.isLocked('owner@b.com', '203.0.113.9'),
+      ).resolves.toBe(false);
+      await service.recordFailure('owner@b.com', '198.51.100.250');
+      await expect(
+        service.isLocked('owner@b.com', '203.0.113.9'),
+      ).resolves.toBe(true);
+    });
+
+    it('reports engaged once, on the failure that crosses the per-pair threshold', async () => {
+      const engaged: boolean[] = [];
+      for (let i = 0; i < THRESHOLD + 1; i++)
+        engaged.push(
+          await service.recordFailure('owner@b.com', '198.51.100.1'),
+        );
+      expect(engaged.filter(Boolean)).toHaveLength(1);
+      expect(engaged[THRESHOLD - 1]).toBe(true);
+    });
+
+    it('treats an IPv4-mapped IPv6 address as the same client', async () => {
+      for (let i = 0; i < THRESHOLD; i++)
+        await service.recordFailure('owner@b.com', '::ffff:198.51.100.1');
+      await expect(
+        service.isLocked('owner@b.com', '198.51.100.1'),
+      ).resolves.toBe(true);
+    });
+
+    it('never puts the address or the email in a key', async () => {
+      await service.recordFailure('owner@b.com', '198.51.100.1');
+      for (const k of store.keys()) {
+        expect(k).not.toContain('198.51.100.1');
+        expect(k).not.toContain('owner');
+      }
+    });
+
+    it('clear() removes both the pair and the email counter in one call', async () => {
+      await service.recordFailure('owner@b.com', '198.51.100.1');
+      await expect(service.clear('owner@b.com', '198.51.100.1')).resolves.toBe(
+        true,
+      );
+      expect(delMock).toHaveBeenCalledTimes(1);
+      expect(store.size).toBe(0);
+    });
+
+    it('a backstop configured below the per-pair threshold is raised to it', async () => {
+      config.get.mockImplementation((key: string, def?: unknown) => {
+        if (key === 'AUTH_LOGIN_MAX_FAILED_ATTEMPTS') return THRESHOLD;
+        if (key === 'AUTH_LOGIN_IDENTITY_BACKSTOP_ATTEMPTS') return 1;
+        return def;
+      });
+      await service.recordFailure('owner@b.com', '198.51.100.1');
+      await expect(
+        service.isLocked('owner@b.com', '203.0.113.9'),
+      ).resolves.toBe(false);
+    });
+
+    it('degraded mode applies the stricter local limit to the pair, not the whole email', async () => {
+      getCountMock.mockRejectedValue(new Error('ECONNREFUSED'));
+      recordFailureMock.mockRejectedValue(new Error('ECONNREFUSED'));
+      const degraded = Math.ceil(THRESHOLD * 0.5);
+      for (let i = 0; i < degraded; i++)
+        await service.recordFailure('owner@b.com', '198.51.100.1');
+      await expect(
+        service.isLocked('owner@b.com', '198.51.100.1'),
+      ).resolves.toBe(true);
+      await expect(
+        service.isLocked('owner@b.com', '203.0.113.9'),
+      ).resolves.toBe(false);
+    });
+  });
 });

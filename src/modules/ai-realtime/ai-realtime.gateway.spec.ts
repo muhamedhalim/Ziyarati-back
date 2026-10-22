@@ -500,6 +500,65 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
         expect(tiersCalled()).toEqual(['guest']);
       });
 
+      // RL-04: behind the ALB the TCP peer is the load balancer for EVERY
+      // visitor, so keying on it made one shared bucket for all guests.
+      describe('RL-04 — the per-address tier keys on the trusted client address, not the ALB', () => {
+        const ALB_PEER = '10.0.1.25';
+        const behindAlb = (
+          gw: AiRealtimeGateway,
+          clientIp: string,
+          forged?: string,
+        ) => {
+          const client = guestSocket();
+          (client as unknown as { handshake: unknown }).handshake = {
+            address: `::ffff:${ALB_PEER}`,
+            headers: {
+              'x-forwarded-for': forged ? `${forged}, ${clientIp}` : clientIp,
+            },
+          };
+          return gw.onMessage(client, { content: 'hello' });
+        };
+        const withHops = (hops: number) =>
+          new AiRealtimeGateway(
+            {} as unknown as WsAuthService,
+            orchestrator as unknown as AiOrchestratorService,
+            tenantContext,
+            handovers as unknown as HandoverRequestService,
+            handoverChat as unknown as HandoverChatService,
+            {} as unknown as AgentPresenceService,
+            conversationAccess as unknown as AiConversationAccessService,
+            entitlements as unknown as AccessControlService,
+            wsRateLimit as unknown as AiWsRateLimitService,
+            {
+              get: (k: string) => (k === 'TRUST_PROXY_HOPS' ? hops : undefined),
+            } as never,
+          );
+        const sourceKeys = () =>
+          wsRateLimit.checkAndRecord.mock.calls
+            .filter(([, tier]) => tier === 'guest-source')
+            .map(([key]) => key);
+
+        it('with TRUST_PROXY_HOPS=1, two visitors behind the same ALB get two different source keys', async () => {
+          const gw = withHops(1);
+          await behindAlb(gw, '198.51.100.1');
+          await behindAlb(gw, '198.51.100.2');
+
+          expect(sourceKeys()).toEqual(['198.51.100.1', '198.51.100.2']);
+        });
+
+        it('a forged X-Forwarded-For entry is ignored — only the ALB-appended entry counts', async () => {
+          await behindAlb(withHops(1), '198.51.100.1', '7.7.7.7');
+
+          expect(sourceKeys()).toEqual(['198.51.100.1']);
+        });
+
+        it('with TRUST_PROXY_HOPS=0 (legacy), the peer is used, normalised from its IPv4-mapped form', async () => {
+          await behindAlb(withHops(0), '198.51.100.1');
+
+          expect(sourceKeys()).toEqual([ALB_PEER]);
+        });
+      });
+
       it('STAFF are not subject to the anonymous tiers', async () => {
         await gateway.onMessage(
           withAddress(
