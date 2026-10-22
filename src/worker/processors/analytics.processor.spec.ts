@@ -157,7 +157,51 @@ describe('AnalyticsProcessor', () => {
     expect(monthly.generate).toHaveBeenCalledWith(
       't1',
       expect.objectContaining({ month: '2026-07' }),
+      { skipWhenNoActiveBranches: true },
     );
+  });
+
+  /**
+   * Root cause of the permanent red "failed" count on /platform/monitoring:
+   * the nightly sweep fans out to a tenant with no active branch, generate()
+   * threw a 422, BullMQ retried it 5x and parked it in `failed` every night
+   * (prod job ids analytics-daily-<tenant>-<date>, 2026-10-14 … 2026-10-21).
+   */
+  it('generateReport per-tenant daily for a tenant with no active branch completes as a recorded skip', async () => {
+    const skipped = { generated: [], failed: [], skipped: 'no_active_branches' };
+    daily.generate.mockResolvedValueOnce(skipped);
+    await expect(
+      processor.process({
+        name: JOB.ANALYTICS_GENERATE_REPORT,
+        data: { tenantId: 't1', kind: 'daily', date: '2026-10-21' },
+      } as any),
+    ).resolves.toEqual(skipped);
+    expect(daily.generate).toHaveBeenCalledWith(
+      't1',
+      { date: '2026-10-21', branchId: undefined },
+      { skipWhenNoActiveBranches: true },
+    );
+  });
+
+  it('generateReport per-tenant monthly for a tenant with no active branch completes as a recorded skip', async () => {
+    const skipped = { generated: [], failed: [], skipped: 'no_active_branches' };
+    monthly.generate.mockResolvedValueOnce(skipped);
+    await expect(
+      processor.process({
+        name: JOB.ANALYTICS_GENERATE_REPORT,
+        data: { tenantId: 't1', kind: 'monthly', month: '2026-10' },
+      } as any),
+    ).resolves.toEqual(skipped);
+  });
+
+  it('generateReport still throws a real (transient) error so BullMQ retries and, if exhausted, records it as failed', async () => {
+    daily.generate.mockRejectedValueOnce(new Error('connect ECONNREFUSED 10.0.0.1:5432'));
+    await expect(
+      processor.process({
+        name: JOB.ANALYTICS_GENERATE_REPORT,
+        data: { tenantId: 't1', kind: 'daily', date: '2026-10-21' },
+      } as any),
+    ).rejects.toThrow('ECONNREFUSED');
   });
 
   /**
@@ -280,6 +324,7 @@ describe('AnalyticsProcessor', () => {
       expect(daily.generate).toHaveBeenCalledWith(
         't1',
         expect.objectContaining({ date: '2026-07-01' }),
+        { skipWhenNoActiveBranches: true },
       );
     });
   });

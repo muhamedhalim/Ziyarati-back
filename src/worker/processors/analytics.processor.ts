@@ -25,6 +25,7 @@ import { DashboardMetricService } from '../../modules/analytics/dashboard-metric
 import { DailyReportService } from '../../modules/analytics/daily-report.service';
 import { MonthlyReportService } from '../../modules/analytics/monthly-report.service';
 import { AnalyticsRetentionService } from '../../modules/analytics/analytics-retention.service';
+import { BatchResult } from '../../modules/analytics/batch.util';
 import { InvoiceDocumentService } from '../../modules/payments/invoice-document.service';
 import { DocumentRendererService } from '../../modules/documents/document-renderer.service';
 import { InvoiceTemplate } from '../../modules/documents/templates/invoice.template';
@@ -112,16 +113,28 @@ export class AnalyticsProcessor extends WorkerHost {
       job.name,
       data,
       async () => {
-        if (data.kind === 'monthly') {
-          return this.monthly.generate(data.tenantId!, {
-            month: data.month!,
-            branchId: data.branchId,
-          });
+        // Per-tenant report jobs only come from the scheduled sweeps, which
+        // fan out to every active tenant — a clinic with no active branch has
+        // nothing to report, so that is a recorded skip, not a failure.
+        const options = { skipWhenNoActiveBranches: true };
+        const result =
+          data.kind === 'monthly'
+            ? await this.monthly.generate(
+                data.tenantId!,
+                { month: data.month!, branchId: data.branchId },
+                options,
+              )
+            : await this.daily.generate(
+                data.tenantId!,
+                { date: data.date!, branchId: data.branchId },
+                options,
+              );
+        if ((result as BatchResult<unknown>).skipped) {
+          this.logger.log(
+            `analytics.generateReport ${data.kind ?? 'daily'} tenant=${data.tenantId} skipped: no active branches`,
+          );
         }
-        return this.daily.generate(data.tenantId!, {
-          date: data.date!,
-          branchId: data.branchId,
-        });
+        return result;
       },
     );
   }

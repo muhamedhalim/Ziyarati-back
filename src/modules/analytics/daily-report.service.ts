@@ -14,6 +14,7 @@ import { QueryDailyReportsDto } from './dto/query-daily-reports.dto';
 import { reportDateColumn } from './analytics.constants';
 import {
   BatchResult,
+  GenerateBatchOptions,
   logBatchFailures,
   mapBranchesSettled,
 } from './batch.util';
@@ -79,6 +80,7 @@ export class DailyReportService {
   async generate(
     tenantId: string,
     dto: GenerateDailyReportDto,
+    options: GenerateBatchOptions = {},
   ): Promise<DailyReport | BatchResult<DailyReport>> {
     // Single-branch path: validate ownership, generate, surface errors directly.
     if (dto.branchId) {
@@ -98,6 +100,9 @@ export class DailyReportService {
     // Batch path: all active branches, bounded concurrency, isolate failures.
     const branchIds = await this.aggregation.listActiveBranchIds(tenantId);
     if (branchIds.length === 0) {
+      if (options.skipWhenNoActiveBranches) {
+        return { generated: [], failed: [], skipped: 'no_active_branches' };
+      }
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'No active branches to generate a report for',
       });

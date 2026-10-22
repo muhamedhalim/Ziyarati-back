@@ -90,6 +90,27 @@ describe('MonthlyReportService', () => {
     });
   });
 
+  it('with skipWhenNoActiveBranches (scheduled sweep), records a skip instead of throwing', async () => {
+    aggregation.listActiveBranchIds.mockResolvedValue([]);
+    const result = await service.generate(
+      't1',
+      { month: '2026-07' },
+      { skipWhenNoActiveBranches: true },
+    );
+    expect(result).toEqual({ generated: [], failed: [], skipped: 'no_active_branches' });
+    expect(aggregation.computeMonthlyTotals).not.toHaveBeenCalled();
+  });
+
+  it('skipWhenNoActiveBranches does not change the normal batch when branches exist', async () => {
+    const result = (await service.generate(
+      't1',
+      { month: '2026-07' },
+      { skipWhenNoActiveBranches: true },
+    )) as { generated: unknown[]; failed: unknown[]; skipped?: string };
+    expect(result.generated).toHaveLength(2);
+    expect(result.skipped).toBeUndefined();
+  });
+
   it('isolates a per-branch failure rather than aborting the whole batch', async () => {
     aggregation.computeMonthlyTotals
       .mockResolvedValueOnce({ total_appointments: 3, total_revenue: 150 })

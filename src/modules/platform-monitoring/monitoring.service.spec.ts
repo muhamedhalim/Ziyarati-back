@@ -15,6 +15,8 @@ function build(
     cached?: unknown;
     failOpen?: boolean;
     env?: Record<string, string>;
+    queueCounts?: Record<string, Record<string, number>>;
+    failedSince?: Record<string, number> | Error;
   } = {},
 ) {
   const dataSource = {
@@ -39,7 +41,11 @@ function build(
   };
 
   const queues = {
-    queueCounts: jest.fn().mockResolvedValue({}),
+    queueCounts: jest.fn().mockResolvedValue(options.queueCounts ?? {}),
+    failedSinceCounts:
+      options.failedSince instanceof Error
+        ? jest.fn().mockRejectedValue(options.failedSince)
+        : jest.fn().mockResolvedValue(options.failedSince ?? {}),
     redisPing: jest.fn().mockResolvedValue(2),
     kvGet: jest.fn().mockResolvedValue(null),
   };
@@ -219,5 +225,93 @@ describe('MonitoringService — AWS-aware provider status and data source', () =
     const { service } = build({ env: { REDIS_URL: 'not a url' } });
     const { source } = await service.overview({ bypassCache: true });
     expect(source.redisHost).toBeNull();
+  });
+});
+
+describe('MonitoringService — recent vs retained failed jobs', () => {
+  const counts = (failed: number) => ({
+    waiting: 1,
+    active: 2,
+    delayed: 3,
+    completed: 40,
+    failed,
+  });
+
+  it('reports every BullMQ state per queue exactly as read, plus the 24h failed window', async () => {
+    const { service, queues } = build({
+      queueCounts: { analytics: counts(7), email: counts(0) },
+      failedSince: { analytics: 0, email: 0 },
+    });
+
+    const result = await service.overview({ bypassCache: true });
+
+    expect(result.queues).toEqual([
+      { name: 'analytics', waiting: 1, active: 2, delayed: 3, completed: 40, failed: 7, failedRecent: 0 },
+      { name: 'email', waiting: 1, active: 2, delayed: 3, completed: 40, failed: 0, failedRecent: 0 },
+    ]);
+    expect(result.system.activeJobs).toBe(4);
+    expect(result.system.failedJobs).toBe(7);
+    expect(result.system.recentFailedJobs).toBe(0);
+    const since = queues.failedSinceCounts.mock.calls[0][0] as number;
+    expect(Date.now() - since).toBeGreaterThanOrEqual(24 * 3_600_000);
+    expect(Date.now() - since).toBeLessThan(24 * 3_600_000 + 60_000);
+  });
+
+  it('retained-only failures stay visible but are labelled as history, not as failing now', async () => {
+    const { service } = build({
+      queueCounts: { analytics: counts(7) },
+      failedSince: { analytics: 0 },
+    });
+
+    const result = await service.overview({ bypassCache: true });
+
+    expect(result.alerts).toContainEqual({
+      level: 'warning',
+      message: '7 failed background job(s) retained from the last 7 days — none in the last 24h',
+    });
+  });
+
+  it('a failure inside the 24h window is surfaced as a current problem', async () => {
+    const { service } = build({
+      queueCounts: { analytics: counts(7), email: counts(2) },
+      failedSince: { analytics: 1, email: 2 },
+    });
+
+    const result = await service.overview({ bypassCache: true });
+
+    expect(result.system.recentFailedJobs).toBe(3);
+    expect(result.alerts).toContainEqual({
+      level: 'warning',
+      message: '3 background job(s) failed in the last 24h (9 retained over 7 days)',
+    });
+  });
+
+  it('if the recent-window read fails, the window is null (unknown) and the retained count is still alerted', async () => {
+    const { service } = build({
+      queueCounts: { analytics: counts(7) },
+      failedSince: new Error('redis down'),
+    });
+
+    const result = await service.overview({ bypassCache: true });
+
+    expect(result.queues[0].failedRecent).toBeNull();
+    expect(result.system.recentFailedJobs).toBeNull();
+    expect(result.alerts).toContainEqual({
+      level: 'warning',
+      message: '7 failed background job(s)',
+    });
+  });
+
+  it('no failures anywhere → healthy', async () => {
+    const { service } = build({
+      queueCounts: { analytics: counts(0) },
+      failedSince: { analytics: 0 },
+    });
+
+    const result = await service.overview({ bypassCache: true });
+
+    expect(result.alerts).toEqual(
+      expect.not.arrayContaining([expect.objectContaining({ message: expect.stringContaining('failed background') })]),
+    );
   });
 });

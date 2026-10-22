@@ -26,6 +26,9 @@ const n = (v: unknown): number => {
 };
 const mb = (bytes: number): number => Math.round((bytes / 1024 / 1024) * 10) / 10;
 
+/** "Recent" for failed jobs — anything older is retained history (see `source()`). */
+const RECENT_FAILURE_WINDOW_HOURS = 24;
+
 /** Worker-liveness heartbeat written by the refunds reaper (reused as a proxy). */
 const WORKER_HEARTBEAT_KEY = 'payments:reaper:heartbeat';
 
@@ -74,11 +77,12 @@ export class MonitoringService {
   }
 
   private async computeOverview() {
-    const [system, traffic, webhooks, queueList] = await Promise.all([
+    const [system, traffic, webhooks, queueList, recentFailed] = await Promise.all([
       this.systemHealth(),
       this.traffic(),
       this.webhooks(),
       this.queues.queueCounts().catch(() => ({})),
+      this.recentFailedCounts(),
     ]);
 
     const queueRows = Object.entries(queueList).map(([name, c]) => ({
@@ -88,16 +92,21 @@ export class MonitoringService {
       delayed: n(c.delayed),
       completed: n(c.completed),
       failed: n(c.failed),
+      // null = the recent-window read failed; never guessed as 0.
+      failedRecent: recentFailed ? n(recentFailed[name]) : null,
     }));
     const activeJobs = queueRows.reduce((s, q) => s + q.active, 0);
     const failedJobs = queueRows.reduce((s, q) => s + q.failed, 0);
+    const recentFailedJobs = recentFailed
+      ? queueRows.reduce((s, q) => s + (q.failedRecent ?? 0), 0)
+      : null;
 
     const infrastructure = await this.infrastructure();
     const externalServices = this.externalServices();
-    const alerts = this.alerts({ system, failedJobs, traffic, webhooks });
+    const alerts = this.alerts({ system, failedJobs, recentFailedJobs, traffic, webhooks });
 
     return {
-      system: { ...system, activeJobs, failedJobs },
+      system: { ...system, activeJobs, failedJobs, recentFailedJobs },
       traffic,
       infrastructure,
       externalServices,
@@ -150,6 +159,23 @@ export class MonitoringService {
       failedJobs,
       webhookFailures,
     };
+  }
+
+  /**
+   * Jobs failed within the last {@link RECENT_FAILURE_WINDOW_HOURS} hours, per
+   * queue. `failed` alone is the whole retained failed set (7 days), so a
+   * failure that stopped happening days ago still reads as a live problem;
+   * this window is what tells the two apart. Null when the read fails.
+   */
+  private async recentFailedCounts(): Promise<Record<string, number> | null> {
+    try {
+      return await this.queues.failedSinceCounts(
+        Date.now() - RECENT_FAILURE_WINDOW_HOURS * 3_600_000,
+      );
+    } catch (err) {
+      this.logger.warn(`Recent failed-job count failed: ${(err as Error)?.message}`);
+      return null;
+    }
   }
 
   /** Failed webhook deliveries since `since` — indexed on `created_at`. */
@@ -380,6 +406,8 @@ export class MonitoringService {
       // BullMQ keeps failed jobs for 7 days (defaultJobOptions.removeOnFail), so
       // `failedJobs` is a rolling 7-day total, not "jobs failing right now".
       failedJobRetentionDays: 7,
+      // Window behind `system.recentFailedJobs` / each queue's `failedRecent`.
+      recentFailureWindowHours: RECENT_FAILURE_WINDOW_HOURS,
     };
   }
 
@@ -449,6 +477,7 @@ export class MonitoringService {
   private alerts(input: {
     system: Awaited<ReturnType<MonitoringService['systemHealth']>>;
     failedJobs: number;
+    recentFailedJobs: number | null;
     traffic: Awaited<ReturnType<MonitoringService['traffic']>>;
     webhooks: Awaited<ReturnType<MonitoringService['webhooks']>>;
   }): { level: AlertLevel; message: string }[] {
@@ -461,7 +490,22 @@ export class MonitoringService {
     if (input.system.workers.status === 'unknown') {
       out.push({ level: 'warning', message: 'No worker heartbeat detected' });
     }
-    if (input.failedJobs > 0) out.push({ level: 'warning', message: `${input.failedJobs} failed background job(s)` });
+    // Both stay visible; the message says whether failures are still happening
+    // or are only retained history (the failed set keeps 7 days).
+    if (input.recentFailedJobs != null && input.recentFailedJobs > 0) {
+      out.push({
+        level: 'warning',
+        message: `${input.recentFailedJobs} background job(s) failed in the last ${RECENT_FAILURE_WINDOW_HOURS}h (${input.failedJobs} retained over 7 days)`,
+      });
+    } else if (input.failedJobs > 0) {
+      out.push({
+        level: 'warning',
+        message:
+          input.recentFailedJobs === 0
+            ? `${input.failedJobs} failed background job(s) retained from the last 7 days — none in the last ${RECENT_FAILURE_WINDOW_HOURS}h`
+            : `${input.failedJobs} failed background job(s)`,
+      });
+    }
     if (input.traffic.errorRatePct > 5) {
       out.push({ level: 'warning', message: `5xx error rate is ${input.traffic.errorRatePct}% in the last hour` });
     }

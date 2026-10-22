@@ -1,6 +1,7 @@
 import { DailyReportService } from './daily-report.service';
 import { AnalyticsAggregationService } from './analytics-aggregation.service';
 import { AnalyticsCacheService } from './analytics-cache.service';
+import { ErrorCode } from '../../common/errors';
 
 function buildChainableQb(result: [unknown[], number] = [[], 0]) {
   const qb: Record<string, jest.Mock> = {};
@@ -88,5 +89,40 @@ describe('DailyReportService.list — cache eligibility gating (M13)', () => {
       page: 999,
       limit: 31,
     });
+  });
+});
+
+describe('DailyReportService.generate — tenant with no active branches', () => {
+  let service: DailyReportService;
+  let aggregation: { listActiveBranchIds: jest.Mock; assertBranch: jest.Mock };
+  let cache: { wrap: jest.Mock; invalidate: jest.Mock };
+
+  beforeEach(() => {
+    aggregation = {
+      listActiveBranchIds: jest.fn().mockResolvedValue([]),
+      assertBranch: jest.fn(),
+    };
+    cache = { wrap: jest.fn(), invalidate: jest.fn().mockResolvedValue(undefined) };
+    service = new DailyReportService(
+      { createQueryBuilder: jest.fn() } as any,
+      aggregation as unknown as AnalyticsAggregationService,
+      cache as unknown as AnalyticsCacheService,
+    );
+  });
+
+  it('an interactive call still refuses with 422', async () => {
+    await expect(service.generate('t1', { date: '2026-10-21' })).rejects.toMatchObject({
+      code: ErrorCode.UNPROCESSABLE_ENTITY,
+    });
+  });
+
+  it('a scheduled call (skipWhenNoActiveBranches) records a skip, writes nothing, invalidates nothing', async () => {
+    const result = await service.generate(
+      't1',
+      { date: '2026-10-21' },
+      { skipWhenNoActiveBranches: true },
+    );
+    expect(result).toEqual({ generated: [], failed: [], skipped: 'no_active_branches' });
+    expect(cache.invalidate).not.toHaveBeenCalled();
   });
 });

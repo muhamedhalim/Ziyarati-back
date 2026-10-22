@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Job, JobsOptions, Queue } from 'bullmq';
+import type { Redis } from 'ioredis';
 import { createHash } from 'node:crypto';
 
 import { TenantContextService } from '../core/tenant-context/tenant-context.service';
@@ -792,6 +793,30 @@ export class QueueService {
             ),
           ] as const,
       ),
+    );
+    return Object.fromEntries(entries);
+  }
+
+  /**
+   * Per-queue count of jobs that FAILED at or after `sinceMs`. `queueCounts()`
+   * reports everything still retained in the failed set (up to the 7-day
+   * `removeOnFail` window), which cannot tell a failure from last week apart
+   * from one a minute ago. BullMQ scores the failed sorted set by finish
+   * timestamp (moveToFinished: `ZADD failed <timestamp> <jobId>`), so this is
+   * one O(log N) ZCOUNT per queue — no job hashes are read.
+   */
+  async failedSinceCounts(sinceMs: number): Promise<Record<string, number>> {
+    const entries = await Promise.all(
+      ALL_QUEUES.map(async (name) => {
+        const queue = this.queues[name];
+        // BullMQ types its connection as a minimal IRedisClient; at runtime it
+        // is the ioredis instance, which has ZCOUNT.
+        const client = (await queue.client) as unknown as Redis;
+        return [
+          name,
+          await client.zcount(queue.keys.failed, sinceMs, '+inf'),
+        ] as const;
+      }),
     );
     return Object.fromEntries(entries);
   }

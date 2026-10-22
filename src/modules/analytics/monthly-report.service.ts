@@ -10,7 +10,12 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { AnalyticsAggregationService } from './analytics-aggregation.service';
 import { GenerateMonthlyReportDto } from './dto/generate-monthly-report.dto';
 import { QueryMonthlyReportsDto } from './dto/query-monthly-reports.dto';
-import { BatchResult, logBatchFailures, mapBranchesSettled } from './batch.util';
+import {
+  BatchResult,
+  GenerateBatchOptions,
+  logBatchFailures,
+  mapBranchesSettled,
+} from './batch.util';
 import { Page, ReportQueryBuilder } from './query/report-query.builder';
 
 /**
@@ -38,6 +43,7 @@ export class MonthlyReportService {
   async generate(
     tenantId: string,
     dto: GenerateMonthlyReportDto,
+    options: GenerateBatchOptions = {},
   ): Promise<MonthlyReport | BatchResult<MonthlyReport>> {
     if (dto.branchId) {
       const branch = await this.aggregation.assertBranch(tenantId, dto.branchId);
@@ -46,6 +52,9 @@ export class MonthlyReportService {
 
     const branchIds = await this.aggregation.listActiveBranchIds(tenantId);
     if (branchIds.length === 0) {
+      if (options.skipWhenNoActiveBranches) {
+        return { generated: [], failed: [], skipped: 'no_active_branches' };
+      }
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'No active branches to generate a report for',
       });

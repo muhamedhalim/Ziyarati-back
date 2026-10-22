@@ -22,6 +22,23 @@ export interface BatchResult<T> {
   generated: T[];
   /** Branches that failed, with the reason (for logging / client visibility). */
   failed: { branchId: string; error: string }[];
+  /**
+   * Set when the batch had nothing to do (only when the caller opted into
+   * {@link GenerateBatchOptions.skipWhenNoActiveBranches}), so a scheduled
+   * no-op is recorded as such instead of looking like an empty success.
+   */
+  skipped?: 'no_active_branches';
+}
+
+export interface GenerateBatchOptions {
+  /**
+   * Scheduled sweeps fan out to EVERY active tenant, including clinics that
+   * have no active branch yet. For them there is nothing to generate — a
+   * permanent state, not a fault — so the sweep job records a skip instead of
+   * throwing (which BullMQ would retry 5× and then park in `failed` every
+   * night). Interactive callers leave this off and still get the 422.
+   */
+  skipWhenNoActiveBranches?: boolean;
 }
 
 /**
