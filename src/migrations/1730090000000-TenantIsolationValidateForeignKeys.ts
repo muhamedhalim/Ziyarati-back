@@ -52,6 +52,14 @@ export class TenantIsolationValidateForeignKeys1730090000000 implements Migratio
     ];
 
     for (const [table, constraintName] of constraints) {
+      // An optional table (`ai_kb_embeddings` on a server without pgvector) was skipped by
+      // 1730089000000, so there is nothing to validate; every other table always exists.
+      const [{ present }] = (await q.query(
+        `SELECT to_regclass($1) IS NOT NULL AS present`,
+        [`public."${table}"`],
+      )) as Array<{ present: boolean }>;
+      if (!present) continue;
+
       // Idempotent — `convalidated` is true once VALIDATE has succeeded, so
       // a re-run (or a database where the constraint arrived already valid,
       // e.g. created fresh rather than via the NOT VALID migration) skips

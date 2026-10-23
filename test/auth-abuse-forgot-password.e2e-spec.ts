@@ -69,7 +69,7 @@ async function createSuperAdminUser(e2e: E2eApp, label: string): Promise<{ email
   const email = `super-admin-${suffix}@example.test`;
   await users.save(
     users.create({
-      tenant: null,
+      // No `tenant` on purpose: a platform super-admin row has tenantId NULL.
       email,
       full_name: `E2E Super Admin ${suffix}`,
       is_active: true,

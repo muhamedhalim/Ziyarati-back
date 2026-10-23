@@ -64,7 +64,7 @@ describe('WhatsApp surface — tools, identity binding and appointment actions',
 
     expect((branches.branches as any[]).map((b) => b.name).sort()).toEqual(['Main Branch', 'North Branch']);
     expect(info.success).toBe(true);
-    expect(info.branch.phone).toBe('+966500000111');
+    expect((info.branch as { phone: string }).phone).toBe('+966500000111');
     expect(sched.success).toBe(true);
     expect((services.services as any[]).find((s) => s.name === 'General Consultation').price).toBeNull();
     // F-26 (fixed in Phase 1): like the public tool, the WhatsApp list now names the price state, so

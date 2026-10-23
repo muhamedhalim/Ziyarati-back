@@ -40,18 +40,22 @@ function build(
       a.provider_lead_id = leadId;
       return a;
     }),
-    recordTapOnboardingStarted: jest.fn(async (a: Account) => ({
-      ...a,
-      status: S.PENDING_DOCUMENTS,
-    })),
-    recordTapOnboardingClaim: jest.fn(async () => ({
+    // Parameters are declared (even when unused) so `mock.calls` is typed with
+    // the real call shape instead of an empty tuple.
+    recordTapOnboardingStarted: jest.fn(
+      async (a: Account, _started?: { leadId: string; callbackTokenHash: string }) => ({
+        ...a,
+        status: S.PENDING_DOCUMENTS,
+      }),
+    ),
+    recordTapOnboardingClaim: jest.fn(async (_tokenHash?: string, _claim?: unknown) => ({
       id: 'm1',
       status: S.UNDER_REVIEW,
     })),
   };
   const client = {
     createLead: jest.fn(
-      async () =>
+      async (_body?: unknown) =>
         opts.lead ?? {
           ok: true,
           status: 200,
@@ -60,7 +64,7 @@ function build(
         },
     ),
     createConnect: jest.fn(
-      async () =>
+      async (_body?: unknown) =>
         opts.connect ?? {
           ok: true,
           status: 200,
@@ -458,7 +462,7 @@ describe('TapOnboardingService.start', () => {
       [undefined, 'nothing'],
     ])(
       'refuses a Connect URL that is %s (%s) — never redirect a clinic to it',
-      async (url) => {
+      async (url: string | undefined, _label: string) => {
         const { service, merchants } = build({
           connect: {
             ok: true,

@@ -2196,13 +2196,13 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
         const prev = process.env.WHATSAPP_AI_TURN_DEADLINE_MS;
         try {
           process.env.WHATSAPP_AI_TURN_DEADLINE_MS = '5000';
-          await service.handleInboundValue(TENANT, inbound('wamid-d1'));
+          await service.handleInboundValue(TENANT, inbound({ id: 'wamid-d1' }));
           const o1 = orchestrator.handleStream.mock.calls[0][1].origin;
           expect(o1.deadlineAt - Date.now()).toBeLessThanOrEqual(5000);
 
           orchestrator.handleStream.mockClear();
           process.env.WHATSAPP_AI_TURN_DEADLINE_MS = 'abc';
-          await service.handleInboundValue(TENANT, inbound('wamid-d2'));
+          await service.handleInboundValue(TENANT, inbound({ id: 'wamid-d2' }));
           const o2 = orchestrator.handleStream.mock.calls[0][1].origin;
           expect(o2.deadlineAt - Date.now()).toBeGreaterThan(55_000);
         } finally {

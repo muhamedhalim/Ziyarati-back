@@ -133,6 +133,7 @@ describe('Activity Log — receptionist → owner workflow (HTTP e2e)', () => {
     );
     const staff = await ds.getRepository(StaffProfile).save(
       ds.getRepository(StaffProfile).create({
+        public_slug: `stf-${Math.random().toString(36).slice(2, 10)}`,
         tenant: { id: tenantId } as Tenant,
         user: { id: doctorUser.id } as User,
         title: 'Dentist',
@@ -164,6 +165,7 @@ describe('Activity Log — receptionist → owner workflow (HTTP e2e)', () => {
 
     const service = await ds.getRepository(Service).save(
       ds.getRepository(Service).create({
+        public_slug: `svc-${Math.random().toString(36).slice(2, 10)}`,
         tenant: { id: tenantId } as Tenant,
         name: `Dental cleaning ${suffix}`,
         duration_minutes: 60,

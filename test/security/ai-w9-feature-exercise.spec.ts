@@ -102,13 +102,14 @@ describe('T133 — AI feature inventory, exercised for real', () => {
     seed = await seedAiAudit(harness.app, harness.dataSource);
     // Grant the seeded staff user a real permission-bearing role.
     const roles = harness.dataSource.getRepository('Role' as never);
-    const ownerRole: { id: string } = await harness.dataSource
+    const ownerRole: { id: string } | undefined = await harness.dataSource
       .createQueryBuilder()
       .select('r.id', 'id')
       .from('roles', 'r')
       .where('r.slug = :slug', { slug: 'owner' })
       .andWhere('r."tenantId" IS NULL')
       .getRawOne();
+    if (!ownerRole) throw new Error("system role 'owner' is missing — run `npm run seed` first");
     await harness.dataSource.query(
       `INSERT INTO user_roles ("userId", "roleId") VALUES ($1, $2)`,
       [seed.tenantA.staffUserId, ownerRole.id],
@@ -660,6 +661,7 @@ describe('T133 — AI feature inventory, exercised for real', () => {
       const services = harness.dataSource.getRepository(Service);
       const service = await services.save(
         services.create({
+          public_slug: `svc-${Math.random().toString(36).slice(2, 10)}`,
           tenant: { id: tenantId } as Tenant,
           name: 'T133 Consultation',
           duration_minutes: 30,
@@ -808,6 +810,7 @@ describe('T133 — AI feature inventory, exercised for real', () => {
       const services = harness.dataSource.getRepository(Service);
       const service = await services.save(
         services.create({
+          public_slug: `svc-${Math.random().toString(36).slice(2, 10)}`,
           tenant: { id: seed.tenantA.id } as Tenant,
           name: 'T133 F21 Consultation',
           duration_minutes: 30,
@@ -842,8 +845,8 @@ describe('T133 — AI feature inventory, exercised for real', () => {
       );
       const appointmentId = (booked as { appointmentId?: string }).appointmentId;
 
-      let rescheduled: { success: boolean } = { success: false };
-      let cancelled: { success: boolean } = { success: false };
+      let rescheduled: { success?: boolean } = { success: false };
+      let cancelled: { success?: boolean } = { success: false };
       if (appointmentId) {
         const newStartAt = new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString();
         rescheduled = await dispatch.execute(ctx, scriptedToolCall('reschedule_appointment', { appointmentId, newStartAt }));

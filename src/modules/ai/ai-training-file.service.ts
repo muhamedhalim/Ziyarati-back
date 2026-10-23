@@ -100,7 +100,9 @@ export class AiTrainingFileService {
     if (dto.agentId) await this.assertAgent(tenantId, dto.agentId);
     const agentId =
       dto.agentId ?? (await resolveDefaultAgentId(this.agents, tenantId));
-    this.storage.assertKeyBelongsToTenant(dto.fileUrl, tenantId);
+    // The key must be one the training-file upload produced (docType `ai_training`), not any other
+    // object under the tenant prefix such as a patient document (CR-40).
+    this.storage.assertKeyInDocType(dto.fileUrl, tenantId, 'ai_training');
     const file = this.files.create({
       tenant: { id: tenantId } as Tenant,
       agent: agentId ? ({ id: agentId } as AiAgent) : undefined,

@@ -1,4 +1,4 @@
-import { Controller, Get, Headers, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Headers, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import {
   ApiBearerAuth,
@@ -43,6 +43,20 @@ export class PlatformMonitoringController {
     // same 10s-old shared payload (mirrors PlatformDashboardController.snapshot).
     const bypassCache = /no-cache/i.test(cacheControl ?? '');
     return this.monitoring.overview({ bypassCache });
+  }
+
+  @ApiOperation({
+    summary: 'Re-drive parked (FAILED) outbox jobs (super-admin)',
+    description:
+      'Returns FAILED transactional-outbox rows to PENDING with a fresh attempt budget. Use only after the cause of the failures (typically a Redis outage) is fixed. Bounded per call (default 500, max 5000).',
+  })
+  @ApiOkResponse({ description: 'Number of rows returned to PENDING.' })
+  @Post('outbox/redrive')
+  redriveOutbox(@Query('limit') limit?: string) {
+    const parsed = limit === undefined ? undefined : Number(limit);
+    return this.monitoring.redriveFailedOutbox(
+      parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined,
+    );
   }
 
   @ApiOperation({

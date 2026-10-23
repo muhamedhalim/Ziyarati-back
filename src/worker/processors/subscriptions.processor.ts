@@ -260,10 +260,24 @@ export class SubscriptionsProcessor extends WorkerHost {
       },
       relations: { tenant: true, plan: true },
     });
+    let entered = 0;
     for (const s of due) {
-      s.status = SubscriptionStatus.PAST_DUE;
-      s.grace_started_at = now;
-      await this.subscriptions.save(s);
+      // CR-08: a conditional UPDATE, not read-then-save(). `save()` rewrites every column that
+      // differs from the row read above, so a renewal settled between that read and this write
+      // (status ACTIVE, new ends_at) was reverted to PAST_DUE with its paid period rolled back.
+      // The predicate re-states why the row was selected; if it no longer holds, nothing is
+      // written, audited or sent.
+      const res = await this.subscriptions.update(
+        {
+          id: s.id,
+          status: In([SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIAL]),
+          ends_at: LessThanOrEqual(now),
+          deleted_at: IsNull(),
+        },
+        { status: SubscriptionStatus.PAST_DUE, grace_started_at: now },
+      );
+      if (!res.affected) continue;
+      entered++;
 
       await this.audit.record({
         action: PLATFORM_ADMIN_AUDIT_ACTION.SUBSCRIPTION_ENTERED_GRACE,
@@ -288,7 +302,7 @@ export class SubscriptionsProcessor extends WorkerHost {
         idempotencyKey: `subscription:${s.id}:entered-grace:${now.toISOString()}`,
       });
     }
-    return due.length;
+    return entered;
   }
 
   // ── Point 3: "before grace end" — still PAST_DUE, grace window approaching ──
@@ -338,10 +352,21 @@ export class SubscriptionsProcessor extends WorkerHost {
       },
       relations: { tenant: true },
     });
+    let expired = 0;
     for (const s of due) {
-      s.status = SubscriptionStatus.GRACE_EXPIRED;
-      s.grace_expired_at = now;
-      await this.subscriptions.save(s);
+      // CR-08: conditional, for the same reason as transitionToGrace - a payment settled while
+      // this sweep was running must not be turned back into GRACE_EXPIRED.
+      const res = await this.subscriptions.update(
+        {
+          id: s.id,
+          status: SubscriptionStatus.PAST_DUE,
+          grace_started_at: LessThanOrEqual(cutoff),
+          deleted_at: IsNull(),
+        },
+        { status: SubscriptionStatus.GRACE_EXPIRED, grace_expired_at: now },
+      );
+      if (!res.affected) continue;
+      expired++;
 
       await this.audit.record({
         action: PLATFORM_ADMIN_AUDIT_ACTION.SUBSCRIPTION_GRACE_EXPIRED,
@@ -356,7 +381,7 @@ export class SubscriptionsProcessor extends WorkerHost {
         },
       });
     }
-    return due.length;
+    return expired;
   }
 
   // ── Shared: notify BOTH the tenant and platform operators (FR-B007e) ──

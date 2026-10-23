@@ -84,7 +84,7 @@ function build(
     ),
   };
   const apptRepo = {
-    findOne: jest.fn(async () =>
+    findOne: jest.fn(async (_query?: unknown) =>
       opts.appt === undefined ? appointment() : opts.appt,
     ),
   };

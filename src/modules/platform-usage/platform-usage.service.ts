@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
 import { AppError, ErrorCode } from '../../common/errors';
@@ -17,6 +17,7 @@ import { QueueService } from '../../queue/queue.service';
 
 import { QueryTenantUsageDto } from './dto/query-tenant-usage.dto';
 import { QueryTimelineDto } from './dto/query-timeline.dto';
+import { isPeriodMonth } from './period-month.pipe';
 import {
   PLAN_LIMIT_COLUMN,
   USAGE_METRICS,
@@ -185,6 +186,9 @@ export class PlatformUsageService {
    * Do not "simplify" this to a bare `=`.
    */
   private baseCte(period: string): string {
+    // `period` is spliced into the SQL below (the CTE is reused by queries that number their own
+    // parameters). Callers validate it at the edge; this keeps the splice safe if one forgets (CR-36).
+    if (!isPeriodMonth(period)) throw new BadRequestException('periodMonth must be YYYY-MM');
     // Utilisation reads the SAME subscription_usage rows getBreakdown reads and
     // applies the SAME ratio; it is an OVERVIEW/sort key only. Authoritative
     // per-metric numbers are always served from getBreakdown (detail/drilldown).

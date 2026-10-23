@@ -84,12 +84,20 @@ export class WsAuthService {
       sub?: string;
       tenantId?: string | null;
       guest?: boolean;
+      type?: string;
       exp?: number;
     };
     try {
       payload = await this.jwt.verifyAsync(token, { secret: accessSecret });
     } catch {
       throw new UnauthorizedException('Invalid access token');
+    }
+    // CR-44: REST (`JwtStrategy.validate`) refuses any token whose `type` is not 'access'. The
+    // handshake must too, otherwise a REFRESH token authenticates a socket whenever the two
+    // secrets happen to be equal. Guest tokens are minted without a `type` claim; they are
+    // tenant-scoped and `guest: true`, and may not carry a conflicting type either.
+    if (payload.guest ? payload.type !== undefined : payload.type !== 'access') {
+      throw new UnauthorizedException('Invalid token type');
     }
     if (!payload.sub || !payload.tenantId) {
       throw new UnauthorizedException('Token is not tenant-scoped');

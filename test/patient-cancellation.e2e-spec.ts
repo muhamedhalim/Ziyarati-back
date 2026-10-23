@@ -88,6 +88,7 @@ describe('Patient cancellation — public contract (T028, US1)', () => {
     );
     const staff = await ds.getRepository(StaffProfile).save(
       ds.getRepository(StaffProfile).create({
+        public_slug: `stf-${Math.random().toString(36).slice(2, 10)}`,
         tenant: { id: owner.tenantId } as Tenant,
         user: { id: staffUser.id } as User,
         title: `Dr ${suffix}`,
@@ -96,6 +97,7 @@ describe('Patient cancellation — public contract (T028, US1)', () => {
     );
     const service = await ds.getRepository(Service).save(
       ds.getRepository(Service).create({
+        public_slug: `svc-${Math.random().toString(36).slice(2, 10)}`,
         tenant: { id: owner.tenantId } as Tenant,
         name: `Consultation ${suffix}`,
         duration_minutes: 60,

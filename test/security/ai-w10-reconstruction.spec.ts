@@ -200,6 +200,7 @@ describe('W10 — record-based reconstruction, one allowed + one refused call pe
     // needed for AppointmentsService.create to accept it.
     const service = await ds.getRepository(Service).save(
       ds.getRepository(Service).create({
+        public_slug: `svc-${Math.random().toString(36).slice(2, 10)}`,
         tenant: { id: seed.tenantA.id } as Tenant,
         name: 'W10 Recon Consultation',
         duration_minutes: 30,

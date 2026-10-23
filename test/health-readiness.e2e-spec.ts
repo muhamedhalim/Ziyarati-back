@@ -61,8 +61,12 @@
  * schema-guard state — a missing local prerequisite, not a finding about
  * the app.
  */
+// Falls back to the suite's own Redis (ZT_E2E_REDIS_URL) before the old developer-machine default:
+// CI and a clean machine have no Redis on 6379, which made every readiness call here 503.
 process.env.REDIS_URL =
-  process.env.ZT_E2E_REDIS_URL_OVERRIDE || 'redis://127.0.0.1:6379';
+  process.env.ZT_E2E_REDIS_URL_OVERRIDE ||
+  process.env.ZT_E2E_REDIS_URL ||
+  'redis://127.0.0.1:6379';
 
 import request from 'supertest';
 import { Client } from 'pg';

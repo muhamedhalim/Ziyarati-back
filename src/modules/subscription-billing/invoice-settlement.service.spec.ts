@@ -103,6 +103,7 @@ describe('InvoiceSettlementService', () => {
     next_retry_at: null as Date | null,
     failure_reason: 'earlier decline' as string | null,
     failure_class: 'X' as string | null,
+    paid_at: undefined as Date | undefined,
     ...over,
   });
 

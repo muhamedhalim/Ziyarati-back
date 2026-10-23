@@ -17,6 +17,7 @@ function build(
     env?: Record<string, string>;
     queueCounts?: Record<string, Record<string, number>>;
     failedSince?: Record<string, number> | Error;
+    outbox?: { failed: number; pending: number; oldest_pending_seconds: number | null } | Error;
   } = {},
 ) {
   const dataSource = {
@@ -32,6 +33,10 @@ function build(
         return Promise.resolve([
           { last_success: null, last_failure: null, total: 0 },
         ]);
+      }
+      if (sql.includes('FROM outbox_jobs') && sql.includes('oldest_pending_seconds')) {
+        if (options.outbox instanceof Error) return Promise.reject(options.outbox);
+        return Promise.resolve([options.outbox ?? { failed: 0, pending: 0, oldest_pending_seconds: null }]);
       }
       if (sql.includes('tenant_verification_documents')) {
         return Promise.resolve([{ docs: 0, bytes: 0 }]);
@@ -143,6 +148,7 @@ describe('MonitoringService — overview() caching', () => {
         'collectedAt',
         'externalServices',
         'infrastructure',
+        'outbox',
         'queues',
         'source',
         'system',
@@ -299,6 +305,59 @@ describe('MonitoringService — recent vs retained failed jobs', () => {
     expect(result.alerts).toContainEqual({
       level: 'warning',
       message: '7 failed background job(s)',
+    });
+  });
+
+  describe('transactional outbox (CR-09)', () => {
+    it('a parked FAILED row is a CRITICAL alert - it is promised work that was never delivered', async () => {
+      const { service } = build({ outbox: { failed: 4, pending: 1, oldest_pending_seconds: 3 } });
+
+      const result = await service.overview({ bypassCache: true });
+
+      expect(result.outbox).toEqual({ failed: 4, pending: 1, oldestPendingSeconds: 3 });
+      expect(result.alerts).toContainEqual(
+        expect.objectContaining({ level: 'critical', message: expect.stringContaining('4 queued job(s) were parked as FAILED') }),
+      );
+    });
+
+    it('a backlog older than 5 minutes is a warning', async () => {
+      const { service } = build({ outbox: { failed: 0, pending: 9, oldest_pending_seconds: 900 } });
+
+      const result = await service.overview({ bypassCache: true });
+
+      expect(result.alerts).toContainEqual(
+        expect.objectContaining({ level: 'warning', message: expect.stringContaining('900s') }),
+      );
+    });
+
+    it('an empty outbox raises nothing', async () => {
+      const { service } = build();
+
+      const result = await service.overview({ bypassCache: true });
+
+      expect(result.outbox).toEqual({ failed: 0, pending: 0, oldestPendingSeconds: null });
+      expect(result.alerts.some((a) => /parked|queued job/.test(a.message))).toBe(false);
+    });
+
+    it('if the outbox read fails it is reported as unknown (null), never as healthy zero', async () => {
+      const { service } = build({ outbox: new Error('boom') });
+
+      const result = await service.overview({ bypassCache: true });
+
+      expect(result.outbox).toBeNull();
+    });
+
+    it('redriveFailedOutbox returns FAILED rows to PENDING with a fresh budget, bounded, and counts the rows', async () => {
+      const { service, dataSource } = build();
+      dataSource.query.mockResolvedValueOnce([[{ id: 'a' }, { id: 'b' }], 2]);
+
+      const res = await service.redriveFailedOutbox(10_000_000);
+
+      expect(res).toEqual({ redriven: 2 });
+      const [sql, params] = dataSource.query.mock.calls.at(-1)!;
+      expect(sql).toContain("SET status = 'PENDING', publish_attempts = 0, next_attempt_at = NULL");
+      expect(sql).toContain("WHERE status = 'FAILED'");
+      expect(params).toEqual([5000]); // clamped
     });
   });
 

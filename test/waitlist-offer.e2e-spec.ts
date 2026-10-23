@@ -157,6 +157,7 @@ describe('Waitlist offer safety (T154, US9, FR-W009/FR-W011)', () => {
     );
     const staff = await ds.getRepository(StaffProfile).save(
       ds.getRepository(StaffProfile).create({
+        public_slug: `stf-${Math.random().toString(36).slice(2, 10)}`,
         tenant: { id: tenantId } as Tenant,
         user: { id: staffUser.id } as User,
         title: 'Dr Waitlist',
@@ -189,6 +190,7 @@ describe('Waitlist offer safety (T154, US9, FR-W009/FR-W011)', () => {
 
     const service = await ds.getRepository(Service).save(
       ds.getRepository(Service).create({
+        public_slug: `svc-${Math.random().toString(36).slice(2, 10)}`,
         tenant: { id: tenantId } as Tenant,
         name: 'Waitlist Consultation',
         duration_minutes: 60,

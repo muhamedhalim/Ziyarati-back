@@ -85,6 +85,7 @@ describe('GET /analytics/journey/summary — SQL statement count', () => {
     );
     const staff = await ds.getRepository(StaffProfile).save(
       ds.getRepository(StaffProfile).create({
+        public_slug: `stf-${Math.random().toString(36).slice(2, 10)}`,
         user: { id: staffUser.id } as User,
         tenant: { id: owner.tenantId } as Tenant,
       }),

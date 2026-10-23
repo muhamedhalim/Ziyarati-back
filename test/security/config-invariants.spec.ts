@@ -53,7 +53,11 @@ describe('Security configuration invariants (FR-035…FR-041)', () => {
       DB_SSL_CA: '/etc/ssl/certs/db-ca.pem',
       AUTH_REGISTER_OWNER_ENDPOINT_CEILING: 1000,
       PAYMENT_PROVIDER: 'noop',
+      ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
       CREDENTIALS_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
+      // Production now refuses to boot with email enabled but no SES sender/region
+      // (env.validation.ts); this fixture is about API docs, so state email off explicitly.
+      EMAIL_ENABLED: 'false',
     };
 
     it('ENABLE_API_DOCS defaults to false when unset and NODE_ENV=production', () => {

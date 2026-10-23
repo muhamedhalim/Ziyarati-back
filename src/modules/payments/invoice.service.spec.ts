@@ -5,6 +5,8 @@ import { DataSource } from 'typeorm';
 import { InvoiceService } from './invoice.service';
 import { InvoiceItemService } from './invoice-item.service';
 import { Invoice } from '../../entities/Payments/Invoice';
+import { Customer } from '../../entities/CRM/Customer';
+import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { InvoiceStatus } from '../../entities/enums';
 import { ErrorCode } from '../../common/errors';
@@ -229,6 +231,51 @@ describe('InvoiceService — currency snapshot (T093, FR-I005)', () => {
         state: 'ready',
         documentKey: 'current-key',
       });
+    });
+  });
+
+  describe('create() - foreign ids (CR-38)', () => {
+    const repoInTx = (e: unknown) => manager.getRepository(e as never) as unknown as MockRepository;
+
+    it('refuses a customer that belongs to another tenant and creates nothing', async () => {
+      repoInTx(Customer).count.mockResolvedValueOnce(0);
+
+      await expect(
+        service.create(TENANT, { customerId: '00000000-0000-4000-8000-0000000000aa' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+
+      expect(repoInTx(Customer).count).toHaveBeenCalledWith({
+        where: { id: '00000000-0000-4000-8000-0000000000aa', tenant: { id: TENANT } },
+      });
+      expect(invoiceRepoInTx().save).not.toHaveBeenCalled();
+    });
+
+    it('refuses an appointment that belongs to another tenant and creates nothing', async () => {
+      repoInTx(Appointment).count.mockResolvedValueOnce(0);
+
+      await expect(
+        service.create(TENANT, { appointmentId: '00000000-0000-4000-8000-0000000000bb' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+
+      expect(repoInTx(Appointment).count).toHaveBeenCalledWith({
+        where: { id: '00000000-0000-4000-8000-0000000000bb', tenant: { id: TENANT } },
+      });
+      expect(invoiceRepoInTx().save).not.toHaveBeenCalled();
+    });
+
+    it('accepts a customer and appointment that belong to the caller tenant', async () => {
+      repoInTx(Customer).count.mockResolvedValueOnce(1);
+      repoInTx(Appointment).count.mockResolvedValueOnce(1);
+      settingsRepoInTx().findOne.mockResolvedValueOnce({ currency: 'SAR' });
+      invoiceRepoInTx().save.mockImplementationOnce(async (i: any) => ({ ...i, id: 'inv-9' }));
+      invoices.findOne.mockResolvedValueOnce({ id: 'inv-9', status: InvoiceStatus.DRAFT, currency: 'SAR' });
+
+      await service.create(TENANT, {
+        customerId: '00000000-0000-4000-8000-0000000000aa',
+        appointmentId: '00000000-0000-4000-8000-0000000000bb',
+      } as any);
+
+      expect(invoiceRepoInTx().save).toHaveBeenCalled();
     });
   });
 

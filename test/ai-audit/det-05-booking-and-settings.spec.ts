@@ -254,7 +254,7 @@ describe('booking integrity and settings', () => {
       const ctx = await whatsappToolCtx(rt, full, full.patientIds.x);
       const avail = await rt.dispatch.execute(ctx, call('check_availability', { branchId: full.branchId, staffId: full.doctorStaffIds.layla, daysAhead: 4, slotMinutes: 45 }));
       const book = (i: number) => rt.dispatch.execute(ctx, call('book_appointment', {
-        branchId: full.branchId, staffId: full.doctorStaffIds.layla, startAt: avail.days[0].slots[i].startAt,
+        branchId: full.branchId, staffId: full.doctorStaffIds.layla, startAt: (avail.days as Array<{ slots: Array<{ startAt: string }> }>)[0].slots[i].startAt,
         serviceIds: [full.serviceIds.cleaning], hasInsurance: false,
       }));
       await setSetting('payment_required', false); // the column DEFAULTS to true — set it explicitly

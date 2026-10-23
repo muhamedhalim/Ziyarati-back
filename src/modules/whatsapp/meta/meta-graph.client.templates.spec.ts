@@ -169,7 +169,9 @@ describe('MetaGraphClient — template lifecycle', () => {
   });
 
   describe('failure classification (what a caller may safely do next)', () => {
-    const run = () =>
+    // Resolves with the rejection; a call that unexpectedly SUCCEEDS fails the test
+    // (and keeps the return type `AppError`, not `AppError | MetaTemplateCreateResult`).
+    const run = (): Promise<AppError> =>
       client
         .createTemplate('waba-1', 'tok', {
           name: 'n',
@@ -177,7 +179,12 @@ describe('MetaGraphClient — template lifecycle', () => {
           category: 'UTILITY',
           components: [{ type: 'BODY', text: 'hi' }],
         })
-        .catch((e) => e as AppError);
+        .then(
+          () => {
+            throw new Error('expected createTemplate to reject');
+          },
+          (e) => e as AppError,
+        );
 
     it('a timeout is retriable and flagged as an ambiguous outcome kind', async () => {
       fetchMock.mockRejectedValueOnce(Object.assign(new Error('aborted'), { name: 'AbortError' }));

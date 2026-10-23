@@ -18,6 +18,8 @@ const baseInput: RecordMetricInput = {
   toolCallsCount: 0,
   toolSuccessCount: 0,
   toolFailureCount: 0,
+  toolCallsTruncated: 0,
+  promptDisclosureBlocked: false,
   toolExecMs: 0,
   totalLatencyMs: 50,
 };

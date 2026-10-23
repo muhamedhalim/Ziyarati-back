@@ -51,6 +51,11 @@
   },
   {
     "method": "GET",
+    "path": "/public/discovery/categories",
+    "reason": "Public clinic-discovery directory (marketplace contract C13) — clinic-managed service categories folded across ELIGIBLE clinics, throttled, no tenant-private data."
+  },
+  {
+    "method": "GET",
     "path": "/public/discovery/cities",
     "reason": "Public clinic-discovery directory — intentionally open marketing/discovery surface, no tenant-private data."
   },

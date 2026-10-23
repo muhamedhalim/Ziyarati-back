@@ -192,6 +192,36 @@ describe('PublicDiscoveryController.doctorAvatar', () => {
     expect(pipe).toHaveBeenCalledWith(res);
   });
 
+  it.each(['application/pdf', 'image/svg+xml', 'text/html', 'application/octet-stream'])(
+    'refuses to serve a stored object of type %s - same 404 as no avatar, body never piped (CR-37)',
+    async (contentType) => {
+      const discovery = {
+        resolveDoctorAvatarSource: jest.fn().mockResolvedValue({
+          tenantId: 't1',
+          storageKey: 't1/customer_files/patient-scan.pdf',
+        }),
+      };
+      const pipe = jest.fn();
+      const destroy = jest.fn();
+      const storage = {
+        getObjectStream: jest.fn().mockResolvedValue({
+          body: { pipe, destroy },
+          contentType,
+          contentLength: 10,
+        }),
+      };
+      const controller = new PublicDiscoveryController(discovery as never, storage as never);
+      const res = makeRes();
+
+      await expect(controller.doctorAvatar('dr-x', res as never)).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
+      expect(pipe).not.toHaveBeenCalled();
+      expect(destroy).toHaveBeenCalled();
+      expect(res.status).not.toHaveBeenCalled();
+    },
+  );
+
   it('never sets a Location header — the proxy STREAMS, it never redirects to the storage URL (C12)', async () => {
     const discovery = {
       resolveDoctorAvatarSource: jest.fn().mockResolvedValue({

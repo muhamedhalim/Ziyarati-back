@@ -77,12 +77,13 @@ export class MonitoringService {
   }
 
   private async computeOverview() {
-    const [system, traffic, webhooks, queueList, recentFailed] = await Promise.all([
+    const [system, traffic, webhooks, queueList, recentFailed, outbox] = await Promise.all([
       this.systemHealth(),
       this.traffic(),
       this.webhooks(),
       this.queues.queueCounts().catch(() => ({})),
       this.recentFailedCounts(),
+      this.outboxHealth(),
     ]);
 
     const queueRows = Object.entries(queueList).map(([name, c]) => ({
@@ -103,7 +104,7 @@ export class MonitoringService {
 
     const infrastructure = await this.infrastructure();
     const externalServices = this.externalServices();
-    const alerts = this.alerts({ system, failedJobs, recentFailedJobs, traffic, webhooks });
+    const alerts = this.alerts({ system, failedJobs, recentFailedJobs, traffic, webhooks, outbox });
 
     return {
       system: { ...system, activeJobs, failedJobs, recentFailedJobs },
@@ -111,6 +112,7 @@ export class MonitoringService {
       infrastructure,
       externalServices,
       queues: queueRows,
+      outbox,
       webhooks,
       alerts,
       source: this.source(),
@@ -176,6 +178,59 @@ export class MonitoringService {
       this.logger.warn(`Recent failed-job count failed: ${(err as Error)?.message}`);
       return null;
     }
+  }
+
+  /**
+   * Transactional-outbox backlog (CR-09). FAILED rows are queued work - payment outcomes,
+   * reminders, webhooks - that exhausted its retries and was parked; nothing else surfaces them.
+   * Null when the read fails; never guessed as 0.
+   */
+  private async outboxHealth(): Promise<{
+    failed: number;
+    pending: number;
+    oldestPendingSeconds: number | null;
+  } | null> {
+    try {
+      const [row] = await this.dataSource.query(
+        `SELECT COUNT(*) FILTER (WHERE status = 'FAILED')::int AS failed,
+                COUNT(*) FILTER (WHERE status IN ('PENDING','PUBLISHING'))::int AS pending,
+                EXTRACT(EPOCH FROM (now() - MIN(created_at) FILTER (WHERE status = 'PENDING')))::int AS oldest_pending_seconds
+           FROM outbox_jobs
+          WHERE status IN ('PENDING','PUBLISHING','FAILED')`,
+      );
+      return {
+        failed: n(row?.failed),
+        pending: n(row?.pending),
+        oldestPendingSeconds:
+          row?.oldest_pending_seconds == null ? null : n(row.oldest_pending_seconds),
+      };
+    } catch (err) {
+      this.logger.warn(`Outbox health read failed: ${(err as Error)?.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Put parked (FAILED) outbox rows back in the queue with a fresh attempt budget. Only meaningful
+   * once the cause of the failures is fixed. Bounded per call so a large backlog is released in
+   * steps rather than all at once.
+   */
+  async redriveFailedOutbox(limit = 500): Promise<{ redriven: number }> {
+    const bounded = Math.min(Math.max(Math.floor(limit), 1), 5000);
+    const result = (await this.dataSource.query(
+      `UPDATE outbox_jobs
+          SET status = 'PENDING', publish_attempts = 0, next_attempt_at = NULL, claimed_at = NULL
+        WHERE id IN (
+          SELECT id FROM outbox_jobs WHERE status = 'FAILED' ORDER BY created_at ASC LIMIT $1
+        )
+    RETURNING id`,
+      [bounded],
+    )) as unknown;
+    // TypeORM's raw query() on an UPDATE ... RETURNING resolves to [rows, affectedCount].
+    const rows = Array.isArray(result) && Array.isArray(result[0]) ? result[0] : result;
+    const redriven = Array.isArray(rows) ? rows.length : 0;
+    this.logger.warn(`Outbox re-drive: ${redriven} FAILED row(s) returned to PENDING`);
+    return { redriven };
   }
 
   /** Failed webhook deliveries since `since` — indexed on `created_at`. */
@@ -480,8 +535,21 @@ export class MonitoringService {
     recentFailedJobs: number | null;
     traffic: Awaited<ReturnType<MonitoringService['traffic']>>;
     webhooks: Awaited<ReturnType<MonitoringService['webhooks']>>;
+    outbox: Awaited<ReturnType<MonitoringService['outboxHealth']>>;
   }): { level: AlertLevel; message: string }[] {
     const out: { level: AlertLevel; message: string }[] = [];
+    if (input.outbox && input.outbox.failed > 0) {
+      out.push({
+        level: 'critical',
+        message: `${input.outbox.failed} queued job(s) were parked as FAILED after exhausting retries - work that was promised (payment outcomes, reminders, webhooks) was not delivered. Fix the cause, then re-drive.`,
+      });
+    }
+    if (input.outbox && (input.outbox.oldestPendingSeconds ?? 0) > 300) {
+      out.push({
+        level: 'warning',
+        message: `The oldest queued job has been waiting ${input.outbox.oldestPendingSeconds}s to be published`,
+      });
+    }
     if (input.system.database.status === 'down') out.push({ level: 'critical', message: 'Database is unreachable' });
     if (input.system.redis.status === 'down') out.push({ level: 'critical', message: 'Redis is unreachable' });
     if (input.system.workers.status === 'degraded') {

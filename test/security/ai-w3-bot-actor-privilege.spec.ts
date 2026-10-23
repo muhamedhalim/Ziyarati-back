@@ -55,7 +55,7 @@ describe('W3 — bot-actor least privilege for tenant-behalf writes (T100)', () 
 
     const services = harness.dataSource.getRepository(Service);
     const service = await services.save(
-      services.create({ tenant: { id: seed.tenantA.id } as Tenant, name: 'T100 Service', duration_minutes: 30, base_price: 40 }),
+      services.create({ public_slug: `svc-${Math.random().toString(36).slice(2, 10)}`, tenant: { id: seed.tenantA.id } as Tenant, name: 'T100 Service', duration_minutes: 30, base_price: 40 }),
     );
     serviceId = service.id;
 

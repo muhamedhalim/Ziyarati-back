@@ -45,6 +45,7 @@ import {
 } from './auth-abuse.constants';
 import { LOG_EVENT } from '../../common/logging/log-events';
 import { formatClientIp } from '../../common/logging/http-access-log';
+import { constantTimeEqual } from '../../common/utils/constant-time.util';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -673,7 +674,7 @@ export class AuthService {
     // The row exists but the presented VALUE is not the one it was issued for.
     // The bearer never held this token, so this says nothing about the
     // legitimate holder's session — reject without touching it.
-    if (stored.token_hash !== tokenHash) {
+    if (!constantTimeEqual(stored.token_hash, tokenHash)) {
       throw new AppError(ErrorCode.INVALID_REFRESH_TOKEN);
     }
 

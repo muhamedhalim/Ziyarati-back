@@ -467,7 +467,7 @@ describe('Default system prompt — agent-less turns are no longer instruction-f
 
     await f.turn();
 
-    const sent = f.systemMessage();
+    const sent = f.systemMessage() ?? '';
     // The core comes first, whole — the safety, scope and no-invention rules survive.
     expect(sent.startsWith(DEFAULT_ASSISTANT_SYSTEM_PROMPT)).toBe(true);
     expect(sent).toContain('CLINICAL SAFETY');

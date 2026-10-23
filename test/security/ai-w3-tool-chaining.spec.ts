@@ -61,7 +61,7 @@ describe('W3 — tool chaining, cumulative effect of low-risk calls (T096)', () 
 
     const services = harness.dataSource.getRepository(Service);
     const service = await services.save(
-      services.create({ tenant: { id: seed.tenantA.id } as Tenant, name: 'T096 Synthetic Service', duration_minutes: 30, base_price: 50 }),
+      services.create({ public_slug: `svc-${Math.random().toString(36).slice(2, 10)}`, tenant: { id: seed.tenantA.id } as Tenant, name: 'T096 Synthetic Service', duration_minutes: 30, base_price: 50 }),
     );
     serviceId = service.id;
 

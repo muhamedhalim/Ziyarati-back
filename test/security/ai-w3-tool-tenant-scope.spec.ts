@@ -65,7 +65,7 @@ describe('W3 — mutating tools, correct role, FOREIGN tenant resource (T091)', 
     // creates none).
     const services = harness.dataSource.getRepository(Service);
     const service = await services.save(
-      services.create({ tenant: { id: seed.tenantA.id } as Tenant, name: 'T091 Synthetic Service', duration_minutes: 30, base_price: 50 }),
+      services.create({ public_slug: `svc-${Math.random().toString(36).slice(2, 10)}`, tenant: { id: seed.tenantA.id } as Tenant, name: 'T091 Synthetic Service', duration_minutes: 30, base_price: 50 }),
     );
     tenantAServiceId = service.id;
 

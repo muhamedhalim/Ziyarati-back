@@ -14,6 +14,7 @@ import { RequirePermissions } from '../../../src/modules/auth/decorators/permiss
 import { RequireAnyPermission } from '../../../src/modules/auth/decorators/require-any-permission.decorator';
 import { ApiKeyProtected } from '../../../src/modules/platform/decorators/api-key-protected.decorator';
 import { INTEGRATION_SCOPE } from '../../../src/modules/platform/integration-scopes.constants';
+import type { RoleSlug } from '../../../src/rbac/rbac.constants';
 
 class FixtureGuardA implements CanActivate {
   canActivate(_ctx: ExecutionContext): boolean {
@@ -50,7 +51,8 @@ class FixtureGuardB implements CanActivate {
  * to the exact function object the decorator wrapped, never inferred from
  * source position.
  */
-@Roles('clinic_admin')
+// 'clinic_admin' is a synthetic slug (nest-route-metadata.spec.ts asserts the exact string), not a real RoleSlug.
+@Roles('clinic_admin' as RoleSlug)
 @Controller('fixture/roles-and-public')
 export class RolesControllerLevelPublicMethodFixture {
   @Public()

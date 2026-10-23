@@ -64,6 +64,8 @@ describe('StaffService', () => {
   };
   let storage: {
     assertKeyBelongsToTenant: jest.Mock;
+    assertAvatarKey: jest.Mock;
+    isAvatarKey: jest.Mock;
     getSignedDownloadUrl: jest.Mock;
     deleteObject: jest.Mock;
   };
@@ -106,8 +108,17 @@ describe('StaffService', () => {
       assertCountWithinLimit: jest.fn().mockResolvedValue(undefined),
       assertUserSeatWithinLimit: jest.fn().mockResolvedValue(undefined),
     };
+    // The avatar-key binding is the behaviour under test (CR-37), so run the REAL implementation
+    // over a tenant gate that mirrors the real prefix rule.
+    const keyGate = Object.create(StorageService.prototype) as StorageService;
     storage = {
       assertKeyBelongsToTenant: jest.fn(),
+      assertAvatarKey: jest.fn((key: string, tenantId: string) =>
+        StorageService.prototype.assertAvatarKey.call(keyGate, key, tenantId),
+      ),
+      isAvatarKey: jest.fn((key: string, tenantId: string) =>
+        StorageService.prototype.isAvatarKey.call(keyGate, key, tenantId),
+      ),
       getSignedDownloadUrl: jest
         .fn()
         .mockResolvedValue('https://signed.example.com/avatar'),
@@ -416,45 +427,90 @@ describe('StaffService', () => {
       await service.createWithNewUser(TENANT, {
         email: 'new.staff@clinic.com',
         fullName: 'New Staff',
-        avatarStorageKey: `${TENANT}/staff-avatar/x.jpg`,
+        avatarStorageKey: `${TENANT}/staff_avatar/x.jpg`,
       } as any);
 
-      expect(storage.assertKeyBelongsToTenant).toHaveBeenCalledWith(
-        `${TENANT}/staff-avatar/x.jpg`,
+      expect(storage.assertAvatarKey).toHaveBeenCalledWith(
+        `${TENANT}/staff_avatar/x.jpg`,
         TENANT,
       );
+    });
+
+    it('createWithNewUser refuses a non-avatar key under the tenant prefix (CR-37)', async () => {
+      await expect(
+        service.createWithNewUser(TENANT, {
+          email: 'new.staff@clinic.com',
+          fullName: 'New Staff',
+          avatarStorageKey: `${TENANT}/customer_files/patient-scan.pdf`,
+        } as any),
+      ).rejects.toMatchObject({ code: expect.anything() });
+      expect(authService.createUserWithRole).not.toHaveBeenCalled();
     });
 
     it('update replaces the avatar and best-effort deletes the old object', async () => {
       staff.findOne
         .mockResolvedValueOnce({
           id: 'staff-1',
-          avatar_storage_key: 'old-key.jpg',
+          avatar_storage_key: `${TENANT}/staff_avatar/old-key.jpg`,
         }) // initial load
         .mockResolvedValueOnce({
           id: 'staff-1',
-          avatar_storage_key: 'new-key.jpg',
+          avatar_storage_key: `${TENANT}/staff_avatar/new-key.jpg`,
         }); // reload
 
       await service.update(TENANT, 'staff-1', {
-        avatarStorageKey: 'new-key.jpg',
+        avatarStorageKey: `${TENANT}/staff_avatar/new-key.jpg`,
       } as any);
 
-      expect(storage.assertKeyBelongsToTenant).toHaveBeenCalledWith(
-        'new-key.jpg',
+      expect(storage.assertAvatarKey).toHaveBeenCalledWith(
+        `${TENANT}/staff_avatar/new-key.jpg`,
         TENANT,
       );
       expect(staff.save).toHaveBeenCalledWith(
-        expect.objectContaining({ avatar_storage_key: 'new-key.jpg' }),
+        expect.objectContaining({ avatar_storage_key: `${TENANT}/staff_avatar/new-key.jpg` }),
       );
-      expect(storage.deleteObject).toHaveBeenCalledWith('old-key.jpg', TENANT);
+      expect(storage.deleteObject).toHaveBeenCalledWith(`${TENANT}/staff_avatar/old-key.jpg`, TENANT);
+    });
+
+    it('update refuses to point the avatar at a non-avatar object and saves nothing (CR-37)', async () => {
+      staff.findOne.mockResolvedValueOnce({
+        id: 'staff-1',
+        avatar_storage_key: `${TENANT}/staff_avatar/old-key.jpg`,
+      });
+
+      await expect(
+        service.update(TENANT, 'staff-1', {
+          avatarStorageKey: `${TENANT}/customer_files/patient-scan.pdf`,
+        } as any),
+      ).rejects.toBeDefined();
+      await expect(
+        service.update(TENANT, 'staff-1', { avatarStorageKey: 'OTHER-TENANT/staff_avatar/x.jpg' } as any),
+      ).rejects.toBeDefined();
+      expect(staff.save).not.toHaveBeenCalled();
+      expect(storage.deleteObject).not.toHaveBeenCalled();
+    });
+
+    it('replacing a legacy non-avatar key never deletes that object (CR-37)', async () => {
+      staff.findOne
+        .mockResolvedValueOnce({
+          id: 'staff-1',
+          avatar_storage_key: `${TENANT}/customer_files/patient-scan.pdf`,
+        })
+        .mockResolvedValueOnce({ id: 'staff-1', avatar_storage_key: null });
+
+      await service.update(TENANT, 'staff-1', { avatarStorageKey: null } as any);
+
+      expect(staff.save).toHaveBeenCalledWith(
+        expect.objectContaining({ avatar_storage_key: null }),
+      );
+      expect(storage.deleteObject).not.toHaveBeenCalled();
     });
 
     it('update(null) removes the avatar and best-effort deletes the old object', async () => {
       staff.findOne
         .mockResolvedValueOnce({
           id: 'staff-1',
-          avatar_storage_key: 'old-key.jpg',
+          avatar_storage_key: `${TENANT}/staff_avatar/old-key.jpg`,
         })
         .mockResolvedValueOnce({ id: 'staff-1', avatar_storage_key: null });
 
@@ -468,7 +524,7 @@ describe('StaffService', () => {
       expect(staff.save).toHaveBeenCalledWith(
         expect.objectContaining({ avatar_storage_key: null }),
       );
-      expect(storage.deleteObject).toHaveBeenCalledWith('old-key.jpg', TENANT);
+      expect(storage.deleteObject).toHaveBeenCalledWith(`${TENANT}/staff_avatar/old-key.jpg`, TENANT);
     });
 
     it('update leaves the avatar untouched when avatarStorageKey is omitted', async () => {
@@ -479,7 +535,7 @@ describe('StaffService', () => {
 
       await service.update(TENANT, 'staff-1', { title: 'New' } as any);
 
-      expect(storage.assertKeyBelongsToTenant).not.toHaveBeenCalled();
+      expect(storage.assertAvatarKey).not.toHaveBeenCalled();
       expect(storage.deleteObject).not.toHaveBeenCalled();
     });
 

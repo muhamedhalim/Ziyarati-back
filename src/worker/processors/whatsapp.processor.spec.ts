@@ -47,6 +47,7 @@ describe('WhatsappProcessor — pre-deployment payload compatibility (T050)', ()
       ctx,
       authz as unknown as WorkerAuthorizationService,
       queue as unknown as QueueService,
+      {} as never, // WhatsappCoexistenceSyncService — only the coexistence-sync job uses it
     );
   });
 

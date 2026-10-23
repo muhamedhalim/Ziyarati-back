@@ -89,6 +89,7 @@ describe('W7 — database content and CRM content injection (T112)', () => {
       const services = harness.dataSource.getRepository(Service);
       const service = await services.save(
         services.create({
+          public_slug: `svc-${Math.random().toString(36).slice(2, 10)}`,
           tenant: { id: seed.tenantA.id } as never,
           name: `Consultation — ${DB_CONTENT_INJECTION}`,
           duration_minutes: 30,

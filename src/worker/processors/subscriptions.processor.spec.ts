@@ -165,9 +165,9 @@ describe('SubscriptionsProcessor', () => {
         order.push('downgrades');
         return { scanned: 1, applied: 1, skipped: 0 };
       });
-      (subscriptions.save as jest.Mock).mockImplementation(async (x) => {
+      (subscriptions.update as jest.Mock).mockImplementation(async () => {
         order.push('grace');
-        return x;
+        return { affected: 1 };
       });
       primeEmptyExcept({
         2: [
@@ -231,7 +231,10 @@ describe('SubscriptionsProcessor', () => {
 
       const result = await runCheck();
 
-      expect(subscriptions.save).toHaveBeenCalledWith(
+      // CR-08: a conditional UPDATE that re-states the selection predicate, never save().
+      expect(subscriptions.save).not.toHaveBeenCalled();
+      expect(subscriptions.update).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'sub-1', ends_at: expect.anything(), status: expect.anything() }),
         expect.objectContaining({
           status: SubscriptionStatus.PAST_DUE,
           grace_started_at: expect.any(Date),
@@ -266,7 +269,9 @@ describe('SubscriptionsProcessor', () => {
 
       const result = await runCheck();
 
-      expect(subscriptions.save).toHaveBeenCalledWith(
+      expect(subscriptions.save).not.toHaveBeenCalled();
+      expect(subscriptions.update).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'sub-2', status: SubscriptionStatus.PAST_DUE }),
         expect.objectContaining({
           status: SubscriptionStatus.GRACE_EXPIRED,
           grace_expired_at: expect.any(Date),
@@ -279,6 +284,43 @@ describe('SubscriptionsProcessor', () => {
         }),
       );
       expect(result.graceExpired).toBe(1);
+    });
+
+    it('CR-08: a renewal settled after the sweep read the row is NOT reverted to PAST_DUE (no audit, no email)', async () => {
+      const sub = {
+        id: 'sub-race',
+        status: SubscriptionStatus.ACTIVE,
+        ends_at: new Date(Date.now() - 86_400_000),
+        tenant: TENANT,
+        plan: { name: 'Pro' },
+      };
+      primeEmptyExcept({ 2: [sub] });
+      // The settlement committed in between: the conditional UPDATE matches no row any more.
+      (subscriptions.update as jest.Mock).mockResolvedValueOnce({ affected: 0 });
+
+      const result = await runCheck();
+
+      expect(subscriptions.save).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalled();
+      expect(email.sendSubscriptionNotification).not.toHaveBeenCalled();
+      expect(result.enteredGrace).toBe(0);
+    });
+
+    it('CR-08: a payment settled during the sweep is NOT turned into GRACE_EXPIRED (no audit)', async () => {
+      const sub = {
+        id: 'sub-race-2',
+        status: SubscriptionStatus.PAST_DUE,
+        grace_started_at: new Date(Date.now() - (GRACE_DAYS + 1) * 86_400_000),
+        tenant: TENANT,
+      };
+      primeEmptyExcept({ 4: [sub] });
+      (subscriptions.update as jest.Mock).mockResolvedValueOnce({ affected: 0 });
+
+      const result = await runCheck();
+
+      expect(subscriptions.save).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalled();
+      expect(result.graceExpired).toBe(0);
     });
 
     it('warns before expiry (point 1) for an ACTIVE subscription within the warning window', async () => {

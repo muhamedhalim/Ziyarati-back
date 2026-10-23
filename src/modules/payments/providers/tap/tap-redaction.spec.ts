@@ -59,7 +59,9 @@ const richCharge = (): TapCharge => ({
   payment_agreement: {
     id: 'payment_agreement_1',
     type: 'UNSCHEDULED',
-    contract: { customer_id: 'cus_1' },
+    // Not part of the typed TapCharge shape on purpose: a real response can carry it,
+    // and the sanitizer must drop it.
+    contract: { customer_id: 'cus_1' } as { id?: string; type?: string },
   },
 });
 

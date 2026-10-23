@@ -60,6 +60,25 @@ export class InvoiceService {
 
   async create(tenantId: string, dto: CreateInvoiceDto) {
     const id = await this.dataSource.transaction(async (manager) => {
+      // CR-38 (same class as FIN-006 for payments): a customer / appointment named by the caller
+      // must belong to THIS tenant. They were stored as bare FKs, so another tenant's id was
+      // accepted and the invoice PDF then printed that patient's name, phone and email.
+      if (dto.customerId) {
+        const ok = await manager
+          .getRepository(Customer)
+          .count({ where: { id: dto.customerId, tenant: { id: tenantId } } });
+        if (!ok) {
+          throw new AppError(ErrorCode.NOT_FOUND, { message: 'Customer not found' });
+        }
+      }
+      if (dto.appointmentId) {
+        const ok = await manager
+          .getRepository(Appointment)
+          .count({ where: { id: dto.appointmentId, tenant: { id: tenantId } } });
+        if (!ok) {
+          throw new AppError(ErrorCode.NOT_FOUND, { message: 'Appointment not found' });
+        }
+      }
       const repo = manager.getRepository(Invoice);
       const invoiceNumber = await this.nextInvoiceNumber(manager, tenantId);
       // FR-I005 (T093) — snapshotted once, at creation, mirroring how

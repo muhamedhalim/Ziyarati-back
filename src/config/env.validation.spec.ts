@@ -43,9 +43,13 @@ const prodBase = {
   FRONTEND_ORIGIN: PROD_FRONTEND_ORIGIN,
   DB_SSL_CA: PROD_DB_SSL_CA,
   AUTH_REGISTER_OWNER_ENDPOINT_CEILING: PROD_REGISTER_OWNER_CEILING,
+  // Production wants two different secrets of at least 32 characters (CR-28).
+  JWT_ACCESS_SECRET: 'prod-access-secret-0123456789abcdef0123456789',
+  JWT_REFRESH_SECRET: 'prod-refresh-secret-0123456789abcdef012345678',
   // `tap` is the default provider and (correctly) refuses to boot in production
   // without credentials; tests about OTHER concerns opt out explicitly.
   PAYMENT_PROVIDER: 'noop',
+  ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
 };
 
 describe('env.validation', () => {
@@ -115,6 +119,7 @@ describe('env.validation', () => {
       const value = validate({
         ...prodBase,
         PAYMENT_PROVIDER: 'noop',
+        ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
         CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
       });
       expect(value.ENABLE_API_DOCS).toBe('false');
@@ -131,6 +136,7 @@ describe('env.validation', () => {
       const prod = validate({
         ...prodBase,
         PAYMENT_PROVIDER: 'noop',
+        ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
         CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
         ENABLE_INTEGRATION_DOCS: 'true',
       });
@@ -211,6 +217,7 @@ describe('env.validation', () => {
           ...base,
           NODE_ENV: 'production',
           PAYMENT_PROVIDER: 'noop',
+          ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
           CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
         }),
       ).toThrow(/FRONTEND_ORIGIN/);
@@ -220,6 +227,7 @@ describe('env.validation', () => {
       const value = validate({
         ...prodBase,
         PAYMENT_PROVIDER: 'noop',
+        ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
         CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
       });
       expect(value.FRONTEND_ORIGIN).toBe('https://app.example.com');
@@ -257,6 +265,7 @@ describe('env.validation', () => {
       const value = validate({
         ...prodBase,
         PAYMENT_PROVIDER: 'noop',
+        ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
         CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
         COOKIE_SAMESITE: 'none',
       });
@@ -272,6 +281,7 @@ describe('env.validation', () => {
         validate({
           ...prodBase,
           PAYMENT_PROVIDER: 'noop',
+          ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
           CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
           ...extra,
         });
@@ -465,6 +475,7 @@ describe('env.validation', () => {
       NODE_ENV: 'production',
       FRONTEND_ORIGIN: PROD_FRONTEND_ORIGIN,
       PAYMENT_PROVIDER: 'noop',
+      ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
       CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
       AUTH_REGISTER_OWNER_ENDPOINT_CEILING: PROD_REGISTER_OWNER_CEILING,
     };
@@ -540,13 +551,71 @@ describe('env.validation', () => {
   describe('payments fail-fast (production)', () => {
     // Tap credentials are OPTIONAL at boot: the app must start without them and
     // a Tap operation fails clearly at call time (PaymentGatewayFactory spec).
-    it('the default provider (tap) boots in production with NO Tap variables', () => {
+    it('the default provider (tap) boots in production once TAP_ENV is chosen, with no other Tap variable', () => {
       const value = validate({
         ...prodBase,
         PAYMENT_PROVIDER: undefined,
+        TAP_ENV: 'live',
         CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
       });
       expect(value.PAYMENT_PROVIDER).toBe('tap');
+    });
+
+    // CR-10: the simulator and the silent sandbox default must not be reachable by accident.
+    describe('production guards (CR-10, CR-28)', () => {
+      const prod = { ...prodBase, CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY };
+
+      it('refuses PAYMENT_PROVIDER=noop in production without the explicit acknowledgement', () => {
+        const { ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: _ack, ...noAck } = prod;
+        expect(() => validate({ ...noAck, PAYMENT_PROVIDER: 'noop' })).toThrow(/PAYMENT_PROVIDER=noop/);
+        expect(() => validate({ ...noAck, PAYMENT_PROVIDER: 'noop', ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'false' })).toThrow(
+          /PAYMENT_PROVIDER=noop/,
+        );
+      });
+
+      it('accepts noop in production only with ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION=true', () => {
+        expect(
+          validate({ ...prod, PAYMENT_PROVIDER: 'noop', ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true' }).PAYMENT_PROVIDER,
+        ).toBe('noop');
+      });
+
+      it('is not enforced outside production', () => {
+        expect(() => validate({ ...base, PAYMENT_PROVIDER: 'noop' })).not.toThrow();
+      });
+
+      it('requires TAP_ENV to be chosen when production uses tap', () => {
+        expect(() => validate({ ...prod, PAYMENT_PROVIDER: 'tap' })).toThrow(/TAP_ENV is not set/);
+        expect(() => validate({ ...prod, PAYMENT_PROVIDER: 'tap', TAP_ENV: '' })).toThrow(/TAP_ENV is not set/);
+        expect(() => validate({ ...prod, PAYMENT_PROVIDER: 'tap', TAP_ENV: 'sandbox' })).not.toThrow();
+        expect(() => validate({ ...prod, PAYMENT_PROVIDER: 'tap', TAP_ENV: 'live' })).not.toThrow();
+      });
+
+      it('refuses the no-network test OAuth provider in production', () => {
+        expect(() => validate({ ...prod, INTEGRATION_OAUTH_TEST_PROVIDER: 'true' })).toThrow(
+          /INTEGRATION_OAUTH_TEST_PROVIDER/,
+        );
+        expect(() => validate({ ...base, INTEGRATION_OAUTH_TEST_PROVIDER: 'true' })).not.toThrow();
+      });
+
+      it('refuses identical access and refresh secrets in production', () => {
+        const same = 'same-secret-0123456789abcdef0123456789abcdef';
+        expect(() => validate({ ...prod, JWT_ACCESS_SECRET: same, JWT_REFRESH_SECRET: same })).toThrow(
+          /must be different values/,
+        );
+        expect(() => validate({ ...base, JWT_ACCESS_SECRET: same, JWT_REFRESH_SECRET: same })).not.toThrow();
+      });
+
+      it('warns (without echoing the value) when a production JWT secret is shorter than 32 characters', () => {
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+        try {
+          validate({ ...prod, JWT_ACCESS_SECRET: 'short-secret-value' });
+          const text = warn.mock.calls.map((c) => String(c[0])).join(' ');
+          expect(text).toContain('JWT_ACCESS_SECRET');
+          expect(text).not.toContain('short-secret-value');
+        } finally {
+          warn.mockRestore();
+        }
+      });
     });
 
     describe('Tap (PAYMENT_PROVIDER=tap) in production', () => {
@@ -570,14 +639,15 @@ describe('env.validation', () => {
         TAP_WEBHOOK_URL: 'https://api.example.com/api/v1/payments/webhooks/tap',
       };
 
-      it('BOOTS when PAYMENT_PROVIDER=tap and no TAP_* variable is set', () => {
-        const value = validate({ ...tapProd });
+      it('BOOTS when PAYMENT_PROVIDER=tap and only TAP_ENV is set (credentials stay optional at boot)', () => {
+        const value = validate({ ...tapProd, TAP_ENV: 'live' });
         expect(value.PAYMENT_PROVIDER).toBe('tap');
-        expect(value.TAP_ENV).toBeUndefined();
+        expect(value.TAP_ENV).toBe('live');
+        expect(value.TAP_LIVE_SECRET_KEY).toBeUndefined();
       });
 
       it('still boots once the Tap variables are provided later', () => {
-        expect(validate({ ...tapProd }).PAYMENT_PROVIDER).toBe('tap');
+        expect(validate({ ...tapProd, TAP_ENV: 'live' }).PAYMENT_PROVIDER).toBe('tap');
         expect(validate({ ...sandboxOk }).TAP_TEST_SECRET_KEY).toBeDefined();
       });
 
@@ -795,6 +865,7 @@ describe('env.validation', () => {
       const value = validate({
         ...prodBase,
         PAYMENT_PROVIDER: 'noop',
+        ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
         CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
       });
       expect(value.PAYMENT_PROVIDER).toBe('noop');
@@ -903,6 +974,7 @@ describe('env.validation', () => {
         validate({
           ...prodBase,
           PAYMENT_PROVIDER: 'noop',
+          ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
           CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
           AUTH_EXPOSE_RESET_TOKEN: 'true',
         }),
@@ -914,6 +986,7 @@ describe('env.validation', () => {
         validate({
           ...prodBase,
           PAYMENT_PROVIDER: 'noop',
+          ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
           CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
           AUTH_EXPOSE_RESET_TOKEN: 'true',
         });
@@ -930,6 +1003,7 @@ describe('env.validation', () => {
       const value = validate({
         ...prodBase,
         PAYMENT_PROVIDER: 'noop',
+        ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
         CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
       });
       expect(value.AUTH_EXPOSE_RESET_TOKEN).toBe('false');
@@ -962,6 +1036,7 @@ describe('env.validation', () => {
         validate({
           ...prodBase,
           PAYMENT_PROVIDER: 'noop',
+          ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
           CREDENTIALS_ENCRYPTION_KEY: '',
         }),
       ).toThrow(/CREDENTIALS_ENCRYPTION_KEY/);
@@ -972,6 +1047,7 @@ describe('env.validation', () => {
         validate({
           ...prodBase,
           PAYMENT_PROVIDER: 'noop',
+          ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
           CREDENTIALS_ENCRYPTION_KEY:
             Buffer.from('too-short').toString('base64'),
         }),
@@ -984,6 +1060,7 @@ describe('env.validation', () => {
         validate({
           ...prodBase,
           PAYMENT_PROVIDER: 'noop',
+          ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
           CREDENTIALS_ENCRYPTION_KEY: 'sk',
         });
         fail('expected validation to throw');
@@ -998,6 +1075,7 @@ describe('env.validation', () => {
       const value = validate({
         ...prodBase,
         PAYMENT_PROVIDER: 'noop',
+        ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
         CREDENTIALS_ENCRYPTION_KEY: key,
       });
       expect(value.CREDENTIALS_ENCRYPTION_KEY).toBe(key);
@@ -1008,6 +1086,7 @@ describe('env.validation', () => {
       const value = validate({
         ...prodBase,
         PAYMENT_PROVIDER: 'noop',
+        ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
         CREDENTIALS_ENCRYPTION_KEY: key,
       });
       expect(value.CREDENTIALS_ENCRYPTION_KEY).toBe(key);
@@ -1221,6 +1300,7 @@ describe('env.validation', () => {
           validate({
             ...prodBaseNoCeiling,
             PAYMENT_PROVIDER: 'noop',
+            ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
             CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
           }),
         ).toThrow(/AUTH_REGISTER_OWNER_ENDPOINT_CEILING/);
@@ -1231,6 +1311,7 @@ describe('env.validation', () => {
           validate({
             ...prodBaseNoCeiling,
             PAYMENT_PROVIDER: 'noop',
+            ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
             CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
           });
           fail('expected validation to throw');
@@ -1244,6 +1325,7 @@ describe('env.validation', () => {
         const value = validate({
           ...prodBase,
           PAYMENT_PROVIDER: 'noop',
+          ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
           CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
           AUTH_REGISTER_OWNER_ENDPOINT_CEILING: 250,
         });
@@ -1272,6 +1354,7 @@ describe('env.validation', () => {
         validate({
           ...prodBase,
           PAYMENT_PROVIDER: 'noop',
+          ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
           CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
           TYPEORM_LOGGING: 'true',
         }),
@@ -1283,6 +1366,7 @@ describe('env.validation', () => {
         validate({
           ...prodBase,
           PAYMENT_PROVIDER: 'noop',
+          ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
           CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
           TYPEORM_LOGGING: 'true',
         });
@@ -1296,6 +1380,7 @@ describe('env.validation', () => {
       const value = validate({
         ...prodBase,
         PAYMENT_PROVIDER: 'noop',
+        ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
         CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
       });
       expect(value.TYPEORM_LOGGING).toBe('false');
@@ -1450,6 +1535,7 @@ describe('env.validation', () => {
     const prodEmail = (overrides: Record<string, unknown>) => ({
       ...prodBase,
       PAYMENT_PROVIDER: 'noop',
+      ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
       CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
       ...overrides,
     });

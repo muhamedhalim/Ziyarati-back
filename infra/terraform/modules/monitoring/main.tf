@@ -84,6 +84,10 @@ locals {
     unreachable  = { pattern = "\"Tap\" \"unreachable\"", metric = "TapApiUnavailable" }
     timeout      = { pattern = "\"Tap\" \"timed out\"", metric = "TapApiUnavailable" }
     no_key       = { pattern = "\"no secret key for TAP_ENV\"", metric = "TapNotConfigured" }
+    # Not payments-specific, but the same mechanism: the worker's outbox relay logs this stable token
+    # while rows are parked FAILED (src/worker/outbox-relay.service.ts, CR-09). Payment outcomes,
+    # reminders and webhooks all travel through the outbox.
+    outbox_failed = { pattern = "\"OUTBOX_FAILED_ROWS\"", metric = "OutboxFailedRows" }
   }
 
   payment_log_filters = merge([
@@ -273,6 +277,11 @@ locals {
         ns   = "ZiyaraTech/${var.environment}", metric = "TapMisroutedCharges", stat = "Sum", dims = {}
         op   = "GreaterThanOrEqualToThreshold", threshold = 1, period = 300, evals = 1, missing = "notBreaching"
         desc = "P-02: Tap put a clinic charge on ZiyaraTech's own account (or named no merchant) — refused, but the clinic's merchant id or the platform routing is wrong"
+      }
+      "critical-outbox-failed-rows" = {
+        ns   = "ZiyaraTech/${var.environment}", metric = "OutboxFailedRows", stat = "Sum", dims = {}
+        op   = "GreaterThanOrEqualToThreshold", threshold = 1, period = 300, evals = 1, missing = "notBreaching"
+        desc = "CR-09: queued work (payment outcomes, reminders, webhooks) exhausted its publish retries and was parked FAILED - fix the cause (usually Redis), then re-drive from Platform monitoring"
       }
       "critical-tap-not-configured" = {
         ns   = "ZiyaraTech/${var.environment}", metric = "TapNotConfigured", stat = "Sum", dims = {}

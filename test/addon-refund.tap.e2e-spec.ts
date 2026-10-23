@@ -35,7 +35,6 @@ import { ResourcePurchase } from '../src/entities/ResourcePricing/ResourcePurcha
 import { Payment } from '../src/entities/Payments/Payment';
 import { PaymentStatus } from '../src/entities/enums';
 import { RefundService } from '../src/modules/payments/refund.service';
-import { RefundService } from '../src/modules/payments/refund.service';
 
 const API = '/api/v1';
 

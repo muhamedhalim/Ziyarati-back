@@ -53,7 +53,7 @@ describe('W3 — financial safety: server-derived amounts, zero AI-path payment 
 
     const services = harness.dataSource.getRepository(Service);
     const service = await services.save(
-      services.create({ tenant: { id: seed.tenantA.id } as Tenant, name: 'T099 Priced Service', duration_minutes: 30, base_price: SERVICE_PRICE }),
+      services.create({ public_slug: `svc-${Math.random().toString(36).slice(2, 10)}`, tenant: { id: seed.tenantA.id } as Tenant, name: 'T099 Priced Service', duration_minutes: 30, base_price: SERVICE_PRICE }),
     );
     serviceId = service.id;
     // `TenantService.getSettings` auto-creates a settings row defaulting

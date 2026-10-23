@@ -18,7 +18,11 @@ jest.mock('typeorm', () => ({
 }));
 
 import { DataSource } from 'typeorm';
-import { runMigrationsWithAdvisoryLock } from './run-migrations-with-lock';
+import {
+  MIGRATION_LOCK_ID,
+  runMigrationsWithAdvisoryLock,
+  withMigrationAdvisoryLock,
+} from './run-migrations-with-lock';
 
 describe('runMigrationsWithAdvisoryLock', () => {
   beforeEach(() => {
@@ -98,5 +102,46 @@ describe('runMigrationsWithAdvisoryLock', () => {
     expect(DataSource).toHaveBeenCalledWith(
       expect.objectContaining({ ssl: false }),
     );
+  });
+});
+
+describe('withMigrationAdvisoryLock (standalone migrator, CR-11)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    dataSourceInstance.createQueryRunner.mockReturnValue(queryRunner);
+    queryRunner.connect.mockResolvedValue(undefined);
+    queryRunner.query.mockResolvedValue(undefined);
+    queryRunner.release.mockResolvedValue(undefined);
+  });
+
+  it('takes the lock, runs the work, then unlocks and releases - in that order, on one connection', async () => {
+    const order: string[] = [];
+    queryRunner.query.mockImplementation(async (sql: string) => {
+      order.push(sql.includes('unlock') ? 'unlock' : 'lock');
+    });
+    const result = await withMigrationAdvisoryLock(dataSourceInstance as never, async () => {
+      order.push('work');
+      return 42;
+    });
+
+    expect(result).toBe(42);
+    expect(order).toEqual(['lock', 'work', 'unlock']);
+    expect(queryRunner.query).toHaveBeenCalledWith('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_ID]);
+    expect(queryRunner.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('still unlocks and releases when the work throws, and rethrows', async () => {
+    await expect(
+      withMigrationAdvisoryLock(dataSourceInstance as never, async () => {
+        throw new Error('migration failed');
+      }),
+    ).rejects.toThrow('migration failed');
+    expect(queryRunner.query).toHaveBeenCalledWith('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_ID]);
+    expect(queryRunner.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the SAME lock id as the boot-time runner', async () => {
+    await runMigrationsWithAdvisoryLock('postgres://localhost/db', false);
+    expect(queryRunner.query).toHaveBeenCalledWith('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_ID]);
   });
 });

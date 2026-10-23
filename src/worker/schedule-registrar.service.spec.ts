@@ -63,6 +63,60 @@ describe('ScheduleRegistrarService', () => {
   it('does not throw when the queue is unreachable (fail-soft boot)', async () => {
     queue.addRepeatable.mockRejectedValue(new Error('ECONNREFUSED'));
     await expect(service.onApplicationBootstrap()).resolves.toBeUndefined();
+    service.onModuleDestroy(); // stop the retry timer
+  });
+
+  describe('retry after a failed registration (CR-29)', () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => {
+      service.onModuleDestroy();
+      jest.useRealTimers();
+    });
+
+    const flush = async () => {
+      // let the timer callback's promise chain settle
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    };
+
+    it('a Redis blip at boot no longer leaves the worker without schedules: it registers once Redis is back', async () => {
+      queue.addRepeatable.mockRejectedValueOnce(new Error('ECONNREFUSED')); // very first call fails
+
+      await service.onApplicationBootstrap();
+      expect(queue.addRepeatable).toHaveBeenCalledTimes(1); // aborted at the first job
+
+      await jest.advanceTimersByTimeAsync(5_000); // first retry
+      await flush();
+
+      // the whole set is registered on the retry, including the late ones the first attempt never reached
+      const registered = queue.addRepeatable.mock.calls.map((c) => c[1]);
+      expect(registered).toContain(JOB.SUBSCRIPTIONS_RENEWAL_CHECK);
+      expect(registered).toContain(JOB.PAYMENTS_RECONCILE);
+      expect(registered).toContain(JOB.PLATFORM_FREE_ACCESS_EXPIRY_SWEEP);
+    });
+
+    it('keeps retrying with a growing delay, capped at 60 s, for as long as Redis is down', async () => {
+      queue.addRepeatable.mockRejectedValue(new Error('ECONNREFUSED'));
+      await service.onApplicationBootstrap();
+      let calls = queue.addRepeatable.mock.calls.length;
+
+      for (const wait of [5_000, 10_000, 20_000, 40_000, 60_000, 60_000]) {
+        await jest.advanceTimersByTimeAsync(wait - 1);
+        expect(queue.addRepeatable.mock.calls.length).toBe(calls); // not early
+        await jest.advanceTimersByTimeAsync(1);
+        await flush();
+        expect(queue.addRepeatable.mock.calls.length).toBe(calls + 1); // one new attempt
+        calls += 1;
+      }
+    });
+
+    it('stops retrying once destroyed (no timer left behind)', async () => {
+      queue.addRepeatable.mockRejectedValue(new Error('ECONNREFUSED'));
+      await service.onApplicationBootstrap();
+      service.onModuleDestroy();
+      const calls = queue.addRepeatable.mock.calls.length;
+      await jest.advanceTimersByTimeAsync(120_000);
+      expect(queue.addRepeatable.mock.calls.length).toBe(calls);
+    });
   });
 
   // ── T024 (spec 014): the four new repeatable sweeps ────────────────────

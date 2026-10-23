@@ -182,10 +182,11 @@ describe('Branch Manager — branch isolation (e2e)', () => {
     const services = ds.getRepository(Service);
     const service = await services.save(
       services.create({
+        public_slug: `svc-${Math.random().toString(36).slice(2, 10)}`,
         tenant: t,
         name: 'Consult',
         duration_minutes: 30,
-        price: 100,
+        base_price: 100,
         is_active: true,
       }),
     );
@@ -279,6 +280,7 @@ describe('Branch Manager — branch isolation (e2e)', () => {
     const profiles = ds.getRepository(StaffProfile);
     const profile = await profiles.save(
       profiles.create({
+        public_slug: `stf-${Math.random().toString(36).slice(2, 10)}`,
         tenant: t,
         user: { id: user.id } as User,
         title: name,
@@ -319,7 +321,7 @@ describe('Branch Manager — branch isolation (e2e)', () => {
         status: AppointmentStatus.CONFIRMED,
         payment_status: AppointmentPaymentStatus.PAID,
         source: AppointmentSource.MANUAL,
-        branch_timezone: 'UTC',
+        booked_timezone: 'UTC',
       }),
     );
     return saved.id;

@@ -15,7 +15,35 @@ import { SafeTypeOrmLogger } from '../common/logging/typeorm-safe-logger';
  * app's migration lock (not shared with any other advisory-lock use in this
  * codebase — none exist today).
  */
-const MIGRATION_LOCK_ID = 8_237_501_001;
+export const MIGRATION_LOCK_ID = 8_237_501_001;
+
+/**
+ * Runs `fn` while holding the migration advisory lock on a DEDICATED connection of an already
+ * initialised `DataSource`. Used by the standalone migrator (CR-11): the boot-time runner above
+ * serialises on this lock, but `migrate.js run` used to call `runMigrations()` bare, so a deploy's
+ * migrate task could race an API/worker task booting at the same moment (double-applied DDL, a
+ * failed boot, INVALID `CONCURRENTLY` indexes). The lock is session-scoped, so acquire and
+ * release share one `QueryRunner`; Postgres drops it if this process dies.
+ */
+export async function withMigrationAdvisoryLock<T>(
+  dataSource: DataSource,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const queryRunner = dataSource.createQueryRunner();
+  await queryRunner.connect();
+  try {
+    await queryRunner.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_ID]);
+    try {
+      return await fn();
+    } finally {
+      await queryRunner.query('SELECT pg_advisory_unlock($1)', [
+        MIGRATION_LOCK_ID,
+      ]);
+    }
+  } finally {
+    await queryRunner.release();
+  }
+}
 
 /**
  * Runs pending migrations serialized behind `pg_advisory_lock`, using a

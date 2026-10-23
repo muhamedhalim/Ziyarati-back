@@ -22,5 +22,8 @@
     "noImplicitAny": false,
     "strictBindCallApply": false,
     "noFallthroughCasesInSwitch": false
-  }
+  },
+  // `tests/load/lab/run` is a git-ignored scratch COPY of the whole repo made by the load lab.
+  // Without this exclude it is type-checked as part of the project and fails the build locally.
+  "exclude": ["node_modules", "dist", "tests/load/lab/run"]
 }

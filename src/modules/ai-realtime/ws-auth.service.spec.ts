@@ -75,12 +75,52 @@ describe('WsAuthService', () => {
         permissions: [],
       });
       const token = await jwt.signAsync(
-        { sub: 'user-1', tenantId: 'tenant-1' },
+        { sub: 'user-1', tenantId: 'tenant-1', type: 'access' },
         { secret: 'test-secret' },
       );
       const result = await service.authenticate(socketWith({ token }));
       expect(auth.buildAuthenticatedUser).toHaveBeenCalledWith('user-1');
       expect(result).toMatchObject({ id: 'user-1', tenantId: 'tenant-1' });
+    });
+
+    it('CR-44: rejects a REFRESH token on the handshake even when it verifies with the access secret', async () => {
+      const service = new WsAuthService(
+        jwt,
+        createMockConfigService({ JWT_ACCESS_SECRET: 'test-secret' }) as never,
+        auth as never,
+      );
+      const token = await jwt.signAsync(
+        { sub: 'user-1', tenantId: 'tenant-1', type: 'refresh' },
+        { secret: 'test-secret' },
+      );
+      await expect(service.authenticate(socketWith({ token }))).rejects.toThrow('Invalid token type');
+      expect(auth.buildAuthenticatedUser).not.toHaveBeenCalled();
+    });
+
+    it('CR-44: rejects a staff-shaped token that carries no type claim at all', async () => {
+      const service = new WsAuthService(
+        jwt,
+        createMockConfigService({ JWT_ACCESS_SECRET: 'test-secret' }) as never,
+        auth as never,
+      );
+      const token = await jwt.signAsync(
+        { sub: 'user-1', tenantId: 'tenant-1' },
+        { secret: 'test-secret' },
+      );
+      await expect(service.authenticate(socketWith({ token }))).rejects.toThrow('Invalid token type');
+    });
+
+    it('CR-44: a guest token must not smuggle in a conflicting type either', async () => {
+      const service = new WsAuthService(
+        jwt,
+        createMockConfigService({ JWT_ACCESS_SECRET: 'test-secret' }) as never,
+        auth as never,
+      );
+      const token = await jwt.signAsync(
+        { sub: 'guest-1', tenantId: 'tenant-1', guest: true, type: 'refresh' },
+        { secret: 'test-secret' },
+      );
+      await expect(service.authenticate(socketWith({ token }))).rejects.toThrow('Invalid token type');
     });
 
     it('rejects a token with no tenant (tenant-scoping required)', async () => {
@@ -90,7 +130,7 @@ describe('WsAuthService', () => {
         auth as never,
       );
       const token = await jwt.signAsync(
-        { sub: 'user-1' },
+        { sub: 'user-1', type: 'access' },
         { secret: 'test-secret' },
       );
       await expect(service.authenticate(socketWith({ token }))).rejects.toThrow(
@@ -151,7 +191,7 @@ describe('WsAuthService', () => {
         auth as never,
       );
       const superAdmin = await jwt.signAsync(
-        { sub: 'admin-1', tenantId: null },
+        { sub: 'admin-1', tenantId: null, type: 'access' },
         { secret: 'test-secret' },
       );
       const guest = await jwt.signAsync(guestClaims, { secret: 'test-secret' });
@@ -178,7 +218,7 @@ describe('WsAuthService', () => {
         auth as never,
       );
       const stale = await jwt.signAsync(
-        { sub: 'user-1', tenantId: 'tenant-1' },
+        { sub: 'user-1', tenantId: 'tenant-1', type: 'access' },
         { secret: 'a-rotated-secret' },
       );
       const guest = await jwt.signAsync(guestClaims, { secret: 'test-secret' });
@@ -201,7 +241,7 @@ describe('WsAuthService', () => {
       );
       auth.buildAuthenticatedUser.mockRejectedValueOnce(new Error('gone'));
       const deactivated = await jwt.signAsync(
-        { sub: 'user-1', tenantId: 'tenant-1' },
+        { sub: 'user-1', tenantId: 'tenant-1', type: 'access' },
         { secret: 'test-secret' },
       );
       const guest = await jwt.signAsync(guestClaims, { secret: 'test-secret' });
@@ -229,7 +269,7 @@ describe('WsAuthService', () => {
         permissions: [],
       });
       const access = await jwt.signAsync(
-        { sub: 'user-1', tenantId: 'tenant-1' },
+        { sub: 'user-1', tenantId: 'tenant-1', type: 'access' },
         { secret: 'test-secret' },
       );
       const guest = await jwt.signAsync(guestClaims, { secret: 'test-secret' });
@@ -255,7 +295,7 @@ describe('WsAuthService', () => {
         auth as never,
       );
       const superAdmin = await jwt.signAsync(
-        { sub: 'admin-1', tenantId: null },
+        { sub: 'admin-1', tenantId: null, type: 'access' },
         { secret: 'test-secret' },
       );
       const forged = await jwt.signAsync(
@@ -388,7 +428,7 @@ describe('WsAuthService', () => {
         permissions: ['p'],
       });
       const token = await jwt.signAsync(
-        { sub: 'user-1', tenantId: 'tenant-1' },
+        { sub: 'user-1', tenantId: 'tenant-1', type: 'access' },
         { secret: 'test-secret', expiresIn: 900 },
       );
       const { exp } = jwt.decode(token) as { exp: number };

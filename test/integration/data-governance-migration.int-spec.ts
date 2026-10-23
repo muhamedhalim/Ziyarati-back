@@ -122,7 +122,16 @@ describe('DataGovernance migration against real PostgreSQL', () => {
   );
 
   runIf('reverts cleanly and re-applies', async () => {
-    await ds!.undoLastMigration();
+    // `undoLastMigration()` reverts the NEWEST migration, and this one is no longer the newest:
+    // revert from the head until its tables are gone (every newer down() runs too), then re-apply
+    // the whole chain. A hard cap keeps a migration that cannot be reverted from looping forever.
+    // `transaction: 'none'`: TypeORM's undoLastMigration opens a transaction even for a migration that
+    // declares `transaction = false`, so a down() using DROP INDEX CONCURRENTLY (e.g.
+    // SubscriptionBillingIntegrityIndexes) cannot run otherwise. That also means `migrate.js revert`
+    // cannot roll those migrations back today — tracked as a finding, not hidden by this test.
+    for (let i = 0; i < 100 && (await tableExists('data_subject_requests')); i++) {
+      await ds!.undoLastMigration({ transaction: 'none' });
+    }
     expect(await tableExists('data_subject_requests')).toBe(false);
     expect(await tableExists('deletion_evidence')).toBe(false);
     await ds!.runMigrations();

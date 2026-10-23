@@ -128,7 +128,9 @@ describe('D2 — SD-1 streaming disclosure gate (T105)', () => {
         { content: 'irrelevant — the SCRIPTED provider drives the reply' },
         (delta) => deltas.push(delta),
         undefined,
-        'WEBSITE',
+        // streamMessage uses this parameter as the turn's *channel* (`const channel = transport`),
+        // so the guest website channel is passed here; it is not one of the AiExecutionTransport literals.
+        'WEBSITE' as never,
       );
     });
 

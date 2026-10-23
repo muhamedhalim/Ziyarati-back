@@ -95,6 +95,13 @@ export class SettlementService {
       if (dto.branchId) {
         qb.andWhere(`"${branchCol}" = :branchId`, { branchId: dto.branchId });
       }
+      // CR-41: a caller-supplied currency is a FILTER, not a label. It used to be stamped on a
+      // batch whose amounts were summed across every currency the claim happened to match.
+      if (dto.currency) {
+        qb.andWhere('UPPER(currency) = :currency', {
+          currency: dto.currency.toUpperCase(),
+        });
+      }
       if (dto.periodStart) {
         qb.andWhere('paid_at >= :periodStart', { periodStart: new Date(dto.periodStart) });
       }
@@ -111,6 +118,16 @@ export class SettlementService {
         gateway_fee: string | null;
         platform_fee: string | null;
       }>;
+
+      // CR-41: one settlement is one currency. Amounts are summed as bare numbers, so a batch that
+      // spans currencies would silently add SAR to USD. Refuse (the claim above rolls back with this
+      // transaction) and make the caller settle one currency at a time.
+      if (new Set(claimed.map((p) => String(p.currency).toUpperCase())).size > 1) {
+        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+          message:
+            'Unsettled payments in more than one currency match; generate one settlement per currency by passing "currency"',
+        });
+      }
 
       // Claim OPEN clawbacks (refunds that landed after a prior settlement).
       const claw = await this.adjustments.lockOpen(manager, tenantId);

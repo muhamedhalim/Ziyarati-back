@@ -19,6 +19,7 @@ const awsProduction = {
   DB_SSL_CA: '/app/certs/rds-global-bundle.pem',
   AUTH_REGISTER_OWNER_ENDPOINT_CEILING: 1000,
   PAYMENT_PROVIDER: 'noop',
+  ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
   AWS_REGION: 'me-central-1',
   SES_CONFIGURATION_SET: 'zt-production',
   EMAIL_FROM: 'no-reply@ziyaratech.com',

@@ -1,6 +1,6 @@
 import { DataSource } from 'typeorm';
 
-import { OutboxRelayService } from './outbox-relay.service';
+import { OutboxRelayService, outboxBackoffMs } from './outbox-relay.service';
 import { QueueService } from '../queue/queue.service';
 import { OutboxStatus } from '../entities/enums';
 import {
@@ -125,16 +125,64 @@ describe('OutboxRelayService', () => {
       );
     });
 
+    it('CR-09: a failed row waits out an exponential backoff instead of being re-claimed on the next tick', async () => {
+      const r = row({ publish_attempts: 2 }); // this failure is attempt 3 -> 4 s
+      claimQb.getMany.mockResolvedValueOnce([r]);
+      queue.publish.mockRejectedValueOnce(new Error('redis down'));
+      const before = Date.now();
+
+      await drain();
+
+      const set = markQb.set.mock.calls.at(-1)![0] as { next_attempt_at: Date };
+      expect(set.next_attempt_at).toBeInstanceOf(Date);
+      expect(set.next_attempt_at.getTime()).toBeGreaterThanOrEqual(before + outboxBackoffMs(3) - 5);
+      expect(set.next_attempt_at.getTime()).toBeLessThan(before + outboxBackoffMs(3) + 5_000);
+    });
+
+    it('CR-09: the claim query only takes rows whose backoff has elapsed', async () => {
+      claimQb.getMany.mockResolvedValueOnce([]);
+      await drain();
+      expect(claimQb.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining('next_attempt_at IS NULL OR o.next_attempt_at <= now()'),
+      );
+    });
+
+    it('CR-09: a successful publish clears any earlier backoff', async () => {
+      claimQb.getMany.mockResolvedValueOnce([row({ publish_attempts: 3 })]);
+      await drain();
+      expect(markQb.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: OutboxStatus.PUBLISHED, next_attempt_at: null }),
+      );
+    });
+
     it('parks a row as FAILED once max publish attempts are exhausted', async () => {
-      const r = row({ publish_attempts: 9 }); // +1 → 10 === OUTBOX_MAX_ATTEMPTS default
+      const r = row({ publish_attempts: 19 }); // +1 → 10 === OUTBOX_MAX_ATTEMPTS default
       claimQb.getMany.mockResolvedValueOnce([r]);
       queue.publish.mockRejectedValueOnce(new Error('still down'));
 
       await drain();
 
       expect(markQb.set).toHaveBeenCalledWith(
-        expect.objectContaining({ status: OutboxStatus.FAILED, publish_attempts: 10 }),
+        expect.objectContaining({ status: OutboxStatus.FAILED, publish_attempts: 20, next_attempt_at: null }),
       );
+    });
+
+    it('CR-09: survives a Redis outage longer than the old 10-attempt / ~10 s budget', async () => {
+      // Old behaviour: 10 failures in ~10 s -> FAILED. Now the 10th failure is still PENDING.
+      claimQb.getMany.mockResolvedValueOnce([row({ publish_attempts: 9 })]);
+      queue.publish.mockRejectedValueOnce(new Error('redis failover'));
+      await drain();
+      expect(markQb.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: OutboxStatus.PENDING, publish_attempts: 10 }),
+      );
+    });
+
+    it('CR-09: backoff doubles from 1 s and is capped at 5 min', () => {
+      expect([1, 2, 3, 4].map(outboxBackoffMs)).toEqual([1000, 2000, 4000, 8000]);
+      expect(outboxBackoffMs(9)).toBe(256_000);
+      expect(outboxBackoffMs(10)).toBe(300_000);
+      expect(outboxBackoffMs(50)).toBe(300_000);
+      expect(outboxBackoffMs(0)).toBe(1000);
     });
   });
 
@@ -165,6 +213,30 @@ describe('OutboxRelayService', () => {
         expect.stringContaining('claimed_at IS NULL'),
         expect.anything(),
       );
+    });
+
+    it('CR-09: logs a stable OUTBOX_FAILED_ROWS token while parked rows remain', async () => {
+      markQb.execute.mockResolvedValueOnce({ affected: 0, raw: [] });
+      (dataSource.query as jest.Mock).mockResolvedValueOnce([{ c: 3 }]);
+      const errSpy = jest
+        .spyOn((service as unknown as { logger: { error: (m: string) => void } }).logger, 'error')
+        .mockImplementation(() => undefined);
+
+      await recover();
+
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('OUTBOX_FAILED_ROWS count=3'));
+    });
+
+    it('CR-09: stays quiet when nothing is parked', async () => {
+      markQb.execute.mockResolvedValueOnce({ affected: 0, raw: [] });
+      (dataSource.query as jest.Mock).mockResolvedValueOnce([{ c: 0 }]);
+      const errSpy = jest
+        .spyOn((service as unknown as { logger: { error: (m: string) => void } }).logger, 'error')
+        .mockImplementation(() => undefined);
+
+      await recover();
+
+      expect(errSpy).not.toHaveBeenCalled();
     });
 
     it('does not overlap with itself (recovering guard)', async () => {

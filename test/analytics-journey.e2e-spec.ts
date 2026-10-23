@@ -76,6 +76,7 @@ describe('Patient Journey — authorization, tenant isolation, validation', () =
     );
     const staff = await e2e.dataSource.getRepository(StaffProfile).save(
       e2e.dataSource.getRepository(StaffProfile).create({
+        public_slug: `stf-${Math.random().toString(36).slice(2, 10)}`,
         user: { id: staffUser.id } as User,
         tenant: { id: owner.tenantId } as Tenant,
       }),

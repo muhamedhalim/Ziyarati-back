@@ -27,6 +27,9 @@ import {
   PUBLIC_DISCOVERY_SERVICE_DETAIL_THROTTLE,
 } from './public-discovery.throttle';
 
+/** Raster formats the avatar upload accepts; nothing else may be served from the anonymous proxy. */
+const AVATAR_SERVABLE_CONTENT_TYPE = /^image\/(jpeg|png|webp|gif)$/i;
+
 /**
  * Public clinic discovery — ANONYMOUS (bypasses the global JwtAuthGuard via
  * `@Public`). Read-only public marketing data for the website AI chat widget's
@@ -299,6 +302,13 @@ export class PublicDiscoveryController {
     }
     const { body, contentType, contentLength, etag } =
       await this.storage.getObjectStream(source.storageKey, source.tenantId);
+    // This route is anonymous and CDN-cached, so it may only ever serve a raster image. A stored
+    // key that points at anything else (a PDF, a patient document) is the same 404 as "no avatar"
+    // and the object body is never read (CR-37). SVG is excluded on purpose: it can carry script.
+    if (!AVATAR_SERVABLE_CONTENT_TYPE.test(contentType)) {
+      (body as import('stream').Readable).destroy?.();
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Doctor not found' });
+    }
     res.status(200);
     res.setHeader('Content-Type', contentType);
     if (contentLength !== undefined)

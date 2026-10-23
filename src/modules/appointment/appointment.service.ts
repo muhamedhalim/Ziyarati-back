@@ -1419,6 +1419,21 @@ export class AppointmentsService {
     tenantId: string,
     id: string,
   ): Promise<Appointment> {
+    // CR-39: take the row lock BEFORE reading it. Every caller reads, mutates and `save()`s, and
+    // `save()` rewrites each column that differs from what was read - so a cancel and a payment
+    // outcome (CANCELLED vs CONFIRMED/PAID) committing around each other overwrote one another.
+    // Locking serialises them; the second one now reads the first one's committed state. The lock
+    // is a separate join-free query: `FOR UPDATE` cannot be applied across the nullable side of the
+    // outer joins the relations below produce (same shape as lockRequestByPayment).
+    await manager
+      .getRepository(Appointment)
+      .createQueryBuilder('a')
+      .select('a.id')
+      .where('a.id = :id', { id })
+      .andWhere('a."tenantId" = :tenantId', { tenantId })
+      .setLock('pessimistic_write')
+      .getOne();
+
     const appointment = await manager.getRepository(Appointment).findOne({
       where: { id, tenant: { id: tenantId } },
       relations: { staff: true, branch: true },

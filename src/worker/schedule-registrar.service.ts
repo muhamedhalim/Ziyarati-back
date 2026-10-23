@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnApplicationBootstrap,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import { JOB, QUEUE } from '../queue/queue.constants';
@@ -13,12 +18,18 @@ import {
  * BullMQ's native repeatable jobs — no separate scheduling framework. Each is a
  * global sweep (tenantId null) whose processor fans out per-tenant work.
  * Registration is idempotent (BullMQ dedups by repeat key), so running multiple
- * worker replicas does not create duplicate schedules. Wrapped in try/catch so a
- * transient Redis outage at boot doesn't crash the worker.
+ * worker replicas does not create duplicate schedules. A transient Redis outage at boot
+ * doesn't crash the worker - and (CR-29) doesn't leave it without schedules either: a failed
+ * registration is retried with backoff until it succeeds. Because registration is idempotent a
+ * retry that re-registers jobs the first attempt already added is harmless.
  */
 @Injectable()
-export class ScheduleRegistrarService implements OnApplicationBootstrap {
+export class ScheduleRegistrarService
+  implements OnApplicationBootstrap, OnModuleDestroy
+{
   private readonly logger = new Logger('ScheduleRegistrar');
+  private retryTimer?: NodeJS.Timeout;
+  private stopped = false;
 
   constructor(
     private readonly queue: QueueService,
@@ -26,7 +37,40 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
+    if (!(await this.tryRegister())) this.scheduleRetry(1);
+  }
+
+  onModuleDestroy(): void {
+    this.stopped = true;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+  }
+
+  /** 5 s, 10 s, 20 s, 40 s, then every 60 s - for as long as Redis stays unreachable. */
+  private scheduleRetry(attempt: number): void {
+    if (this.stopped) return;
+    const delayMs = Math.min(5_000 * 2 ** (attempt - 1), 60_000);
+    this.retryTimer = setTimeout(() => {
+      void (async () => {
+        if (this.stopped) return;
+        if (!(await this.tryRegister())) this.scheduleRetry(attempt + 1);
+        else this.logger.log(`Repeatable jobs registered after ${attempt} retr${attempt === 1 ? 'y' : 'ies'}`);
+      })();
+    }, delayMs);
+    this.retryTimer.unref?.();
+  }
+
+  private async tryRegister(): Promise<boolean> {
     try {
+      await this.registerAll();
+      return true;
+    } catch (err) {
+      this.logger.error(`Could not register repeatable jobs (is Redis reachable?) - will retry: ${(err as Error)?.message}`);
+      return false;
+    }
+  }
+
+  private async registerAll(): Promise<void> {
+    {
       // Daily report generation sweep — 00:30 UTC.
       await this.queue.addRepeatable(QUEUE.ANALYTICS, JOB.ANALYTICS_GENERATE_REPORT, { tenantId: null }, '30 0 * * *');
       // Monthly report generation sweep (FND-014 — previously manual-only) —
@@ -128,8 +172,6 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       await this.queue.addRepeatable(QUEUE.PLATFORM, JOB.PLATFORM_FREE_ACCESS_EXPIRY_SWEEP, { tenantId: null }, '20 * * * *');
 
       this.logger.log('Repeatable jobs registered (analytics ×4, settlements, subscriptions ×2, refunds-reaper, notifications-reaper, platform-log-cleanup, usage-report-tick, ai-batch-poll, integration-recover-stale, integration-purge-expired, campaigns-recover-dlq, waitlist-expiry, queue-day-close, export-expiry, birthday-greetings, free-access-expiry-sweep)');
-    } catch (err) {
-      this.logger.error(`Could not register repeatable jobs (is Redis reachable?): ${(err as Error)?.message}`);
     }
   }
 }

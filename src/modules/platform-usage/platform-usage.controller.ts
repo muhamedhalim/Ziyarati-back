@@ -20,6 +20,7 @@ import { PlatformUsageService } from './platform-usage.service';
 import { UsageAuditService, USAGE_AUDIT_ACTION } from './usage-audit.service';
 import { QueryTenantUsageDto } from './dto/query-tenant-usage.dto';
 import { QueryTimelineDto } from './dto/query-timeline.dto';
+import { PeriodMonthPipe } from './period-month.pipe';
 
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -52,7 +53,7 @@ export class PlatformUsageController {
   @ApiQuery({ name: 'periodMonth', required: false, example: '2026-07' })
   @ApiOkResponse({ description: 'Platform usage summary.' })
   @Get('summary')
-  summary(@Query('periodMonth') periodMonth?: string) {
+  summary(@Query('periodMonth', PeriodMonthPipe) periodMonth?: string) {
     return this.usage.summary(periodMonth);
   }
 
@@ -63,7 +64,7 @@ export class PlatformUsageController {
   })
   @ApiOkResponse({ description: 'Ordered alert list (most severe first).' })
   @Get('alerts')
-  alerts(@Query('periodMonth') periodMonth?: string) {
+  alerts(@Query('periodMonth', PeriodMonthPipe) periodMonth?: string) {
     return this.usage.alerts(periodMonth);
   }
 
@@ -75,7 +76,7 @@ export class PlatformUsageController {
   @ApiQuery({ name: 'periodMonth', required: false, example: '2026-07' })
   @ApiOkResponse({ description: 'Executive insights.' })
   @Get('insights')
-  insights(@Query('periodMonth') periodMonth?: string) {
+  insights(@Query('periodMonth', PeriodMonthPipe) periodMonth?: string) {
     return this.usage.executiveInsights(periodMonth);
   }
 
@@ -128,7 +129,7 @@ export class PlatformUsageController {
     @Param('metric') metric: string,
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
-    @Query('periodMonth') periodMonth?: string,
+    @Query('periodMonth', PeriodMonthPipe) periodMonth?: string,
   ) {
     const result = await this.usage.platformMetricDrilldown(
       metric,
@@ -154,7 +155,7 @@ export class PlatformUsageController {
     @Param('tenantId', ParseUUIDPipe) tenantId: string,
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
-    @Query('periodMonth') periodMonth?: string,
+    @Query('periodMonth', PeriodMonthPipe) periodMonth?: string,
   ) {
     const result = await this.usage.tenantDetail(tenantId, periodMonth);
     await this.audit.record(USAGE_AUDIT_ACTION.VIEW, userId, ip, tenantId);
@@ -174,7 +175,7 @@ export class PlatformUsageController {
     @Param('tenantId', ParseUUIDPipe) tenantId: string,
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
-    @Query('periodMonth') periodMonth?: string,
+    @Query('periodMonth', PeriodMonthPipe) periodMonth?: string,
   ) {
     const result = await this.usage.recommendUpgrade(tenantId, periodMonth);
     await this.audit.record(USAGE_AUDIT_ACTION.VIEW, userId, ip, tenantId, {
@@ -224,7 +225,7 @@ export class PlatformUsageController {
     @Param('metric') metric: string,
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
-    @Query('periodMonth') periodMonth?: string,
+    @Query('periodMonth', PeriodMonthPipe) periodMonth?: string,
   ) {
     const result = await this.usage.metricDrilldown(
       tenantId,

@@ -237,6 +237,48 @@ describe('SettlementService.generate (VER-010)', () => {
     expect(capturedQb!.andWhere).toHaveBeenCalledWith(expect.stringContaining('branchId'), { branchId: 'branch-1' });
   });
 
+  it('CR-41: refuses a batch that spans currencies instead of adding SAR to USD under one label', async () => {
+    claimedPayments([
+      { id: 'p1', amount: '100.00', currency: 'SAR' },
+      { id: 'p2', amount: '100.00', currency: 'USD' },
+    ]);
+    const settlementRepo = manager.getRepository(Settlement);
+
+    await expect(service.generate(TENANT, {})).rejects.toMatchObject({
+      code: ErrorCode.UNPROCESSABLE_ENTITY,
+    });
+    // Nothing was written; the claim UPDATE rolls back with the transaction.
+    expect(settlementRepo.save).not.toHaveBeenCalled();
+    expect(itemsService.mapPayments).not.toHaveBeenCalled();
+  });
+
+  it('CR-41: a supplied currency FILTERS the claim (case-insensitively); it is not just stamped on the batch', async () => {
+    let capturedQb: ReturnType<typeof createMockQueryBuilder> | undefined;
+    manager.createQueryBuilder.mockImplementationOnce(() => {
+      const qb = createMockQueryBuilder();
+      qb.execute = jest.fn().mockResolvedValue({ raw: [] });
+      capturedQb = qb;
+      return qb;
+    });
+
+    await expect(service.generate(TENANT, { currency: 'usd' } as never)).rejects.toMatchObject({
+      code: ErrorCode.UNPROCESSABLE_ENTITY,
+    });
+    expect(capturedQb!.andWhere).toHaveBeenCalledWith('UPPER(currency) = :currency', { currency: 'USD' });
+  });
+
+  it('CR-41: a single-currency batch is stamped with that currency', async () => {
+    claimedPayments([{ id: 'p1', amount: '10.00', currency: 'USD' }]);
+    mockSumRefunds(0);
+    const settlementRepo = manager.getRepository(Settlement);
+    settlementRepo.save.mockImplementationOnce(async (s: any) => ({ id: 'settlement-9', ...s }));
+    settlements.findOne.mockResolvedValueOnce({ id: 'settlement-9', tenant: { id: TENANT } });
+
+    await service.generate(TENANT, {});
+
+    expect(settlementRepo.save).toHaveBeenCalledWith(expect.objectContaining({ currency: 'USD' }));
+  });
+
   it('maps the claimed payment ids onto the new settlement via SettlementItemService, inside the SAME transaction manager', async () => {
     claimedPayments([{ id: 'p1', amount: '10.00' }, { id: 'p2', amount: '20.00' }]);
     mockSumRefunds(0);

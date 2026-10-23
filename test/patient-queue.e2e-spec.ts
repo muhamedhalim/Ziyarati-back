@@ -151,6 +151,7 @@ describe('Patient queue — lifecycle integrity (T166, US10, FR-Q004/FR-Q012)', 
     );
     const staff = await ds.getRepository(StaffProfile).save(
       ds.getRepository(StaffProfile).create({
+        public_slug: `stf-${Math.random().toString(36).slice(2, 10)}`,
         tenant: { id: tenantId } as Tenant,
         user: { id: staffUser.id } as User,
         title: 'Dr Queue',

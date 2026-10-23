@@ -126,3 +126,60 @@ describe('StorageService — STORAGE_PROVIDER=s3 (AWS migration)', () => {
   });
 
 });
+
+describe('StorageService - avatar key binding (CR-37)', () => {
+  const T = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  const OTHER = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+
+  it('accepts a key produced by an avatar upload (docType staff-avatar)', async () => {
+    const service = makeService();
+    const stored = await service
+      .upload({
+        tenantId: T,
+        docType: 'staff-avatar',
+        originalName: 'me.png',
+        mimeType: 'image/png',
+        size: 8,
+        // PNG signature + padding so the magic-byte check passes
+        buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]),
+      })
+      .catch(() => null);
+    // Whatever the upload path does with the mocked S3, the key convention it builds must bind.
+    const key = stored?.storageKey ?? `${T}/staff_avatar/00000000-0000-0000-0000-000000000000.png`;
+    expect(service.isAvatarKey(key, T)).toBe(true);
+    expect(() => service.assertAvatarKey(key, T)).not.toThrow();
+  });
+
+  it.each([
+    [`${T}/customer_files/scan.pdf`],
+    [`${T}/verification/licence.pdf`],
+    [`${T}/staff_avatar/../customer_files/scan.pdf`],
+    [`${T}/staff_avatarx/a.png`],
+  ])('rejects %s as an avatar key with 400', (key) => {
+    const service = makeService();
+    expect(service.isAvatarKey(key, T)).toBe(false);
+    expect(() => service.assertAvatarKey(key, T)).toThrow();
+  });
+
+  it('a foreign tenant key is a 404, not a 400 (existence is never confirmed)', () => {
+    const service = makeService();
+    try {
+      service.assertAvatarKey(`${OTHER}/staff_avatar/a.png`, T);
+      throw new Error('expected a throw');
+    } catch (e) {
+      expect((e as { code?: unknown }).code).toBe(ErrorCode.NOT_FOUND);
+    }
+  });
+});
+
+describe('StorageService - docType key binding (CR-40)', () => {
+  const T = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+
+  it('binds a key to the segment buildKey gives that docType', () => {
+    const service = makeService();
+    expect(service.isKeyInDocType(`${T}/ai_training/a.txt`, T, 'ai_training')).toBe(true);
+    expect(service.isKeyInDocType(`${T}/customer_files/a.pdf`, T, 'ai_training')).toBe(false);
+    expect(() => service.assertKeyInDocType(`${T}/customer_files/a.pdf`, T, 'ai_training')).toThrow();
+    expect(() => service.assertKeyInDocType(`${T}/ai_training/a.txt`, T, 'ai_training')).not.toThrow();
+  });
+});

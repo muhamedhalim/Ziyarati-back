@@ -41,6 +41,7 @@ describe('AiTrainingFileService physical indexing', () => {
         .fn()
         .mockResolvedValue(Buffer.from('Arabic العربية\nEnglish FAQ')),
       assertKeyBelongsToTenant: jest.fn(),
+      assertKeyInDocType: jest.fn(),
     };
     // Batch OFF + small file → the policy resolves to the synchronous STANDARD path.
     const batch = { isConfigured: jest.fn().mockReturnValue(false) };
@@ -125,6 +126,28 @@ describe('AiTrainingFileService physical indexing', () => {
     expect(files.save).toHaveBeenCalled();
     expect(uploaded.agent).toBeUndefined();
     expect(uploaded.status).toBe(TRAINING_FILE_STATUS.PENDING);
+  });
+
+  it('registers a training file only for a key bound to the ai_training docType (CR-40)', async () => {
+    const { service, files, storage } = setup();
+    storage.assertKeyInDocType.mockImplementationOnce(() => {
+      throw new Error('Storage key is not a ai_training upload.');
+    });
+
+    await expect(
+      service.upload('tenant-1', {
+        fileName: 'scan.txt',
+        fileUrl: 'tenant-1/customer_files/patient-scan.pdf',
+        fileType: 'TXT',
+        fileSize: 100,
+      } as any),
+    ).rejects.toThrow('not a ai_training upload');
+    expect(storage.assertKeyInDocType).toHaveBeenCalledWith(
+      'tenant-1/customer_files/patient-scan.pdf',
+      'tenant-1',
+      'ai_training',
+    );
+    expect(files.save).not.toHaveBeenCalled();
   });
 
   it('indexes a file with no agent (uploaded before the Admin provisioned one) — never blocked by AGENT_REQUIRED', async () => {

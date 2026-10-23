@@ -215,7 +215,7 @@ export class GuestSession {
   /** ToolContext exactly as `AiExecutionService` builds it for a guest turn (ai-execution.service.ts:605-616). */
   toolCtx(): ToolContext {
     return {
-      tenantId: this.user.tenantId,
+      tenantId: this.user.tenantId as string, // a guest principal always carries its clinic's tenant
       actorUserId: this.user.id, // <- the line under audit (H3): the guest subject, never empty
       permissions: this.user.permissions ?? [],
       aiConversationId: this.conversationId!,

@@ -148,6 +148,14 @@ export class TenantIsolationForeignKeys1730089000000 implements MigrationInterfa
     await q.query(`
       DO $$
       BEGIN
+        -- \`ai_kb_embeddings\` only exists where the pgvector migration ran. Outside production that
+        -- migration deliberately skips on a server without the extension, so a plain-Postgres
+        -- database (dev laptop, the AI-audit harness's default mode) has no such table.
+        IF to_regclass('public."${table}"') IS NULL THEN
+          RAISE NOTICE '"${table}" does not exist (optional table not provisioned) — nothing to add.';
+          RETURN;
+        END IF;
+
         IF EXISTS (
           SELECT 1 FROM pg_constraint c
             JOIN pg_class t ON t.oid = c.conrelid

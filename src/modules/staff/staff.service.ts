@@ -412,7 +412,7 @@ export class StaffService {
     // tenant-scoped pre-check is needed here anymore.
 
     if (dto.avatarStorageKey) {
-      this.storage.assertKeyBelongsToTenant(dto.avatarStorageKey, tenantId);
+      this.storage.assertAvatarKey(dto.avatarStorageKey, tenantId);
     }
 
     const temporaryPassword = randomBytes(9).toString('base64url'); // 12 chars
@@ -784,14 +784,20 @@ export class StaffService {
       if (dto.avatarStorageKey === null) {
         profile.avatar_storage_key = null;
       } else {
-        this.storage.assertKeyBelongsToTenant(dto.avatarStorageKey, tenantId);
+        this.storage.assertAvatarKey(dto.avatarStorageKey, tenantId);
         profile.avatar_storage_key = dto.avatarStorageKey;
       }
     }
 
     await this.staff.save(profile);
 
-    if (previousKey && previousKey !== profile.avatar_storage_key) {
+    // Only ever delete an object that is an avatar: a legacy row whose key points elsewhere under
+    // the tenant prefix must not take that object (e.g. a patient document) with it (CR-37).
+    if (
+      previousKey &&
+      previousKey !== profile.avatar_storage_key &&
+      this.storage.isAvatarKey(previousKey, tenantId)
+    ) {
       try {
         await this.storage.deleteObject(previousKey, tenantId);
       } catch {

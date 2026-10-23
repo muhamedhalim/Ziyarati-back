@@ -1078,6 +1078,8 @@ export const validate = (config: Record<string, unknown>) => {
     INTEGRATION_ALLOW_INSECURE_BASE_URL: Joi.string().valid('true', 'false'),
     INTEGRATION_ALLOW_PRIVATE_BASE_URL: Joi.string().valid('true', 'false'),
     INTEGRATION_OAUTH_TEST_PROVIDER: Joi.string().valid('true', 'false'),
+    // Explicit acknowledgement that production runs with SIMULATED payments (PAYMENT_PROVIDER=noop).
+    ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: Joi.string().valid('true', 'false'),
 
     // The prompt sub-budget that was added after the AI block above was
     // written. (`AI_PROMPT_ATTACHMENT_TOKENS`, `GUEST_ATTACHMENT_MAX_BYTES` and
@@ -1251,6 +1253,56 @@ export const validate = (config: Record<string, unknown>) => {
           `They are alternatives, not a pair — set exactly one so which trust ` +
           `anchor is actually in effect is unambiguous.`,
       );
+    }
+  }
+
+  // -- Production payment-provider / test-surface guards (CR-10, CR-28) ---------
+  // `PAYMENT_PROVIDER=noop` makes `paymentsLive` false, which switches OFF the
+  // factory's anti-simulation guard, and the Noop provider reports charges as
+  // succeeded without moving money. Reaching it in production by a stray env
+  // line is therefore refused; running production with payments deliberately
+  // simulated needs an explicit, greppable acknowledgement.
+  if (value.NODE_ENV === 'production') {
+    const problems: string[] = [];
+    if (
+      value.PAYMENT_PROVIDER === 'noop' &&
+      value.ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION !== 'true'
+    ) {
+      problems.push(
+        'PAYMENT_PROVIDER=noop simulates successful payments without moving money; set ' +
+          'PAYMENT_PROVIDER=tap, or ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION=true to run ' +
+          'production with simulated payments on purpose',
+      );
+    }
+    // TAP_ENV silently defaults to `sandbox`; a production deploy that forgot it would run on
+    // test keys with no signal. Real Tap needs the choice made out loud.
+    if (value.PAYMENT_PROVIDER === 'tap' && !value.TAP_ENV) {
+      problems.push(
+        'TAP_ENV is not set; production with PAYMENT_PROVIDER=tap must choose "live" or "sandbox" explicitly',
+      );
+    }
+    if (value.INTEGRATION_OAUTH_TEST_PROVIDER === 'true') {
+      problems.push(
+        'INTEGRATION_OAUTH_TEST_PROVIDER=true enables the no-network test OAuth provider and must not be set in production',
+      );
+    }
+    // An access token must never be verifiable with the refresh secret (or the reverse).
+    if (value.JWT_ACCESS_SECRET === value.JWT_REFRESH_SECRET) {
+      problems.push(
+        'JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different values',
+      );
+    }
+    if (problems.length > 0) {
+      throw new Error(`❌ Env validation error: ${problems.join('; ')}.`);
+    }
+    for (const name of ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'] as const) {
+      if (String(value[name] ?? '').length < 32) {
+        // A warning, not a refusal: the deployed secrets' length has not been read yet, and refusing
+        // to boot on a rule that has never been checked against them would risk an outage.
+        console.warn(
+          `⚠️  ${name} is shorter than 32 characters. Rotate it to at least 32 random characters.`,
+        );
+      }
     }
   }
 

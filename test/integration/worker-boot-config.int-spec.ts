@@ -33,6 +33,7 @@ const productionEnv = (overrides: Record<string, string>) => ({
   DB_SSL_CA_CERT: 'x',
   AUTH_REGISTER_OWNER_ENDPOINT_CEILING: '100',
   PAYMENT_PROVIDER: 'noop',
+  ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true',
   AWS_REGION: 'eu-central-1',
   EMAIL_FROM: 'no-reply@example.com',
   NO_COLOR: '1',

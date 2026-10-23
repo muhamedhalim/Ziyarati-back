@@ -160,6 +160,46 @@ export class StorageService {
   // ─────────────────────────── Operations ────────────────────────────────── //
 
   /**
+   * Staff avatars are uploaded with docType `staff-avatar`, which `buildKey` slugs into this
+   * path segment. An avatar key is bound to it so a staff edit cannot point the (public) avatar
+   * proxy at, or have the replace-cleanup delete, some other object under the tenant prefix
+   * (verification documents, patient files) - CR-37.
+   */
+  static readonly AVATAR_KEY_SEGMENT = 'staff_avatar';
+
+  isAvatarKey(key: string, tenantId: string): boolean {
+    return this.isKeyInDocType(key, tenantId, 'staff-avatar');
+  }
+
+  /** True when `key` sits under `<tenant>/<slug(docType)>/` - the segment `buildKey` gives that docType. */
+  isKeyInDocType(key: string, tenantId: string, docType: string): boolean {
+    return (
+      !key.includes('..') &&
+      key.startsWith(`${tenantId}/${this.slug(docType)}/`)
+    );
+  }
+
+  /** Tenant gate plus a docType binding. Foreign tenant -> 404, wrong docType -> 400. */
+  assertKeyInDocType(key: string, tenantId: string, docType: string): void {
+    this.assertKeyBelongsToTenant(key, tenantId);
+    if (!this.isKeyInDocType(key, tenantId, docType)) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: `Storage key is not a ${docType} upload.`,
+      });
+    }
+  }
+
+  /** Tenant gate plus the avatar-segment binding. Foreign tenant -> 404, wrong segment -> 400. */
+  assertAvatarKey(key: string, tenantId: string): void {
+    this.assertKeyBelongsToTenant(key, tenantId);
+    if (!this.isAvatarKey(key, tenantId)) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'avatarStorageKey must be a key returned by an avatar upload.',
+      });
+    }
+  }
+
+  /**
    * Stores an object under the tenant's prefix.
    *
    * `policy` decides what the object is ALLOWED to be. It defaults to

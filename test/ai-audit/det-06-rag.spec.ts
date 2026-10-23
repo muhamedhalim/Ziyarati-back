@@ -47,7 +47,7 @@ describe('clinic knowledge retrieval (vector path)', () => {
 
   it('F-08a FIXED: a KB row with no embedding yet is found via the keyword fallback', async () => {
     const { full } = rt.seed;
-    const timing: { retrievalMode?: string } = {};
+    const timing: { retrievalMode?: 'vector' | 'keyword' } = {};
     const found = await rag.retrieve(full.tenantId, null, 'cancellation policy', 5, timing);
     observed.no_embedding = { mode: timing.retrievalMode, chunks: found.length };
     // No row has been embedded yet for this tenant (the ANN join has zero candidates), so `retrieve()`
@@ -63,7 +63,7 @@ describe('clinic knowledge retrieval (vector path)', () => {
     await q(`INSERT INTO ai_kb_embeddings (kb_id, tenant_id, agent_id, embedding) VALUES ($1,$2,NULL,$3::vector)`, [full.kbId, full.tenantId, sql(unit(0))]);
     const embed = jest.spyOn(rt.harness.embedding, 'embed').mockResolvedValue({ vectors: [unit(1)], tokens: 1, cacheHits: 0 } as never);
 
-    const timing: { retrievalMode?: string } = {};
+    const timing: { retrievalMode?: 'vector' | 'keyword' } = {};
     const chunks = await rag.retrieve(full.tenantId, null, 'What is the capital of France?', 5, timing);
     observed.no_floor_chunks = { mode: timing.retrievalMode, chunks };
     // A real candidate WAS found and scored (score 0, below RAG_MIN_SCORE) — unlike F-08a, this must

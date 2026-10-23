@@ -166,12 +166,20 @@ jobs:
           path: image.tar.gz
           retention-days: 7
 
+  # The full quality gate (backend-ci.yml: secret/tracked-file guard, typecheck incl. specs, lint,
+  # dependency advisories, unit + integration + migration chain, e2e, security + AI audit) for THIS
+  # commit. Pull requests run backend-ci.yml directly, so it is skipped here for them; a manual
+  # rollback (image_tag) redeploys an already-tested image and skips it, like the build.
+  quality:
+    if: ${{ github.event_name != 'pull_request' && inputs.image_tag == '' }}
+    uses: ./.github/workflows/backend-ci.yml
+
   deploy-production:
-    needs: [preflight, build]
-    # Runs after a successful build, or — for a manual rollback only — with the
-    # build skipped. A FAILED build (red tests, failed typecheck) never reaches here,
-    # and a pull request never does (preflight is skipped for PRs).
-    if: ${{ always() && github.event_name != 'pull_request' && needs.preflight.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.image_tag != '')) }}
+    needs: [preflight, build, quality]
+    # Runs after a successful build AND quality gate, or — for a manual rollback only — with both
+    # skipped. A FAILED build or gate (red tests, failed typecheck, failed security suite) never
+    # reaches here, and a pull request never does (preflight is skipped for PRs).
+    if: ${{ always() && github.event_name != 'pull_request' && needs.preflight.result == 'success' && ((needs.build.result == 'success' && needs.quality.result == 'success') || (needs.build.result == 'skipped' && needs.quality.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.image_tag != '')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # ONE production deploy at a time; a second run waits (never cancelled mid-rollout, never races a rollback).

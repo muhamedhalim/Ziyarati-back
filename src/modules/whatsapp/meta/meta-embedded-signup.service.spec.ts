@@ -28,6 +28,7 @@ describe('MetaEmbeddedSignupService', () => {
   let accounts: MockRepository;
   let branches: MockRepository;
   let graph: {
+    getPhoneCoexistenceStatus: jest.Mock;
     exchangeCode: jest.Mock;
     debugToken: jest.Mock;
     getWaba: jest.Mock;

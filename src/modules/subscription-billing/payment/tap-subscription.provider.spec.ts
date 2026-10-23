@@ -105,7 +105,7 @@ describe('TapSubscriptionProvider', () => {
   describe('onModuleInit — misconfiguration alert', () => {
     const alertOf = (p: TapSubscriptionProvider) => {
       const error = jest
-        .spyOn((p as unknown as { logger: { error: () => void } }).logger, 'error')
+        .spyOn((p as unknown as { logger: { error: (message?: unknown) => void } }).logger, 'error')
         .mockImplementation();
       p.onModuleInit();
       return error;

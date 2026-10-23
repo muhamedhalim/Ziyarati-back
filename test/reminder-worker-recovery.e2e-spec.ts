@@ -85,6 +85,7 @@ describe('Reminder rows inherit the existing recovery/idempotency machinery (T06
     );
     const staff = await ds.getRepository(StaffProfile).save(
       ds.getRepository(StaffProfile).create({
+        public_slug: `stf-${Math.random().toString(36).slice(2, 10)}`,
         tenant: { id: owner.tenantId } as Tenant,
         user: { id: staffUser.id } as User,
         title: `Dr ${suffix}`,

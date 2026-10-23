@@ -11,7 +11,10 @@
  * deploy before a single container starts serving. This file is that unit.
  *
  * Running both is safe and expected: whichever runs first applies the pending
- * migrations, the other finds none pending. Both go through the SAME
+ * migrations, the other finds none pending. `run` and `revert` take the same
+ * Postgres advisory lock the boot-time runner holds, so they can never interleave
+ * with it (or with each other) - CR-11.
+ * Both go through the SAME
  * `data-source.ts` — identical entities glob, identical migrations glob,
  * identical `migrationsTransactionMode: 'each'`, identical TLS policy — so
  * this can never apply a different set than the app would.
@@ -30,6 +33,7 @@
 import 'reflect-metadata';
 
 import AppDataSource from './config/data-source';
+import { withMigrationAdvisoryLock } from './config/run-migrations-with-lock';
 import {
   scrubFailureReason,
   scrubText,
@@ -108,12 +112,16 @@ async function main(): Promise<void> {
     }
 
     if (command === 'revert') {
-      await AppDataSource.undoLastMigration();
+      await withMigrationAdvisoryLock(AppDataSource, () =>
+        AppDataSource.undoLastMigration(),
+      );
       console.log('[migrate] reverted the most recently applied migration.');
       return;
     }
 
-    const applied = await AppDataSource.runMigrations();
+    const applied = await withMigrationAdvisoryLock(AppDataSource, () =>
+      AppDataSource.runMigrations(),
+    );
     if (applied.length === 0) {
       console.log('[migrate] no pending migrations — schema already current.');
     } else {

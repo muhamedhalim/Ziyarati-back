@@ -88,6 +88,7 @@ describe('read-audit of D4 reads outside the clinical module (P14)', () => {
         { getDetails: jest.fn().mockResolvedValue({ id: CUSTOMER }) } as never,
         ctx(user),
         { record } as never,
+        {} as never, // CustomerAiRepliesService — not exercised by the read-audit assertions
       );
 
     it('is recorded only when the caller was given the health intake', async () => {

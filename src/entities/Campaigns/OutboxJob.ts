@@ -74,6 +74,13 @@ export class OutboxJob {
   @Column({ type: 'timestamptz', nullable: true })
   claimed_at?: Date | null;
 
+  /**
+   * Earliest time the relay may claim this row again after a failed publish (exponential backoff,
+   * see `outboxBackoffMs`). NULL = never failed / due now.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  next_attempt_at?: Date | null;
+
   @CreateDateColumn()
   created_at!: Date;
 }

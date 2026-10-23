@@ -114,6 +114,7 @@ describe('Advanced analytics trends — multi-branch regression (T144, spec 014,
     const services = e2e.dataSource.getRepository(Service);
     await services.save(
       services.create({
+        public_slug: `svc-${Math.random().toString(36).slice(2, 10)}`,
         tenant: { id: owner.tenantId } as Tenant,
         name: 'Consult',
         duration_minutes: 30,
@@ -136,6 +137,7 @@ describe('Advanced analytics trends — multi-branch regression (T144, spec 014,
       );
       const staff = await e2e.dataSource.getRepository(StaffProfile).save(
         e2e.dataSource.getRepository(StaffProfile).create({
+          public_slug: `stf-${Math.random().toString(36).slice(2, 10)}`,
           user: { id: user.id } as User,
           tenant: { id: owner.tenantId } as Tenant,
         }),
