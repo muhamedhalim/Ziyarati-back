@@ -32,6 +32,7 @@ import { randomUUID } from 'node:crypto';
 import { WhatsappProcessor } from '../src/worker/processors/whatsapp.processor';
 import { CampaignLaunchProcessor, CampaignFanoutProcessor } from '../src/worker/processors/campaigns.processor';
 import { WhatsappExecutionService } from '../src/modules/whatsapp/whatsapp-execution.service';
+import { WhatsappCoexistenceSyncService } from '../src/modules/whatsapp/meta/whatsapp-coexistence-sync.service';
 import { CampaignFanoutService } from '../src/modules/campaigns/campaign-fanout.service';
 import { TenantContextService } from '../src/core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../src/queue/worker-authorization.service';
@@ -102,6 +103,9 @@ describe('Processor DLQ routing — WHATSAPP_OUTBOUND, CAMPAIGNS_LAUNCH, CAMPAIG
         CampaignLaunchProcessor,
         CampaignFanoutProcessor,
         { provide: WhatsappExecutionService, useValue: execution },
+        // The processor's 5th dependency (coexistence history sync). These specs exercise failed-send
+        // routing to the DLQ only, so an inert stand-in is the right size of fake.
+        { provide: WhatsappCoexistenceSyncService, useValue: { run: jest.fn() } },
         { provide: CampaignFanoutService, useValue: fanout },
         TenantContextService,
         { provide: WorkerAuthorizationService, useValue: authz },

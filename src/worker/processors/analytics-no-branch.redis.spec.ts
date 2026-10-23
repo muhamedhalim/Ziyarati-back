@@ -10,6 +10,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { QueueService } from '../../queue/queue.service';
 import { ProducerQueues } from '../../queue/producer-queues';
 import { ALL_QUEUES, JOB, QUEUE, QueueName } from '../../queue/queue.constants';
+import { infraUnavailable } from '../../../test/utils/require-infra';
 
 /**
  * Root cause of the permanent "failed" count on /platform/monitoring, proven
@@ -62,7 +63,10 @@ describe('analytics.generateReport for a tenant with no active branch (real Bull
 
   beforeAll(async () => {
     available = await redisAvailable();
-    if (!available) return;
+    if (!available) {
+      infraUnavailable('Redis', REDIS_URL);
+      return;
+    }
     Logger.overrideLogger(['error']);
     queues = Object.fromEntries(
       ALL_QUEUES.map((name) => [name, new Queue(name, { connection, prefix })]),

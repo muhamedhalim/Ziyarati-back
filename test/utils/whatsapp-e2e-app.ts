@@ -282,63 +282,119 @@ export async function createOwnerFixture(
   return { tenantId: tenant.id, userId: user.id, token, email: user.email! };
 }
 
+/**
+ * Grants a user the pre-seeded SYSTEM role `slug` (tenant IS NULL — never a tenant's own custom role
+ * of the same slug).
+ *
+ * Why fixtures need this: `AppointmentsService.assertStaffBookableForAppointments` only accepts a
+ * staff member whose linked account holds a branch-manager, doctor or nurse role. A `StaffProfile`
+ * saved on its own is therefore not bookable, and `POST /appointments` answers 422. A fixture that
+ * models "a bookable doctor" must give the account the doctor role, as production does.
+ */
+export async function grantSystemRole(
+  e2e: Pick<E2eApp, 'dataSource'>,
+  userId: string,
+  slug: string,
+): Promise<void> {
+  const role = await e2e.dataSource
+    .getRepository(Role)
+    .createQueryBuilder('r')
+    .where('r.slug = :slug', { slug })
+    .andWhere('r."tenantId" IS NULL')
+    .getOne();
+  if (!role) {
+    throw new Error(
+      `Seeded system role "${slug}" not found — run the RBAC seed (src/seed) against the test database first.`,
+    );
+  }
+  const userRoles = e2e.dataSource.getRepository(UserRole);
+  await userRoles.save(
+    userRoles.create({ user: { id: userId } as User, role: { id: role.id } as Role }),
+  );
+}
+
+
 export function authHeader(token: string): [string, string] {
   return ['Authorization', `Bearer ${token}`];
 }
 
 /**
- * Deletes every row this suite could have created under `tenantId`, in
- * FK-safe order (children before parents). Never touches another tenant's
- * data — every query is scoped by tenantId (directly or via a join).
+ * Deletes every row a suite could have created under `tenantId`, then the tenant. Never touches
+ * another tenant's data: every statement is scoped by this tenant id (directly, or through the
+ * tenant-owned parent row for join tables that carry no tenant column).
+ *
+ * WHY A SWEEP AND NOT A TABLE LIST. This helper used to be a hand-ordered list of `DELETE`s. Every
+ * new table with a foreign key into `tenants`/`customers`/`users` then broke the teardown of every
+ * suite that touched it (CR-13: `email_logs`, `appointments` and `clinical_entry_revisions` all did),
+ * and the failure surfaced as "Test suite failed to run" far from its cause. Instead the helper
+ * discovers every table with a `tenantId` / `tenant_id` column and deletes from all of them, retrying
+ * the ones a foreign key still blocks until a pass makes them all succeed. FK order is then the
+ * database's business, not this file's. A genuine leftover still fails loudly on the final tenant
+ * delete, naming the constraint.
  */
 export async function cleanupTenant(
   e2e: E2eApp,
   tenantId: string,
 ): Promise<void> {
-  const q = (sql: string) => e2e.dataSource.query(sql, [tenantId]);
-  // Every HTTP request the tests made against this tenant left a request-log
-  // row with an FK to it — delete those first or the final tenant DELETE 409s.
-  await q(`DELETE FROM api_logs WHERE "tenantId" = $1`);
-  await q(`DELETE FROM notification_logs WHERE "tenantId" = $1`);
-  // Only populated if a real worker happens to run an analytics job against
-  // this tenant while the test is still live (e.g. a manual worker boot
-  // during local debugging) — harmless no-op otherwise.
-  await q(`DELETE FROM dashboard_metrics WHERE "tenantId" = $1`);
-  await q(`DELETE FROM message_status_logs WHERE "tenantId" = $1`);
-  await q(`DELETE FROM message_attachments WHERE "tenantId" = $1`);
-  await q(`DELETE FROM messages WHERE "tenantId" = $1`);
-  await q(`DELETE FROM conversations WHERE "tenantId" = $1`);
-  await q(
+  const ds = e2e.dataSource;
+
+  /**
+   * Runs a delete; returns false (instead of throwing) when it cannot complete YET — typically a
+   * foreign key from a table that has not been swept this pass. Any other error is remembered and
+   * reported only if the final tenant delete then fails, so an unrelated trigger or permission on a
+   * table this suite never touched cannot break a teardown that would otherwise succeed.
+   */
+  let lastError: unknown;
+  const tryDelete = async (sql: string): Promise<boolean> => {
+    try {
+      await ds.query(sql, [tenantId]);
+      return true;
+    } catch (error) {
+      lastError = error;
+      return false;
+    }
+  };
+
+  const columns: { table_name: string; column_name: string }[] = await ds.query(
+    `SELECT c.table_name, c.column_name
+       FROM information_schema.columns c
+       JOIN information_schema.tables t
+         ON t.table_schema = c.table_schema AND t.table_name = c.table_name AND t.table_type = 'BASE TABLE'
+      WHERE c.table_schema = current_schema()
+        AND c.column_name IN ('tenantId', 'tenant_id')
+        AND c.table_name <> 'tenants'`,
+  );
+
+  // Join / child tables that carry no tenant column of their own.
+  const viaParent = [
     `DELETE FROM campaign_recipients WHERE "runId" IN (SELECT id FROM campaign_runs WHERE "tenantId" = $1)`,
-  );
-  await q(`DELETE FROM campaign_runs WHERE "tenantId" = $1`);
-  await q(`DELETE FROM campaigns WHERE "tenantId" = $1`);
-  await q(`DELETE FROM whatsapp_webhooks WHERE "tenantId" = $1`);
-  await q(`DELETE FROM whatsapp_templates WHERE "tenantId" = $1`);
-  await q(`DELETE FROM whatsapp_contacts WHERE "tenantId" = $1`);
-  await q(`DELETE FROM whatsapp_accounts WHERE "tenantId" = $1`);
-  // Uploaded-file metadata (ZT-004b coverage is the first e2e path to create
-  // rows here) — children of `customers` / `tenants` respectively, so both
-  // must go before the deletes below.
-  await q(`DELETE FROM customer_files WHERE "tenantId" = $1`);
-  await q(`DELETE FROM ai_training_files WHERE "tenantId" = $1`);
-  await q(`DELETE FROM customers WHERE "tenantId" = $1`);
-  // Phase 6: `audit_logs."userId"` FKs to `users` with NO ACTION (branch is
-  // the only nullable/SET NULL side of this entity) — any spec whose flow
-  // writes an audit row (e.g. AppointmentService.create) previously 409'd
-  // the final `DELETE FROM users` below. Surfaced by
-  // staff-availability-soft-deleted-schedule.e2e-spec.ts once its own seed
-  // bug (missing public_slug) stopped masking it.
-  await q(`DELETE FROM audit_logs WHERE "tenantId" = $1`);
-  await q(
+    `DELETE FROM role_permissions WHERE "roleId" IN (SELECT id FROM roles WHERE "tenantId" = $1)`,
     `DELETE FROM user_roles WHERE "userId" IN (SELECT id FROM users WHERE "tenantId" = $1)`,
+  ];
+  const perTable = columns.map(
+    (c) => `DELETE FROM "${c.table_name}" WHERE "${c.column_name}" = $1`,
   );
-  await q(`DELETE FROM users WHERE "tenantId" = $1`);
-  // Request logging is async (fire-and-forget), so a row for the very last
-  // HTTP call in a test can still land after the FIRST api_logs delete above
-  // — delete again immediately before the tenant row it FKs to.
-  await q(`DELETE FROM api_logs WHERE "tenantId" = $1`);
-  await q(`DELETE FROM tenants WHERE id = $1`);
+
+  const MAX_PASSES = 8;
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    let blocked = 0;
+    for (const sql of [...viaParent, ...perTable]) {
+      if (!(await tryDelete(sql))) blocked++;
+    }
+    if (blocked === 0) break;
+  }
+
+  // Request logging is async (fire-and-forget), so a row for the very last HTTP call of a test can
+  // still land after the sweep — delete again immediately before the tenant row it points at.
+  await ds.query(`DELETE FROM api_logs WHERE "tenantId" = $1`, [tenantId]);
+  try {
+    await ds.query(`DELETE FROM tenants WHERE id = $1`, [tenantId]);
+  } catch (error) {
+    if (lastError) {
+      console.error('cleanupTenant: last blocked statement was:', (lastError as Error).message);
+    }
+    throw error;
+  }
 }
 
 /**

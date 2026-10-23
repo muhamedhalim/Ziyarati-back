@@ -37,6 +37,7 @@ import { randomUUID } from 'node:crypto';
 
 import { WhatsappProcessor } from '../src/worker/processors/whatsapp.processor';
 import { WhatsappExecutionService } from '../src/modules/whatsapp/whatsapp-execution.service';
+import { WhatsappCoexistenceSyncService } from '../src/modules/whatsapp/meta/whatsapp-coexistence-sync.service';
 import { TenantContextService } from '../src/core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../src/queue/worker-authorization.service';
 import { QueueService } from '../src/queue/queue.service';
@@ -92,6 +93,9 @@ describe('WhatsApp outbound send — provider failure must reach WHATSAPP_DLQ (F
       providers: [
         WhatsappProcessor,
         { provide: WhatsappExecutionService, useValue: execution },
+        // The processor's 5th dependency (coexistence history sync). These specs exercise failed-send
+        // routing to the DLQ only, so an inert stand-in is the right size of fake.
+        { provide: WhatsappCoexistenceSyncService, useValue: { run: jest.fn() } },
         TenantContextService,
         { provide: WorkerAuthorizationService, useValue: authz },
         // A REAL-Redis-backed stand-in for QueueService's ONE method this

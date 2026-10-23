@@ -42,13 +42,6 @@ require('dotenv/config');
 const { Client } = require('pg');
 const { execFileSync } = require('node:child_process');
 
-// ── Source server (existing compose Postgres, port 5433) — RBAC catalogue lives here.
-const SRC_HOST = process.env.DB_HOST || '127.0.0.1';
-const SRC_PORT = Number(process.env.DB_PORT || 5433);
-const SRC_USER = process.env.DB_USERNAME || 'postgres';
-const SRC_PASSWORD = process.env.DB_PASSWORD;
-const SOURCE_DB = process.env.E2E_RBAC_SOURCE_DB || 'ziyarati';
-
 // ── Target server (pgvector-capable container, port 5434) — see environment-record.md §pgvector.
 const TGT_HOST = process.env.PGVECTOR_DB_HOST || '127.0.0.1';
 const TGT_PORT = Number(process.env.PGVECTOR_DB_PORT || 5434);
@@ -126,82 +119,44 @@ async function main() {
   }
   await verify.end();
 
-  // ── 4. Copy the system RBAC catalogue — CROSS-HOST (source 5433, target 5434). ──
-  // Logic identical to setup-e2e-db.js's copyPermissions/copyRoles/copyRolePermissions,
-  // just against two independently-connected clients instead of one shared-host pair.
-  const src = new Client({ host: SRC_HOST, port: SRC_PORT, user: SRC_USER, password: SRC_PASSWORD, database: SOURCE_DB });
+  // ── 4. Seed the system RBAC catalogue (CR-13). ───────────────────────────
+  // This used to copy the catalogue out of a SECOND Postgres server (a developer's `ziyarati` database
+  // on 5433), which made the harness impossible on a clean machine or in CI. The seed is the
+  // catalogue's single source of truth and is what production is provisioned with, so run exactly that
+  // against the target. No other database is read.
+  execFileSync(
+    process.execPath,
+    [require.resolve('ts-node/dist/bin.js'), '--project', 'tsconfig.seed.json', 'src/seed/seed.ts'],
+    {
+      stdio: ['ignore', 'ignore', 'inherit'],
+      env: {
+        ...process.env,
+        DB_HOST: TGT_HOST,
+        DB_PORT: String(TGT_PORT),
+        DB_USERNAME: TGT_USER,
+        DB_PASSWORD: TGT_PASSWORD,
+        DB_NAME: TARGET_DB,
+        DATABASE_URL: targetUrl,
+        TYPEORM_SYNCHRONIZE: 'false',
+        OPENAI_EMBEDDING_DIM: EMBEDDING_DIM,
+        AI_PGVECTOR_ENABLED: 'true',
+      },
+    },
+  );
+  console.log('✓ seed applied (RBAC catalogue + platform admin)');
+
   const dst = new Client({ host: TGT_HOST, port: TGT_PORT, user: TGT_USER, password: TGT_PASSWORD, database: TARGET_DB });
-  await src.connect();
   await dst.connect();
-
-  const copyPermissions = async () => {
-    const rows = (await src.query('SELECT * FROM permissions')).rows;
-    let inserted = 0;
-    for (const row of rows) {
-      const cols = Object.keys(row);
-      const result = await dst.query(
-        `INSERT INTO permissions(${cols.map((c) => `"${c}"`).join(',')}) ` +
-          `VALUES(${cols.map((_, i) => `$${i + 1}`).join(',')}) ON CONFLICT ("slug") DO NOTHING`,
-        cols.map((c) => row[c]),
-      );
-      inserted += result.rowCount;
-    }
-    return inserted;
-  };
-
-  const copyRoles = async () => {
-    const rows = (await src.query('SELECT * FROM roles WHERE "tenantId" IS NULL')).rows;
-    let inserted = 0;
-    for (const row of rows) {
-      const exists = await dst.query('SELECT 1 FROM roles WHERE slug = $1 AND "tenantId" IS NULL', [row.slug]);
-      if (exists.rowCount > 0) continue;
-      const cols = Object.keys(row);
-      await dst.query(
-        `INSERT INTO roles(${cols.map((c) => `"${c}"`).join(',')}) VALUES(${cols.map((_, i) => `$${i + 1}`).join(',')})`,
-        cols.map((c) => row[c]),
-      );
-      inserted++;
-    }
-    return inserted;
-  };
-
-  const copyRolePermissions = async () => {
-    const rows = (
-      await src.query(
-        'SELECT ro.slug AS role_slug, p.slug AS perm_slug FROM role_permissions rp ' +
-          'JOIN roles ro ON ro.id = rp."roleId" JOIN permissions p ON p.id = rp."permissionId" ' +
-          'WHERE ro."tenantId" IS NULL',
-      )
-    ).rows;
-    let inserted = 0;
-    for (const row of rows) {
-      const result = await dst.query(
-        `INSERT INTO role_permissions("roleId", "permissionId")
-         SELECT ro.id, p.id FROM roles ro, permissions p
-         WHERE ro.slug = $1 AND ro."tenantId" IS NULL AND p.slug = $2
-         ON CONFLICT DO NOTHING`,
-        [row.role_slug, row.perm_slug],
-      );
-      inserted += result.rowCount;
-    }
-    return inserted;
-  };
-
-  const p = await copyPermissions();
-  const r = await copyRoles();
-  const rp = await copyRolePermissions();
-  console.log(`✓ RBAC catalogue copied cross-host (5433/${SOURCE_DB} → 5434/${TARGET_DB}): permissions=${p} roles=${r} role_permissions=${rp}`);
 
   const doctorRole = await dst.query(`SELECT 1 FROM roles WHERE slug = 'doctor' AND "tenantId" IS NULL`);
   if (doctorRole.rowCount === 0) {
-    throw new Error('seedAiAudit requires the "doctor" system role — RBAC copy did not land it. Check SOURCE_DB has it.');
+    throw new Error('seedAiAudit requires the "doctor" system role — the seed did not create it.');
   }
   console.log('✓ seeded "doctor" system role confirmed present (seedAiAudit dependency)');
 
   const idx = await dst.query(`SELECT indexname FROM pg_indexes WHERE indexname LIKE 'UQ_integration%' ORDER BY 1`);
   console.log(`✓ integration unique indexes present: ${idx.rows.length}`);
 
-  await src.end();
   await dst.end();
 }
 

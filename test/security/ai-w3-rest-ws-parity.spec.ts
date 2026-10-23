@@ -98,7 +98,8 @@ describe('W3 — REST vs WS authorization parity, same principal (T098)', () => 
     // refuses with 403 is now ALSO refused over WS — an ai:error, never a
     // throw across the socket (FR-016).
     expect(spy).not.toHaveBeenCalled();
-    expect(client.emit).toHaveBeenCalledWith(AI_EVENT.ERROR, { message: 'Forbidden' });
+    // The WS error envelope carries a machine-readable `code` (ErrorCode.FORBIDDEN) next to the message.
+    expect(client.emit).toHaveBeenCalledWith(AI_EVENT.ERROR, { code: 'FORBIDDEN', message: 'Forbidden' });
 
     spy.mockRestore();
   });

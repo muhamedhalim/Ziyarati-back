@@ -32,6 +32,7 @@ import cookieParser from 'cookie-parser';
 import {
   createE2eApp,
   createOwnerFixture,
+  cleanupTenant,
   authHeader,
   type E2eApp,
   type OwnerFixture,
@@ -166,22 +167,9 @@ describe('GET /clinical/entries/:id/revisions (real HTTP, migration-built DB)', 
   }, 60_000);
 
   afterAll(async () => {
-    const q = (sql: string) => e2e.dataSource.query(sql, [owner.tenantId]);
-    await q(`DELETE FROM clinical_access_logs WHERE "tenantId" = $1`);
-    await q(`DELETE FROM clinical_entry_revisions WHERE "tenantId" = $1`);
-    await q(`DELETE FROM clinical_entries WHERE "tenantId" = $1`);
-    await q(`DELETE FROM customers WHERE "tenantId" = $1`);
-    await q(
-      `DELETE FROM role_permissions WHERE "roleId" IN (SELECT id FROM roles WHERE "tenantId" = $1)`,
-    );
-    await q(
-      `DELETE FROM user_roles WHERE "userId" IN (SELECT id FROM users WHERE "tenantId" = $1)`,
-    );
-    await q(`DELETE FROM roles WHERE "tenantId" = $1`);
-    await q(`DELETE FROM api_logs WHERE "tenantId" = $1`);
-    await q(`DELETE FROM users WHERE "tenantId" = $1`);
-    await q(`DELETE FROM api_logs WHERE "tenantId" = $1`);
-    await q(`DELETE FROM tenants WHERE id = $1`);
+    // Shared sweep: discovers every tenant-scoped table (clinical rows, audit rows written by the
+    // requests above, roles, users, ...) and deletes in an order the foreign keys accept.
+    await cleanupTenant(e2e, owner.tenantId);
     await e2e.app.close();
   }, 60_000);
 
@@ -237,12 +225,12 @@ describe('GET /clinical/entries/:id/revisions (real HTTP, migration-built DB)', 
       .set(...authHeader(reader.token));
     expect(res.status).toBe(404);
 
-    const q = (sql: string) => e2e.dataSource.query(sql, [otherOwner.tenantId]);
-    await q(`DELETE FROM clinical_access_logs WHERE "tenantId" = $1`);
-    await q(`DELETE FROM clinical_entries WHERE "tenantId" = $1`);
-    await q(`DELETE FROM customers WHERE "tenantId" = $1`);
-    await q(`DELETE FROM api_logs WHERE "tenantId" = $1`);
-    await q(`DELETE FROM tenants WHERE id = $1`);
+    // The foreign owner has users, roles and clinical rows the entry created: remove them all, in
+    // FK-safe order, with the shared helper instead of a hand-maintained table list.
+    await e2e.dataSource.query(`DELETE FROM clinical_access_logs WHERE "tenantId" = $1`, [otherOwner.tenantId]);
+    await e2e.dataSource.query(`DELETE FROM clinical_entry_revisions WHERE "tenantId" = $1`, [otherOwner.tenantId]);
+    await e2e.dataSource.query(`DELETE FROM clinical_entries WHERE "tenantId" = $1`, [otherOwner.tenantId]);
+    await cleanupTenant(e2e, otherOwner.tenantId);
   });
 
   it('entry exists but has never been corrected — 200 with an empty array', async () => {
@@ -332,7 +320,17 @@ describe('GET /clinical/entries/:id/revisions (real HTTP, migration-built DB)', 
             next();
           }),
       );
-      failingApp.useGlobalFilters(new AllExceptionsFilter());
+      // The "no SQL / schema detail" guarantee is a PRODUCTION one: outside production the filter adds
+      // the stack to `context` as a debugging aid (all-exceptions.filter.ts), and a QueryFailedError's
+      // stack names the failing statement. Build the filter the way production builds it so this test
+      // pins the behaviour clients actually get; `isProduction` is read once, at construction.
+      const previousEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      try {
+        failingApp.useGlobalFilters(new AllExceptionsFilter());
+      } finally {
+        process.env.NODE_ENV = previousEnv;
+      }
       failingApp.use(cookieParser());
       failingApp.setGlobalPrefix('api/v1');
       failingApp.useGlobalPipes(

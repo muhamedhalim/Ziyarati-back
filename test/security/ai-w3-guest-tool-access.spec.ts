@@ -140,7 +140,10 @@ describe('W3 — every tool executed as a GUEST principal, reachable-set enumera
 
   it('the DISPATCHER-reachable set (not authorization-blocked) is a SUPERSET of the ADVERTISED guest catalog, not identical to it — reports the exact delta', () => {
     const advertisedGuestSet = new Set<string>([...PUBLIC_DISCOVERY_TOOL_NAMES, ...AI_PUBLIC_BOOKING_TOOLS.map((t) => t.name)]);
-    expect(advertisedGuestSet.size).toBe(13); // 4 reused discovery/handover + 9 public-only, per w3-advertisement.md
+    // 6 reused discovery/branch/handover tools + 9 public-only. It was 13; `get_branch_info` and
+    // `get_doctor_schedule` were added to the guest catalog deliberately ("what are your hours?" had no tool
+    // at all — ai-public-booking-tools.constants.ts), so 15 is the reviewed size and a change must be explicit.
+    expect(advertisedGuestSet.size).toBe(15);
 
     const dispatcherReachable = new Set(
       Object.entries(observed)

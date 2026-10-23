@@ -117,6 +117,11 @@ describe('Email campaign consent + suppression — real Postgres (T129, FR-E005/
   }
 
   async function addRecipient(customerId: string) {
+    // The dispatcher completes a run as soon as every recipient is terminal (atomic completion
+    // check), and a COMPLETED run skips any further recipient as `run-stopped`. This suite shares one
+    // run across tests, so re-open it before each new recipient — the production equivalent is a run
+    // that still has pending recipients.
+    await runRepo.update({ id: runId }, { execution: CampaignExecution.PROCESSING });
     return recipientRepo.save(
       recipientRepo.create({
         run: { id: runId },

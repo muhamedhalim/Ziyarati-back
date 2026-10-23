@@ -503,13 +503,21 @@ describe('Integration API — E2E audit (documented contract vs implementation)'
       expect(err.headers['x-request-id']).toBe(err.body.requestId);
     });
 
-    it('A-04 a caller-supplied X-Request-Id is honoured only when short and boring; otherwise replaced', async () => {
+    // Carries entropy (16+ mixed alphanumerics), so the LSA-09 middleware honours it.
+    const GOOD_REQUEST_ID = 'pms-req_42.4f9c1a7b2d3e5f60ab:1';
+
+    it('A-04 a caller-supplied X-Request-Id is honoured only when short, boring AND machine-generated (LSA-09); otherwise replaced', async () => {
       const long = 'x'.repeat(2000);
       const r = await call('get', '/integrations/me', {
         key: fullKey,
         headers: { 'X-Request-Id': long },
       });
       const good = await call('get', '/integrations/me', {
+        key: fullKey,
+        headers: { 'X-Request-Id': GOOD_REQUEST_ID },
+      });
+      // LSA-09: a short chosen word / number is well-formed but carries no entropy, so it is replaced too.
+      const chosen = await call('get', '/integrations/me', {
         key: fullKey,
         headers: { 'X-Request-Id': 'pms-req_42.abc:1' },
       });
@@ -522,11 +530,12 @@ describe('Integration API — E2E audit (documented contract vs implementation)'
         category: 'A',
         title: 'Request-id echo bounds',
         route: 'GET /integrations/me',
-        expected: '1-128 chars of [A-Za-z0-9._:-] echoed; anything else replaced by a generated id',
+        expected: '1-128 chars of [A-Za-z0-9._:-] that look machine-generated (UUID / 16+ mixed alphanumerics) echoed; anything else replaced by a generated id',
         actual: {
           status: r.status,
           oversizedEchoedLength: String(r.headers['x-request-id'] ?? '').length,
           goodEchoed: good.headers['x-request-id'],
+          chosenWordEchoed: chosen.headers['x-request-id'],
           oddEchoed: odd.headers['x-request-id'],
         },
         finding: 'C11',
@@ -534,7 +543,8 @@ describe('Integration API — E2E audit (documented contract vs implementation)'
       expect(r.status).toBe(200);
       expect(String(r.headers['x-request-id']).length).toBeLessThanOrEqual(128);
       expect(r.headers['x-request-id']).not.toBe(long);
-      expect(good.headers['x-request-id']).toBe('pms-req_42.abc:1');
+      expect(good.headers['x-request-id']).toBe(GOOD_REQUEST_ID);
+      expect(chosen.headers['x-request-id']).toMatch(/^[0-9a-f-]{36}$/);
       expect(odd.headers['x-request-id']).toMatch(/^[0-9a-f-]{36}$/);
     });
 

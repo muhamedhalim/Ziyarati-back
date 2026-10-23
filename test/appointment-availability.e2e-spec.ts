@@ -31,6 +31,7 @@ import {
   authHeader,
   type E2eApp,
   type OwnerFixture,
+  grantSystemRole,
 } from './utils/whatsapp-e2e-app';
 
 import { Appointment } from '../src/entities/Calendar&Appointments/Appointment';
@@ -122,6 +123,8 @@ describe('Appointment staff-availability enforcement (container-backed) — real
         is_active: true,
       }),
     );
+    // A staff member is only bookable when the account holds a doctor/nurse/branch-manager role.
+    await grantSystemRole(e2e, staffUser.id, 'doctor');
     const staff = await ds.getRepository(StaffProfile).save(
       ds.getRepository(StaffProfile).create({
         public_slug: `stf-${Math.random().toString(36).slice(2, 10)}`,
@@ -331,13 +334,54 @@ describe('Appointment staff-availability enforcement (container-backed) — real
     );
   });
 
-  it('allows any hour on a day with NO schedule configured while the clinic has not opted in', async () => {
-    // Thursday: no WorkingHour, no StaffSchedule, nothing configured at all.
-    // Default behaviour is permissive so clinics that never maintain schedules
-    // are not locked out of their own calendar.
+  /**
+   * A bookable doctor with NO recurring schedule at all. The clinic's own doctor has a Wednesday
+   * schedule, and a staff member with ANY schedule is restricted to it regardless of the clinic-wide
+   * toggle (availability.service.ts: rule (b)) — so "a day nothing configures" can only be exercised
+   * with someone nothing configures.
+   */
+  async function createUnscheduledDoctor(c: ClinicFixture): Promise<string> {
+    const ds = e2e.dataSource;
+    const suffix = randomUUID().slice(0, 8);
+    const user = await ds.getRepository(User).save(
+      ds.getRepository(User).create({
+        tenant: { id: c.owner.tenantId } as Tenant,
+        email: `unscheduled-${suffix}@example.test`,
+        full_name: `Dr Unscheduled ${suffix}`,
+        is_active: true,
+      }),
+    );
+    await grantSystemRole(e2e, user.id, 'doctor');
+    const profile = await ds.getRepository(StaffProfile).save(
+      ds.getRepository(StaffProfile).create({
+        public_slug: `stf-${Math.random().toString(36).slice(2, 10)}`,
+        tenant: { id: c.owner.tenantId } as Tenant,
+        user: { id: user.id } as User,
+        title: `Dr Unscheduled ${suffix}`,
+        is_available_for_booking: true,
+      }),
+    );
+    return profile.id;
+  }
+
+  it('allows any hour for a staff member with NO schedule configured while the clinic has not opted in', async () => {
+    // Thursday, and a doctor with no StaffSchedule at all. Default behaviour is permissive so clinics
+    // that never maintain schedules are not locked out of their own calendar.
+    await setEnforceWorkingHours(clinic.owner.tenantId, false);
+    const staffId = await createUnscheduledDoctor(clinic);
+    const res = await book(clinic, '2031-05-15T03:00:00.000Z', { staffId });
+    expect(res.status).toBe(201);
+  });
+
+  it('a staff member WITH a working-days schedule is restricted to it even when the clinic has not opted in', async () => {
+    // The per-employee rule is enforced from the moment a schedule exists, independent of the toggle.
     await setEnforceWorkingHours(clinic.owner.tenantId, false);
     const res = await book(clinic, '2031-05-15T03:00:00.000Z');
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe(ErrorCode.STAFF_NOT_AVAILABLE);
+    expect(res.body.context.reasonCodes).toContain(
+      BookabilityReason.OUTSIDE_WORKING_HOURS,
+    );
   });
 
   it('rejects the same unconfigured day once the clinic opts into strict working hours', async () => {

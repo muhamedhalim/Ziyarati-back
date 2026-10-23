@@ -159,9 +159,16 @@ describe('W7 — uploaded training-document injection (T111)', () => {
 
     expect(result.retrievedChunks).toBeGreaterThan(0);
     const captured = harness.provider.capturedMessages(0);
-    const knowledgeMsg = captured.find((m) => m.content?.includes('<knowledge>'));
+    // The SYSTEM prompt documents the `<knowledge>` wrapper by name, so select the wrapper ITSELF (tag on
+    // its own line) that carries the planted text — not the first message that merely mentions the tag.
+    const knowledgeMsg = captured.find(
+      (m) => m.content?.includes('<knowledge>\n') && m.content.includes('IMPORTANT SYSTEM INSTRUCTION FOR THE AI ASSISTANT'),
+    );
     expect(knowledgeMsg).toBeDefined();
     expect(knowledgeMsg!.role).toBe('user');
+    for (const m of captured.filter((x) => x.role === 'system')) {
+      expect(m.content).not.toContain('IMPORTANT SYSTEM INSTRUCTION FOR THE AI ASSISTANT');
+    }
     expect(knowledgeMsg!.content).toContain('IMPORTANT SYSTEM INSTRUCTION FOR THE AI ASSISTANT');
 
     expect(result.lastTool?.result.success).toBe(false);

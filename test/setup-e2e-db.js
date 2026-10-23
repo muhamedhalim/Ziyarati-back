@@ -1,8 +1,8 @@
 /**
  * Builds the HTTP-e2e database the way PRODUCTION is built: from the migration
- * chain, not from TypeORM `synchronize`.
+ * chain, not from TypeORM `synchronize`, and from NOTHING else.
  *
- * Why this exists. The shared dev database is created with
+ * Why migrations. The shared dev database is created with
  * `TYPEORM_SYNCHRONIZE=true`, and synchronize DROPS any index it cannot derive
  * from entity metadata — which is exactly the partial unique indexes the
  * integration platform relies on for correctness:
@@ -13,10 +13,15 @@
  *   UQ_integration_id_map_external/internal  the 1:1 mapping guarantees
  *
  * Running the e2e suite against a synchronize-built database therefore cannot
- * prove any DB-enforced guarantee — the constraint simply is not there. This
- * script provisions a dedicated database from migrations and copies ONLY the
- * system RBAC catalogue (roles/permissions with `tenantId IS NULL`) that the
- * test fixtures need; no tenant data is copied.
+ * prove any DB-enforced guarantee — the constraint simply is not there.
+ *
+ * Why the seed and not a copy (CR-13). This script used to copy the system RBAC
+ * catalogue out of the developer's own `ziyarati` database. That made a local
+ * run depend on whatever a developer's database happened to hold, and made it
+ * impossible on a clean machine or in CI (which therefore used a different
+ * path). The seed (`npm run seed`) is the catalogue's single source of truth and
+ * is what production is provisioned with, so the e2e database now runs exactly
+ * that: migrations, then the seed. No other database is read.
  *
  * Usage:
  *   node test/setup-e2e-db.js
@@ -26,7 +31,8 @@
  *     npx jest --config ./test/jest-e2e.json --runInBand
  *
  * TYPEORM_SYNCHRONIZE=false is REQUIRED when running against it — otherwise the
- * app drops those indexes again on boot.
+ * app drops those indexes again on boot. Requires `npm run build` first (the
+ * migrations run from `dist`).
  */
 require('dotenv/config');
 const { Client } = require('pg');
@@ -36,11 +42,21 @@ const HOST = process.env.DB_HOST || 'localhost';
 const PORT = Number(process.env.DB_PORT || 5432);
 const USER = process.env.DB_USERNAME || 'postgres';
 const PASSWORD = process.env.DB_PASSWORD;
-const SOURCE_DB = process.env.E2E_RBAC_SOURCE_DB || 'ziyarati';
 const TARGET_DB = process.env.E2E_DB_NAME || 'ziyarati_e2e';
+
+if (!/^[a-z0-9_]+$/i.test(TARGET_DB)) {
+  console.error(`✗ refusing E2E_DB_NAME "${TARGET_DB}": letters, digits and underscore only`);
+  process.exit(1);
+}
 
 const url = (db) =>
   `postgres://${USER}:${encodeURIComponent(PASSWORD)}@${HOST}:${PORT}/${db}`;
+
+/** Never provision against a database that is not unmistakably a throwaway e2e one. */
+if (!/e2e|test/i.test(TARGET_DB)) {
+  console.error(`✗ refusing to DROP "${TARGET_DB}": the name must contain "e2e" or "test"`);
+  process.exit(1);
+}
 
 async function main() {
   const admin = new Client({ host: HOST, port: PORT, user: USER, password: PASSWORD, database: 'postgres' });
@@ -50,101 +66,38 @@ async function main() {
   await admin.end();
   console.log(`✓ created ${TARGET_DB}`);
 
-  // Invoke the typeorm CLI's own entry script directly: `npx` needs a shell on
+  const env = { ...process.env, DB_NAME: TARGET_DB, DATABASE_URL: url(TARGET_DB), TYPEORM_SYNCHRONIZE: 'false' };
+
+  // Invoke each CLI's own entry script directly: `npx` needs a shell on
   // Windows, and spawning a shell here would make the command line quoting
   // depend on the platform.
   execFileSync(
     process.execPath,
     [require.resolve('typeorm/cli.js'), 'migration:run', '-d', 'dist/src/config/data-source.js'],
-    {
-      stdio: ['ignore', 'ignore', 'inherit'],
-      env: { ...process.env, DB_NAME: TARGET_DB, DATABASE_URL: url(TARGET_DB) },
-    },
+    { stdio: ['ignore', 'ignore', 'inherit'], env },
   );
   console.log('✓ migrations applied');
 
-  // System RBAC catalogue only — the fixtures need the seeded `owner` role and
-  // the permission rows their custom roles are built from.
-  //
-  // Slug-driven, not id-driven: an idempotent data migration (e.g.
-  // PlatformSupportRoleAndPermissions) can now seed some of this catalogue
-  // directly into `ziyarati_e2e` during the `migration:run` step above,
-  // BEFORE this copy runs — with its own freshly-generated ids that don't
-  // match SOURCE_DB's ids for the same slug. A blind id-preserving copy (the
-  // original approach) then either creates a physical duplicate role row
-  // (`roles` has no DB-level unique constraint on slug — see
-  // rbac.constants.ts's own comment on that) or, worse, inserts a
-  // `role_permissions` row whose `permissionId` points at SOURCE_DB's id for
-  // that slug, which doesn't exist in the target — an FK violation. Matching
-  // on slug (roles/permissions) or (role slug, permission slug)
-  // (role_permissions) instead is correct regardless of which ids either
-  // side happens to hold.
-  const src = new Client({ host: HOST, port: PORT, user: USER, password: PASSWORD, database: SOURCE_DB });
+  // The same seed production uses: system roles + permissions + the platform admin.
+  execFileSync(
+    process.execPath,
+    [require.resolve('ts-node/dist/bin.js'), '--project', 'tsconfig.seed.json', 'src/seed/seed.ts'],
+    { stdio: ['ignore', 'ignore', 'inherit'], env },
+  );
+  console.log('✓ seed applied (RBAC catalogue + platform admin)');
+
   const dst = new Client({ host: HOST, port: PORT, user: USER, password: PASSWORD, database: TARGET_DB });
-  await src.connect();
   await dst.connect();
 
-  const copyPermissions = async () => {
-    const rows = (await src.query('SELECT * FROM permissions')).rows;
-    let inserted = 0;
-    for (const row of rows) {
-      const cols = Object.keys(row);
-      const result = await dst.query(
-        `INSERT INTO permissions(${cols.map((c) => `"${c}"`).join(',')}) ` +
-          `VALUES(${cols.map((_, i) => `$${i + 1}`).join(',')}) ON CONFLICT ("slug") DO NOTHING`,
-        cols.map((c) => row[c]),
-      );
-      inserted += result.rowCount;
-    }
-    return inserted;
-  };
-
-  const copyRoles = async () => {
-    const rows = (await src.query('SELECT * FROM roles WHERE "tenantId" IS NULL')).rows;
-    let inserted = 0;
-    for (const row of rows) {
-      const exists = await dst.query(
-        'SELECT 1 FROM roles WHERE slug = $1 AND "tenantId" IS NULL',
-        [row.slug],
-      );
-      if (exists.rowCount > 0) continue;
-      const cols = Object.keys(row);
-      await dst.query(
-        `INSERT INTO roles(${cols.map((c) => `"${c}"`).join(',')}) ` +
-          `VALUES(${cols.map((_, i) => `$${i + 1}`).join(',')})`,
-        cols.map((c) => row[c]),
-      );
-      inserted++;
-    }
-    return inserted;
-  };
-
-  const copyRolePermissions = async () => {
-    const rows = (
-      await src.query(
-        'SELECT ro.slug AS role_slug, p.slug AS perm_slug FROM role_permissions rp ' +
-          'JOIN roles ro ON ro.id = rp."roleId" JOIN permissions p ON p.id = rp."permissionId" ' +
-          'WHERE ro."tenantId" IS NULL',
-      )
-    ).rows;
-    let inserted = 0;
-    for (const row of rows) {
-      const result = await dst.query(
-        `INSERT INTO role_permissions("roleId", "permissionId")
-         SELECT ro.id, p.id FROM roles ro, permissions p
-         WHERE ro.slug = $1 AND ro."tenantId" IS NULL AND p.slug = $2
-         ON CONFLICT DO NOTHING`,
-        [row.role_slug, row.perm_slug],
-      );
-      inserted += result.rowCount;
-    }
-    return inserted;
-  };
-
-  const p = await copyPermissions();
-  const r = await copyRoles();
-  const rp = await copyRolePermissions();
-  console.log(`✓ RBAC catalogue copied (permissions=${p} roles=${r} role_permissions=${rp})`);
+  const counts = await dst.query(
+    `SELECT (SELECT count(*) FROM permissions) AS permissions,
+            (SELECT count(*) FROM roles WHERE "tenantId" IS NULL) AS roles`,
+  );
+  const { permissions, roles } = counts.rows[0];
+  console.log(`✓ RBAC catalogue present (permissions=${permissions} system roles=${roles})`);
+  if (Number(permissions) === 0 || Number(roles) === 0) {
+    throw new Error('The seed left no permissions / system roles — the e2e fixtures cannot build a tenant');
+  }
 
   const idx = await dst.query(
     `SELECT indexname FROM pg_indexes WHERE indexname LIKE 'UQ_integration%' ORDER BY 1`,
@@ -155,7 +108,6 @@ async function main() {
     throw new Error('Expected the migration-created integration unique indexes to be present');
   }
 
-  await src.end();
   await dst.end();
 }
 

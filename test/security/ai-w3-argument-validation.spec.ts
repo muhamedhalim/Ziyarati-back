@@ -142,7 +142,9 @@ describe('W3 — tool-argument validation (T095)', () => {
       const ctx: ToolContext = { tenantId: seed.discoveryTenantId, aiConversationId: conv.id, principal: seed.guestA, permissions: [] };
       const result = await dispatch.execute(ctx, scriptedToolCall(AI_PUBLIC_TOOL.SELECT_SERVICE, { serviceIds: 'not-an-array' }));
       expect(result.success).toBe(false);
-      expect(result.error).toMatch(/required/i);
+      // The refusal now names the exact contract (a list_branch_services UUID) instead of the generic
+      // "required"; what matters is that a bare string is refused, never coerced into ['not-an-array'].
+      expect(result.error).toMatch(/serviceIds|UUID|required/i);
 
       await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [conv.id]);
     });

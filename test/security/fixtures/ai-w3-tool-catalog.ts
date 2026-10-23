@@ -6,7 +6,7 @@
  * every spec automatically, straight from the SAME source the dispatcher and
  * RBAC seeder use):
  *
- *  - `ALL_TOOLS`: the 26-tool catalog (9 core + 8 admin + 9 public), each
+ *  - `ALL_TOOLS`: the 28-tool catalog (11 core + 8 admin + 9 public), each
  *    tagged with its DECLARED permission (from `AI_TOOL_PERMISSION` /
  *    `AI_ADMIN_TOOL_PERMISSION`, or `null` when none exists) and whether it
  *    mutates — cross-checked against `w3-declared-vs-enforced.md` (T044).
@@ -48,13 +48,18 @@ export interface ToolMeta {
   mutating: boolean;
 }
 
-/** The 9 `ai-tools.constants.ts` (core) tools. */
+/** The 11 `ai-tools.constants.ts` (core) tools exercised by the audit (the WhatsApp-only own-clinic tools are out of scope). */
 export const CORE_TOOLS: ToolMeta[] = [
   { name: AI_TOOL.SEARCH_CLINICS, catalog: 'core', declaredPermission: null, mutating: false },
   { name: AI_TOOL.GET_CLINIC_DETAILS, catalog: 'core', declaredPermission: null, mutating: false },
   { name: AI_TOOL.SEARCH_PUBLIC_AVAILABILITY, catalog: 'core', declaredPermission: null, mutating: false },
   { name: AI_TOOL.CHECK_AVAILABILITY, catalog: 'core', declaredPermission: null, mutating: false },
   { name: AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS, catalog: 'core', declaredPermission: null, mutating: false },
+  // Branch facts and doctor rosters (added 2026-08-30 to the guest + staff catalogs). They take no ids and
+  // read the working branch/doctor from the conversation, so they are ungated and read-only. The fixture
+  // omitted them, which made the advertisement-drift spec report them as "advertised but not reachable".
+  { name: AI_TOOL.GET_BRANCH_INFO, catalog: 'core', declaredPermission: null, mutating: false },
+  { name: AI_TOOL.GET_DOCTOR_SCHEDULE, catalog: 'core', declaredPermission: null, mutating: false },
   {
     name: AI_TOOL.BOOK_APPOINTMENT,
     catalog: 'core',
@@ -97,7 +102,7 @@ export const PUBLIC_TOOLS: ToolMeta[] = [
   { name: AI_PUBLIC_TOOL.BOOK_PUBLIC_APPOINTMENT, catalog: 'public', declaredPermission: null, mutating: true },
 ];
 
-/** All 26 tools, in catalog order — T041-T044's inventory count. */
+/** All 28 tools, in catalog order — T041-T044's inventory count (26 + branch info + doctor schedule). */
 export const ALL_TOOLS: ToolMeta[] = [...CORE_TOOLS, ...ADMIN_TOOLS, ...PUBLIC_TOOLS];
 
 export const PERMISSION_GATED_TOOLS = ALL_TOOLS.filter((t) => t.declaredPermission !== null);

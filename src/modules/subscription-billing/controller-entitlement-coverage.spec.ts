@@ -56,6 +56,8 @@ const PLATFORM_AND_PUBLIC_SURFACES = new Set([
   'platform/platform-specialties.controller.ts',
   'platform/system-setting.controller.ts',
   'platform-ai-monitoring/platform-ai-monitoring.controller.ts',
+  // Super-admin list of website Contact Us leads (RolesGuard); prospects have no tenant.
+  'public-contact/platform-contact-leads.controller.ts',
   'platform-dashboard/platform-dashboard.controller.ts',
   'platform-finance/platform-finance.controller.ts',
   'platform-monitoring/platform-monitoring.controller.ts',
@@ -102,6 +104,9 @@ const PLATFORM_AND_PUBLIC_SURFACES = new Set([
   // throttles, not a subscription gate.
   'patient-actions/patient-action.controller.ts',
   'public-discovery/public-discovery.controller.ts',
+  // The anonymous Contact Us form: a prospective clinic has no tenant principal or subscription to evaluate;
+  // abuse is bounded by the per-route throttle and a duplicate-submission window.
+  'public-contact/public-contact.controller.ts',
   // The anonymous pricing catalogue (`GET /public/plans`) — what is for sale
   // is, by definition, readable by someone with no tenant and no
   // subscription. Read-only; abuse is bounded by its per-route throttle.

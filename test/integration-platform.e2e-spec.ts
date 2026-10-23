@@ -153,6 +153,22 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
   const drainOutboxOnce = (): Promise<void> =>
     (relay as unknown as { drainBatch: () => Promise<void> }).drainBatch();
 
+  /**
+   * Runs the real relay until THIS row has been published. One batch claims at most OUTBOX_BATCH (100)
+   * rows, oldest first, and the e2e database is shared by every suite that ran before this one - each
+   * booking leaves reminder rows PENDING - so on a database a full e2e run has already used, the row under
+   * test is not in the first batch. (It passed only on a fresh database; CI runs this config straight after
+   * the main e2e run, and it failed 3 tests there until the backlog drained.) The bound keeps a genuinely
+   * stuck row a failure rather than an endless loop.
+   */
+  const drainOutboxUntilPublished = async (dedupeKey: string): Promise<void> => {
+    for (let i = 0; i < 100; i += 1) {
+      await drainOutboxOnce();
+      const row = await e2e.dataSource.getRepository(OutboxJob).findOne({ where: { dedupe_key: dedupeKey } });
+      if (row?.status !== OutboxStatus.PENDING) return;
+    }
+  };
+
   beforeAll(async () => {
     e2e = await createE2eApp();
     owner = await createOwnerFixture(e2e, 'intplat');
@@ -652,7 +668,7 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
       expect(await queueService.queue(QUEUE.INTEGRATION_IMPORT).getJob(dedupeKey)).toBeFalsy();
 
       // The REAL relay claims the row and publishes it — no reimplementation.
-      await drainOutboxOnce();
+      await drainOutboxUntilPublished(dedupeKey);
 
       const published = await e2e.dataSource.getRepository(OutboxJob).findOne({ where: { dedupe_key: dedupeKey } });
       expect(published?.status).toBe(OutboxStatus.PUBLISHED);
@@ -718,7 +734,7 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
       expect(pending?.status).toBe(OutboxStatus.PENDING);
       expect(await queueService.queue(QUEUE.INTEGRATION_SYNC).getJob(dedupeKey)).toBeFalsy();
 
-      await drainOutboxOnce();
+      await drainOutboxUntilPublished(dedupeKey);
 
       const published = await e2e.dataSource.getRepository(OutboxJob).findOne({ where: { dedupe_key: dedupeKey } });
       expect(published?.status).toBe(OutboxStatus.PUBLISHED);
@@ -851,7 +867,7 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
       expect(await queueService.queue(QUEUE.INTEGRATION_INBOUND).getJob(dedupeKey)).toBeFalsy();
 
       // The REAL relay claims + publishes — no reimplementation of its logic.
-      await drainOutboxOnce();
+      await drainOutboxUntilPublished(dedupeKey);
 
       const published = await e2e.dataSource.getRepository(OutboxJob).findOne({ where: { dedupe_key: dedupeKey } });
       expect(published?.status).toBe(OutboxStatus.PUBLISHED);

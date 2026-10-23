@@ -81,6 +81,11 @@ export const NOT_REACHED: ReadonlyArray<{ table: string; reason: string }> = [
       'A platform-operator schedule (recipient emails), not clinic data; it is not keyed by tenant.',
   },
   {
+    table: 'contact_leads',
+    reason:
+      'Website Contact Us enquiries from prospects who are not yet a clinic: no tenant exists to offboard, and the rows are handled and aged by the sales team.',
+  },
+  {
     table: 'patients',
     reason:
       'Marketplace patient accounts belong to the patient, not to a clinic; they are removed by the patient, not by clinic offboarding.',

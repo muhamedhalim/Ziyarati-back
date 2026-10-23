@@ -10,11 +10,11 @@
  * 1,000,000/60s under `NODE_ENV=test` (`app.module.ts:113`) so the shared e2e
  * suite's own request volume never trips it. This spec therefore:
  *
- *  1. Drives a bounded flood (dozens, not thousands, per the task's own
- *     instruction) and records the observed outcome — expected: no refusal,
- *     because the only candidate control is configured to a no-op ceiling in
- *     this environment. That absence-of-refusal is itself the evidence, not
- *     a gap in the test.
+ *  1. Drives a bounded flood (dozens, not thousands) and records the observed outcome. UPDATED by
+ *     RL-11: the route now also spends the per-user turn budget shared with the `/ai` socket
+ *     (default 30 per window), so the expected shape is 30 accepted turns, then 429s. Before RL-11
+ *     the expected outcome was NO refusal at all, because the only control was the global
+ *     ThrottlerGuard at a no-op ceiling under NODE_ENV=test.
  *  2. Independently proves `ThrottlerGuard` DID process every request (as
  *     opposed to "no guard ran at all", the WS finding in T144 §4) by reading
  *     the `X-RateLimit-*` response headers the guard sets on every accepted
@@ -114,25 +114,24 @@ describe('AI abuse — sustained authenticated flooding (T145)', () => {
     );
     process.stdout.write('\n===T145-FLOOD-RESULT-END===\n');
 
-    // Every turn reached the controller successfully (201) — confirms the
-    // flood was actually exercising the real execution path, not dead-ending
-    // on an unrelated 4xx that would make "no 429 seen" a meaningless result.
-    expect(statuses.every((s) => s === 201)).toBe(true);
+    // RL-11 [PROMOTED]: the REST entry point now draws from the SAME per-user turn budget as the `/ai`
+    // socket (AI_WS_RATE_LIMIT_AUTHENTICATED_MAX_TURNS, default 30 per window), keyed on the authenticated
+    // user id. Before, REST was unlimited — only the global ThrottlerGuard (1,000,000/60s under NODE_ENV=test)
+    // stood in the way, which is why this spec used to assert "no refusal at all".
+    //
+    // So the flood must show exactly: the first AUTHENTICATED_MAX_TURNS turns reach the engine (201), then
+    // every later one is refused with 429. A 201 for every request would mean the budget is not applied to
+    // REST; a 4xx/5xx other than 429 would mean the flood died on something unrelated, making the count
+    // meaningless.
+    const BUDGET = 30; // AI_WS_RATE_LIMIT_AUTHENTICATED_MAX_TURNS's default
+    expect(statuses.slice(0, BUDGET).every((s) => s === 201)).toBe(true);
+    expect(statuses.slice(BUDGET).every((s) => s === 429)).toBe(true);
+    expect(firstRefusalAt).toBe(BUDGET);
+    expect(firstRefusalStatus).toBe(429);
 
-    // ThrottlerGuard DID run (sets X-RateLimit-* on every accepted request,
-    // throttler.guard.js:134-138) — this is the proof this is "a huge limit",
+    // ThrottlerGuard DID run on every request (it sets X-RateLimit-* on accepted ones) — "a huge limit",
     // not "no guard at all" (contrast with T146's WS observation).
     expect(sawRateLimitHeaderOnAnyResponse).toBe(true);
-
-    // Observed outcome in THIS environment: no refusal within the bound,
-    // because the only candidate control (global ThrottlerGuard default) is
-    // configured to a 1,000,000/60s no-op ceiling under NODE_ENV=test
-    // (app.module.ts:113) — a deliberate test-infra relaxation, not a gap in
-    // this spec. The PRODUCTION-configured value (300/60s per IP) is
-    // asserted statically in w10-rate-limit-map.md §2, traced to the exact
-    // same `app.module.ts:106-122` factory this spec's app instance also
-    // booted from (just with the test-mode branch of its own ternary).
-    expect(firstRefusalAt).toBeNull();
   }, 60_000);
 
   it('sanity: the ThrottlerGuard config this app instance actually booted with matches the traced source (proves the 300/60s production value is not stale documentation)', () => {

@@ -195,7 +195,10 @@ describe('RAG keyword-only retrieval as a functional degradation (T135)', () => 
     // 1730041500000) and carries the signal this spec previously recorded
     // as entirely absent.
     expect(allAiTableColumns.length).toBeGreaterThan(0);
-    expect(retrievalModeColumns).toEqual(['retrieval_mode']);
+    // `processing_mode` (STANDARD vs BATCH execution — migration 1730054000000) also matches the broad
+    // `*_mode` pattern but is about HOW a request was executed, not which retrieval path served it, so it is
+    // named explicitly instead of being allowed to hide an unexpected new signal column.
+    expect(retrievalModeColumns.filter((c) => c !== 'processing_mode')).toEqual(['retrieval_mode']);
     // The recorded value matches the path ACTUALLY taken — this harness has
     // no pgvector, so every retrieval here is keyword-only (never merely
     // "attempted"); the attempted-then-fell-back case (FR-067's second half)

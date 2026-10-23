@@ -87,13 +87,18 @@ describe('W8 — tenant-authored synthetic canary trace across every sink (T121,
   const RUN = Math.random().toString(36).slice(2, 10);
   const CANARY_SYS = `sk-audit-synthetic-canary-${RUN}-sysprompt`;
   const CANARY_KB = `sk-audit-synthetic-canary-${RUN}-kbdoc`;
-  // Shares vocabulary with the KB content so both keyword AND (bag-of-words
-  // hash) vector retrieval reliably surface the canary chunk as the top match.
   const KB_MATCH_QUERY =
     'Can you explain your specialty imaging protocol for advanced diagnostic referrals?';
+  // Since F-08b a relevance floor (RAG_MIN_SCORE, default 0.5) rejects a chunk whose cosine to the query is
+  // below it, and the scripted 16-dim signed bag-of-words vectors give a merely-similar question a cosine
+  // that can be under 0.5 (or negative). The canary token is random per run, so the cosine would also vary
+  // per run. Make the document carry the question's own wording four times: its vector is then dominated by
+  // the query's direction (cosine ~0.9 whatever the canary hashes to), the chunk is retrieved on the real
+  // vector path with the real floor in force, and the QUERY still contains no canary, which the cross-tenant
+  // assertions below rely on.
   const KB_TEXT =
     `Internal engineering reference (synthetic, audit-only, never a real secret): ${CANARY_KB}. ` +
-    'This document also explains the clinic specialty imaging protocol for advanced diagnostic referrals.';
+    `${KB_MATCH_QUERY} `.repeat(4).trim();
 
   let tenantAConversationId: string;
   let trainingFileId: string;

@@ -120,3 +120,35 @@ process.env.QUEUE_ENV_PREFIX =
  */
 process.env.EMAIL_ENABLED = 'false';
 process.env.RESEND_API_KEY = '';
+
+/**
+ * CR-55 — the e2e / security / AI-audit suites must never reach a live provider.
+ *
+ * ROOT CAUSE this closes: only email was blanked (above). A developer's `.env` also carries a live
+ * OPENAI_API_KEY, Tap secret keys, an S3 bucket and AWS credentials, and the suites inherited all of
+ * them: specs wrote to a REAL S3 bucket, and the CI run (no `.env`) failed the same specs because
+ * they silently depended on those values. Blank them HERE so a local run and CI see the same,
+ * credential-free environment, and anything that genuinely needs a provider uses a scripted fake.
+ *
+ * Empty string, not `delete`: dotenv only fills keys that are NOT set, so a deleted key would be
+ * re-populated from `.env` when ConfigModule loads it; an empty value stays and every consumer
+ * treats it as "not configured" (the Joi schema allows '' for all of these).
+ *
+ * Deliberately NOT blanked: META_APP_ID / META_APP_SECRET / CREDENTIALS_ENCRYPTION_KEY. Specs that
+ * build the Meta config or store encrypted provider credentials need a value to exist; CI supplies
+ * inert placeholders and no Meta host is reachable with them.
+ */
+for (const key of [
+  'OPENAI_API_KEY',
+  'AZURE_OPENAI_API_KEY',
+  'TAP_TEST_SECRET_KEY',
+  'TAP_LIVE_SECRET_KEY',
+  'S3_BUCKET',
+  'S3_REGION',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_PROFILE',
+]) {
+  process.env[key] = '';
+}

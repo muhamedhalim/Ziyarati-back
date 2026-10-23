@@ -50,6 +50,10 @@ class FakeConfig {
   }
 }
 
+/** The two models the platform policy permits (src/modules/ai/routing/ai-model-registry.ts). */
+const LUNA = 'gpt-5.6-luna';
+const TERRA = 'gpt-5.6-terra';
+
 describe('AI degradation — batch / routing / residency toggles (T136)', () => {
   let harness: AiAuditHarness;
   let seed: AiAuditSeed;
@@ -128,58 +132,72 @@ describe('AI degradation — batch / routing / residency toggles (T136)', () => 
       const result = router.resolve({
         tenantId: seed.tenantA.id,
         conversationId: 'conv-1',
-        legacyModel: 'legacy-model-x',
+        legacyModel: LUNA,
         feature: 'chat',
         route: 'ai.chat.dashboard',
       });
-      expect(result).toEqual({ model: 'legacy-model-x', routed: false, reason: 'legacy_flag' });
+      expect(result).toEqual({ model: LUNA, routed: false, reason: 'legacy_flag' });
+    });
+
+    it('routing DISABLED: a stored model outside the platform policy is REPLACED by the policy default, never forwarded', () => {
+      // Platform model policy (Luna + Terra only, migration AiModelPolicyLunaTerra): an arbitrary
+      // string stored on an agent row must never reach the provider.
+      const router = new AiModelRouterService(new FakeConfig() as never);
+      const result = router.resolve({
+        tenantId: seed.tenantA.id,
+        conversationId: 'conv-1',
+        legacyModel: 'some-retired-model',
+        feature: 'chat',
+        route: 'ai.chat.dashboard',
+      });
+      expect(result).toMatchObject({ model: LUNA, routed: true, reason: 'legacy_flag_policy_default' });
     });
 
     it('routing ENABLED at 100% rollout: an unlisted feature/route gets the ECONOMY model', () => {
       const config = new FakeConfig()
         .set('AI_MODEL_ROUTING_ENABLED', 'true')
         .set('AI_MODEL_ROUTING_ROLLOUT_PERCENT', '100')
-        .set('AI_ECONOMY_MODEL', 'econo-model')
-        .set('AI_POWERFUL_MODEL', 'power-model');
+        .set('AI_ECONOMY_MODEL', LUNA)
+        .set('AI_POWERFUL_MODEL', TERRA);
       const router = new AiModelRouterService(config as never);
       const result = router.resolve({
         tenantId: seed.tenantA.id,
         conversationId: 'conv-1',
-        legacyModel: 'legacy-model-x',
+        legacyModel: TERRA,
         feature: 'chat',
         route: 'ai.chat.dashboard',
       });
-      expect(result).toEqual({ model: 'econo-model', routed: true, reason: 'economy_route' });
+      expect(result).toMatchObject({ model: LUNA, routed: true, reason: 'economy_route' });
     });
 
     it('a HIGH-complexity turn always gets the POWERFUL model at 100% rollout, regardless of feature/route lists', () => {
       const config = new FakeConfig()
         .set('AI_MODEL_ROUTING_ENABLED', 'true')
         .set('AI_MODEL_ROUTING_ROLLOUT_PERCENT', '100')
-        .set('AI_ECONOMY_MODEL', 'econo-model')
-        .set('AI_POWERFUL_MODEL', 'power-model');
+        .set('AI_ECONOMY_MODEL', LUNA)
+        .set('AI_POWERFUL_MODEL', TERRA);
       const router = new AiModelRouterService(config as never);
       const result = router.resolve({
         tenantId: seed.tenantA.id,
         conversationId: 'conv-1',
-        legacyModel: 'legacy-model-x',
+        legacyModel: LUNA,
         feature: 'chat',
         route: 'ai.chat.dashboard',
         complexity: 'HIGH',
       });
-      expect(result).toEqual({ model: 'power-model', routed: true, reason: 'powerful_route' });
+      expect(result).toMatchObject({ model: TERRA, routed: true, reason: 'powerful_route' });
     });
 
     it('routing is deterministic per (tenant, conversation) at a partial rollout percentage — same inputs, same outcome every call', () => {
       const config = new FakeConfig()
         .set('AI_MODEL_ROUTING_ENABLED', 'true')
         .set('AI_MODEL_ROUTING_ROLLOUT_PERCENT', '50')
-        .set('AI_ECONOMY_MODEL', 'econo-model');
+        .set('AI_ECONOMY_MODEL', LUNA);
       const router = new AiModelRouterService(config as never);
       const input = {
         tenantId: seed.tenantA.id,
         conversationId: 'conv-fixed-1',
-        legacyModel: 'legacy-model-x',
+        legacyModel: TERRA,
         feature: 'chat',
         route: 'ai.chat.dashboard',
       };
@@ -198,12 +216,12 @@ describe('AI degradation — batch / routing / residency toggles (T136)', () => 
       const result = router.resolve({
         tenantId: seed.tenantA.id,
         conversationId: 'conv-1',
-        legacyModel: 'legacy-model-x',
+        legacyModel: TERRA,
         feature: 'chat',
         route: 'ai.chat.dashboard',
       });
       expect(result.routed).toBe(false);
-      expect(result.model).toBe('legacy-model-x');
+      expect(result.model).toBe(TERRA);
     });
 
     it('does not silently break when no economy/powerful model env is configured — falls back to the legacy model rather than an undefined model string', () => {
@@ -214,11 +232,11 @@ describe('AI degradation — batch / routing / residency toggles (T136)', () => 
       const result = router.resolve({
         tenantId: seed.tenantA.id,
         conversationId: 'conv-1',
-        legacyModel: 'legacy-model-x',
+        legacyModel: TERRA,
         feature: 'chat',
         route: 'ai.chat.dashboard',
       });
-      expect(result.model).toBe('legacy-model-x'); // AI_ECONOMY_MODEL unset -> `|| input.legacyModel`
+      expect(result.model).toBe(TERRA); // no tier model configured -> the agent's own (permitted) model
       expect(result.routed).toBe(false); // model === legacyModel -> routed computed false
     });
   });

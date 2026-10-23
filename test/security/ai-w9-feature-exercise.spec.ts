@@ -411,8 +411,9 @@ describe('T133 — AI feature inventory, exercised for real', () => {
       const svc = harness.app.get(AiTrainingFileService);
       const created = await svc.upload(seed.tenantA.id, {
         fileName: 't133-synthetic.txt',
-        // assertKeyBelongsToTenant requires the key to start with "<tenantId>/".
-        fileUrl: `${seed.tenantA.id}/ai-training/t133-synthetic-${Date.now()}.txt`,
+        // CR-40: the key must be one the training-file upload produced - `<tenantId>/ai_training/...`
+        // (assertKeyInDocType) - not merely any key under the tenant prefix.
+        fileUrl: `${seed.tenantA.id}/ai_training/t133-synthetic-${Date.now()}.txt`,
         fileType: 'TXT',
         agentId: seed.tenantA.agentId,
       });

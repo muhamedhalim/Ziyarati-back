@@ -42,6 +42,9 @@ import {
 } from '../../../src/modules/ai/providers/ai-provider.interface';
 import { PgVectorBootstrapService } from '../../../src/modules/ai/rag/pgvector-bootstrap.service';
 
+import { randomUUID } from 'node:crypto';
+
+import { installInMemoryS3, type InMemoryS3 } from '../../utils/in-memory-s3';
 import { ScriptedAiProvider } from './scripted-ai-provider';
 import { ScriptedEmbeddingProvider } from './scripted-ai-embedding-provider';
 
@@ -59,6 +62,11 @@ export interface AiAuditHarness {
   dataSource: DataSource;
   provider: ScriptedAiProvider;
   embedding: ScriptedEmbeddingProvider;
+  /**
+   * The object store behind `StorageService`. The REAL service runs (key shape, tenant prefix, upload
+   * policy, magic bytes); only the S3 network edge is in memory, so no spec can reach a real bucket (CR-55).
+   */
+  s3: InMemoryS3;
   jwt: JwtService;
   config: ConfigService;
   /** True only when pgvector mode was requested AND `PgVectorBootstrapService` actually reports itself available (T067's path proof). */
@@ -73,6 +81,16 @@ export interface AiAuditHarness {
  * need independent capture state; call `close()` in `afterAll`.
  */
 export async function buildAiAuditHarness(options: AiAuditHarnessOptions = {}): Promise<AiAuditHarness> {
+  // A CANARY, not a credential. The suites run credential-free (jest-e2e.env.js blanks every live
+  // provider key — CR-55), but several specs assert that "the platform's OPENAI_API_KEY never crosses the
+  // provider seam / never reaches a log", which is only a meaningful test when a key value exists to look
+  // for. This one cannot authenticate anywhere: the only completion and embedding providers registered
+  // below are scripted doubles, so no request is ever made with it. It must be set before `app.module` is
+  // first evaluated (ConfigModule snapshots the environment then).
+  if (!process.env.OPENAI_API_KEY) {
+    process.env.OPENAI_API_KEY = `sk-audit-canary-${randomUUID().replace(/-/g, '')}`;
+  }
+
   if (options.pgvector) {
     // Must be set before `app.module.ts` is evaluated for the FIRST time in this
     // process — NOT merely before `.compile()`. Empirically verified (T067 dry
@@ -154,6 +172,7 @@ export async function buildAiAuditHarness(options: AiAuditHarnessOptions = {}): 
   );
 
   await app.init();
+  const s3 = installInMemoryS3(app);
 
   const bootstrap = app.get(PgVectorBootstrapService, { strict: false });
   const pgvectorAvailable = !!bootstrap?.isAvailable?.();
@@ -164,6 +183,7 @@ export async function buildAiAuditHarness(options: AiAuditHarnessOptions = {}): 
     dataSource: app.get(DataSource),
     provider,
     embedding,
+    s3,
     jwt: app.get(JwtService),
     config: app.get(ConfigService),
     pgvectorAvailable,

@@ -32,6 +32,7 @@
  */
 import 'dotenv/config';
 import { Client } from 'pg';
+import { infraUnavailable } from '../utils/require-infra';
 
 import {
   typeOrmFactory,
@@ -87,15 +88,15 @@ async function boot() {
 }
 
 beforeAll(async () => {
-  if (!BASE) return;
+  if (!BASE) {
+    infraUnavailable('Postgres (DATABASE_URL is unset)');
+    return;
+  }
   try {
     await boot();
     available = true;
   } catch (e) {
-    console.warn(
-      'Synchronize-guard integration test skipped (no DB):',
-      (e as Error).message,
-    );
+    infraUnavailable('Postgres', (e as Error).message);
   }
 }, 60_000);
 

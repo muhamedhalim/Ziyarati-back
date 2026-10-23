@@ -23,6 +23,11 @@ const publicRoutesAllowlist: AllowlistEntry[] = JSON.parse(
   readFileSync(join(__dirname, 'public-routes.allowlist.json'), 'utf8'),
 );
 
+// Authenticated routes that deliberately declare NO role/permission (self-service, scope-keyed, ...).
+const authenticatedNoPermissionAllowlist: AllowlistEntry[] = JSON.parse(
+  readFileSync(join(__dirname, 'authenticated-no-permission.allowlist.json'), 'utf8'),
+);
+
 const ALLOWLIST_TIMEOUT = 30_000;
 
 function routeLabel(r: RouteEntry): string {
@@ -166,5 +171,67 @@ describe('Route-authorization invariants (FR-029…FR-034)', () => {
         );
       expectNoViolations('FR-031 tenant-enforcement-missing', violations);
     });
+  });
+
+  describe('FR-035 — every authenticated route declares who may call it', () => {
+    /**
+     * A route behind the global JwtAuthGuard that carries no @Roles / @RequirePermissions /
+     * @RequireAnyPermission is open to ANY signed-in user of ANY tenant role. That is correct for a handful of
+     * self-service routes (the caller reads their own profile or inbox) and a vulnerability anywhere else, so
+     * the set is checked-in and reviewed: a new authenticated route without an authorization decision fails
+     * here until it declares one, or is added to the allow-list WITH a reason a reviewer accepts.
+     * API-key routes are excluded: their authority is the key's scopes (IntegrationScopeGuard, asserted above).
+     */
+    const key = (r: { httpMethod: string; path: string }) => `${r.httpMethod} ${r.path}`;
+    const declaresAuthorization = (r: RouteEntry) =>
+      r.metadata.roles.length > 0 ||
+      r.metadata.permissions.length > 0 ||
+      r.metadata.anyPermissions.length > 0;
+
+    const undeclared = () =>
+      routes.filter((r) => !r.metadata.isPublic && !r.metadata.isApiKeyRoute && !declaresAuthorization(r));
+
+    it('every authenticated, non-API-key route declares roles/permissions or is on the reviewed allow-list', () => {
+      const allowed = new Set(authenticatedNoPermissionAllowlist.map((e) => `${e.method} ${e.path}`));
+      const violations = undeclared()
+        .filter((r) => !allowed.has(key(r)))
+        .map(
+          (r) =>
+            `${routeLabel(r)} is reachable by ANY authenticated user: add @RequirePermissions/@Roles, or add it to authenticated-no-permission.allowlist.json with a reason`,
+        );
+      expectNoViolations('FR-035 authenticated-route-without-authorization', violations);
+    });
+
+    it('every allow-list entry still corresponds to a live authenticated route without a declaration (no stale entries)', () => {
+      const live = new Set(undeclared().map(key));
+      const violations = authenticatedNoPermissionAllowlist
+        .filter((e) => !live.has(`${e.method} ${e.path}`))
+        .map(
+          (e) =>
+            `${e.method} ${e.path} is on authenticated-no-permission.allowlist.json but is no longer such a route (removed, now public, or now declares authorization)`,
+        );
+      expectNoViolations('FR-035 stale-authenticated-allowlist-entry', violations);
+    });
+
+    it('every allow-list entry carries a real reason', () => {
+      const violations = authenticatedNoPermissionAllowlist
+        .filter((e) => !e.reason || e.reason.trim().length < 15)
+        .map((e) => `${e.method} ${e.path} has no meaningful reason`);
+      expectNoViolations('FR-035 allowlist-reason', violations);
+    });
+
+    if (process.env.PRINT_UNDECLARED === '1') {
+      it('prints the undeclared set (diagnostic, enabled by PRINT_UNDECLARED=1)', () => {
+        console.log(
+          'UNDECLARED_START\n' +
+            JSON.stringify(
+              undeclared().map((r) => ({ method: r.httpMethod, path: r.path, controller: r.controller, handler: r.handler })),
+              null,
+              2,
+            ) +
+            '\nUNDECLARED_END',
+        );
+      });
+    }
   });
 });

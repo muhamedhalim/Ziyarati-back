@@ -27,6 +27,7 @@ import {
   cleanupTenant,
   type E2eApp,
   type OwnerFixture,
+  grantSystemRole,
 } from './utils/whatsapp-e2e-app';
 
 import { Tenant } from '../src/entities/SaaS-Core/Tenant';
@@ -131,6 +132,8 @@ describe('Activity Log — receptionist → owner workflow (HTTP e2e)', () => {
         is_active: true,
       }),
     );
+    // A staff member is only bookable when the account holds a doctor/nurse/branch-manager role.
+    await grantSystemRole(e2e, doctorUser.id, 'doctor');
     const staff = await ds.getRepository(StaffProfile).save(
       ds.getRepository(StaffProfile).create({
         public_slug: `stf-${Math.random().toString(36).slice(2, 10)}`,

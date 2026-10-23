@@ -32,9 +32,14 @@ describe('W8 — embedding egress vs chat egress parity, same source record (T12
   let ingestion: AiKnowledgeIngestionService;
 
   const SENSITIVE_SHAPED_VALUE = 'PATIENT-RECORD-REF-9F3D2A-DOB-1990-01-01';
+  // Since F-08b a relevance floor (RAG_MIN_SCORE, default 0.5) rejects a chunk whose cosine to the query is
+  // below it, and the scripted 16-dim signed bag-of-words vectors score a merely similar question under that.
+  // The document therefore carries the question's own wording four times, so its vector is dominated by the
+  // query's direction and the SAME record is retrieved through the real vector path with the real floor on.
   const DOC_TEXT =
     `Synthetic sensitive-shaped reference (audit-only, never real PHI): ${SENSITIVE_SHAPED_VALUE}. ` +
-    'This document explains the after-hours emergency triage contact procedure.';
+    'This document explains the after-hours emergency triage contact procedure. ' +
+    'after-hours emergency triage contact procedure '.repeat(4).trim();
   const MATCH_QUERY = 'What is the after-hours emergency triage contact procedure?';
 
   beforeAll(async () => {

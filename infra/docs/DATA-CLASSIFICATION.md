@@ -30,13 +30,13 @@ A table is classified by what it **can** contain, not by what a typical row does
 ## Summary
 
 <!-- BEGIN GENERATED: classification-summary -->
-Tables classified: 160. A table counts under every class it can hold.
+Tables classified: 161. A table counts under every class it can hold.
 
 | Class | Tables |
 | --- | --- |
 | D0 | 6 |
 | D1 | 57 |
-| D2 | 53 |
+| D2 | 54 |
 | D3 | 1 |
 | D4 | 19 |
 | D5 | 18 |
@@ -201,6 +201,7 @@ Generated from `data-classification.ts`; regenerate with `UPDATE_COMPLIANCE_DOCS
 | `feature_plans` | D1 | - | Feature to plan mapping |
 | `system_settings` | D1, D6 | - | Platform settings; may hold secrets |
 | `support_tickets` | D2 | staff, patient | Support tickets; free text can mention a patient |
+| `contact_leads` | D2 | clinic | Website Contact Us enquiries from prospective clinics (name, email, phone, facility, free-text message); no tenant yet |
 | `support_ticket_events` | D2 | staff, patient | Support ticket events |
 | `sales_activities` | D2 | staff | Sales staff activity |
 | `sales_bonus_records` | D5 | staff | Sales bonus accounting |

@@ -191,8 +191,13 @@ export class MerchantAccountService {
   async getClinicView(tenantId: string) {
     const account = await this.getOrCreate(tenantId);
     const cap = await this.capability.resolve(tenantId);
+    // `provider_callback_token_hash` is `select: false`, so a loaded row never has it — but a row
+    // that getOrCreate() has just INSERTED comes back with the key set (null). The view must not
+    // carry that field however the entity was obtained, so it is removed explicitly.
+    const { provider_callback_token_hash: _omitted, ...safe } = account;
+    void _omitted;
     return {
-      ...account,
+      ...safe,
       online_payments: {
         provider: this.config.providerName,
         onboarding_available: this.tapOnboardingConfigured(),

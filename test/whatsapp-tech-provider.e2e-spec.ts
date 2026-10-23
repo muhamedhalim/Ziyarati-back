@@ -215,6 +215,30 @@ describe('WhatsApp Tech Provider (Meta configured) — HTTP e2e', () => {
     });
 
     it('#9 re-running Embedded Signup for the same number restores sending', async () => {
+      // Re-running signup re-syncs templates from Meta, and a template Meta no longer lists is
+      // soft-removed (whatsapp-template-sync.service.ts pruneMissing). The default Graph mock lists
+      // nothing, which would model "Meta deleted the template" — so say what Meta really returns:
+      // the approved template is still there.
+      const stored = (await ds.getRepository('whatsapp_templates').findOneByOrFail({
+        id: templateId,
+      })) as unknown as {
+        provider_template_id: string;
+        name: string;
+        language: string;
+        category?: string;
+        components?: unknown;
+      };
+      e2e.metaGraph.listTemplates.mockResolvedValueOnce([
+        {
+          id: stored.provider_template_id,
+          name: stored.name,
+          language: stored.language,
+          status: 'APPROVED',
+          category: stored.category ?? 'UTILITY',
+          components: stored.components,
+        },
+      ]);
+
       await request(e2e.app.getHttpServer())
         .post(`${API}/whatsapp/onboarding/complete`)
         .set(...authHeader(tenantA.token))

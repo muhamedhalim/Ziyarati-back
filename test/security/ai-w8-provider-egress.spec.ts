@@ -89,6 +89,10 @@ describe('W8 — provider egress inventory: credentials never cross the seam (T1
     const allowedKeys = new Set([
       'tenantId', 'model', 'temperature', 'messages', 'tools',
       'maxOutputTokens', 'idempotencyKey', 'feature', 'route', 'channel', 'signal',
+      // Added with the model-capability work: two non-sensitive request SHAPE flags (does this model
+      // accept a temperature; how much reasoning to ask for). Neither can carry a credential or a tenant
+      // payload; they were reviewed when added and are listed here so the inventory stays exhaustive.
+      'supportsTemperature', 'reasoningEffort',
     ]);
     for (const key of Object.keys(captured)) {
       expect(allowedKeys.has(key)).toBe(true);

@@ -37,6 +37,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
+    "coverage:report": "node scripts/ci/coverage-report.mjs",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json --runInBand",
     "pretest:e2e:integration-platform": "npm run build && node test/setup-e2e-db.js",
@@ -157,7 +158,19 @@
       "^.+\\.(t|j)s$": "ts-jest"
     },
     "collectCoverageFrom": [
-      "**/*.(t|j)s"
+      "**/*.ts",
+      "!**/*.spec.ts",
+      "!**/*.d.ts",
+      "!migrations/**",
+      "!seed/**",
+      "!main.ts",
+      "!worker.ts",
+      "!migrate.ts"
+    ],
+    "coverageReporters": [
+      "text-summary",
+      "json-summary",
+      "lcov"
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"

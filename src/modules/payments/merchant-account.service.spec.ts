@@ -254,6 +254,21 @@ describe('MerchantAccountService', () => {
       });
     });
 
+    it('the clinic view never carries the callback token hash, whether the key is null (just inserted) or set', async () => {
+      const service = await build({ ...TAP_ENV_ON });
+      for (const hash of [null, 'a'.repeat(64)]) {
+        accounts.findOne.mockResolvedValue({
+          id: 'm1',
+          status: S.NOT_STARTED,
+          provider: 'tap',
+          provider_callback_token_hash: hash,
+        });
+        const view = await service.getClinicView(TENANT);
+        expect(view).not.toHaveProperty('provider_callback_token_hash');
+        expect(JSON.stringify(view)).not.toContain('aaaaaaaa');
+      }
+    });
+
     it('onboarding is unavailable without the platform id, a key or a webhook URL to receive Connect events on', async () => {
       for (const missing of ['TAP_PLATFORM_ID', 'TAP_TEST_SECRET_KEY', 'TAP_WEBHOOK_URL']) {
         const service = await build({ ...TAP_ENV_ON, [missing]: '' });

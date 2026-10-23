@@ -179,7 +179,7 @@ describe('Tenant settings — real Postgres', () => {
         cancellation_hours: 24,
         feedback_delay_minutes: 360,
         default_language: 'ar',
-        currency: 'USD',
+        currency: 'SAR', // default flipped by migration 1730123000000 (Saudi-first)
         bot_enabled: true,
         enforce_staff_working_hours: false,
         public_booking_enabled: false,

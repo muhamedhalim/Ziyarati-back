@@ -35,7 +35,21 @@ const PROBE = [
   'QUEUE_ENV_PREFIX',
   'REDIS_URL',
   'TYPEORM_SYNCHRONIZE',
+  'OPENAI_API_KEY',
+  'TAP_LIVE_SECRET_KEY',
+  'TAP_TEST_SECRET_KEY',
+  'S3_BUCKET',
+  'AWS_ACCESS_KEY_ID',
 ] as const;
+
+/** CR-55: live-looking provider settings a developer machine carries; none may survive the bootstrap. */
+const HOSTILE_PROVIDER_ENV = {
+  OPENAI_API_KEY: 'sk-live-must-never-reach-a-test',
+  TAP_LIVE_SECRET_KEY: 'sk_live_must_never_reach_a_test',
+  TAP_TEST_SECRET_KEY: 'sk_test_must_never_reach_a_test',
+  S3_BUCKET: 'a-real-production-bucket',
+  AWS_ACCESS_KEY_ID: 'AKIAMUSTNEVERREACHATEST',
+} as const;
 
 type ProbeResult = Record<(typeof PROBE)[number], string | undefined>;
 
@@ -60,6 +74,7 @@ process.stdout.write(JSON.stringify(${JSON.stringify(PROBE)}.reduce((acc, k) => 
       AWS_REGION: 'eu-central-1',
       SES_REGION: 'eu-central-1',
       RESEND_API_KEY: 're_live_key_that_must_never_be_used_by_e2e',
+      ...HOSTILE_PROVIDER_ENV,
       // Keep the child off any real service; the bootstrap only builds strings.
       DB_PASSWORD: process.env.DB_PASSWORD ?? 'postgres',
       ...extraEnv,
@@ -120,9 +135,27 @@ describe('e2e environment bootstrap invariants (ZT-FINAL-001, ZT-FINAL-002)', ()
     });
   });
 
+  describe('CR-55 — the suites never inherit a live provider credential from a developer machine', () => {
+    it.each(Object.keys(HOSTILE_PROVIDER_ENV))('blanks %s even when the inherited environment sets it', (key) => {
+      const result = runBootstrap() as Record<string, string | undefined>;
+      expect(result[key]).toBe('');
+    });
+
+    it('does not leak any injected live-looking value under any probed key', () => {
+      const result = runBootstrap();
+      for (const value of Object.values(result)) {
+        for (const secret of Object.values(HOSTILE_PROVIDER_ENV)) {
+          expect(value ?? '').not.toContain(secret);
+        }
+      }
+    });
+  });
+
   describe('pre-existing overrides still hold (no regression from these two fixes)', () => {
     it('still pins the disposable e2e Redis and disables synchronize', () => {
-      const result = runBootstrap();
+      // An operator may point the suite at another disposable Redis with ZT_E2E_REDIS_URL; clear it so
+      // this asserts the DEFAULT regardless of the machine the spec runs on.
+      const result = runBootstrap({ ZT_E2E_REDIS_URL: '' });
       expect(result.REDIS_URL).toBe('redis://127.0.0.1:63790');
       expect(result.TYPEORM_SYNCHRONIZE).toBe('false');
     });

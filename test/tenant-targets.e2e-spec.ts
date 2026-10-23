@@ -264,7 +264,7 @@ describe('Dashboard targets — real Postgres', () => {
         percentage: null,
         isCompleted: false,
       });
-      expect(res.body.currency).toBe('USD'); // TenantSetting default
+      expect(res.body.currency).toBe('SAR'); // TenantSetting default (migration 1730123000000)
     });
   });
 

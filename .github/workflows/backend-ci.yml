@@ -153,8 +153,20 @@ jobs:
       - name: Provision the CI database from the migration chain
         run: node node_modules/typeorm/cli.js migration:run -d dist/src/config/data-source.js
 
-      - name: Unit tests
-        run: npx jest --ci
+      - name: Unit tests (with coverage)
+        run: npx jest --ci --coverage
+
+      # Report-only: 80% lines/branches on money, identity, tenancy and scheduling code is the RECOMMENDED bar
+      # (owner decision D13 turns it into a gate with COVERAGE_ENFORCE=1).
+      - name: Coverage on critical modules
+        run: npm run coverage:report
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: coverage/
+          retention-days: 14
 
       - name: Integration tests (real Postgres/Redis; test/integration/*.int-spec.ts)
         run: npm run test:integration -- --testPathIgnorePatterns "redis-resilience"
@@ -170,12 +182,12 @@ jobs:
         run: npm run migration:verify
 
       # The security specs that need no harness/database: route-authorization allow-list, config
-      # invariants, constant-time comparisons, CSWSH handshake, env isolation. The 87 harness-based
-      # AI specs run in the informational `ai-security` job below.
+      # invariants, constant-time comparisons, CSWSH handshake, env isolation, route manifest. The harness-based
+      # AI specs run in the gating `ai-security` job below.
       - name: Security invariants (infrastructure-free)
         run: >-
           npx jest --config ./test/jest-security.json --ci --forceExit
-          --testPathPatterns "test/security/(ai-d5-ws-rate-limit-degraded|ai-w10-quota-failclosed|ai-w5-embedding-cache-key|config-invariants|e2e-env-invariants|nest-route-metadata|route-authorization|ws-cswsh-handshake)\.spec\.ts$"
+          --testPathPatterns "test/security/(ai-d5-ws-rate-limit-degraded|ai-w10-quota-failclosed|ai-w5-embedding-cache-key|config-invariants|e2e-env-invariants|nest-route-metadata|route-authorization|route-manifest|ws-cswsh-handshake)\.spec\.ts$"
 
   # ── Real-app e2e (HTTP, auth, tenancy, payments with a fake Tap, webhooks) ─
   e2e:
@@ -241,47 +253,34 @@ jobs:
           node node_modules/typeorm/cli.js migration:run -d dist/src/config/data-source.js
           npm run seed
 
-      # Measured 2026-10-23 on a migration-built database: 103 suites / 1,637 tests; 87 suites passed
-      # and 16 failed (77 tests). Repairing `health-readiness` (a hard-coded Redis URL) since moved one
-      # across: the 88 passing suites GATE, and the 15 below are informational — their causes (stale
-      # fixtures/expectations after deliberate product changes, teardown ordering) are in
-      # docs/quality/2026-10-23-phase0-baseline.md §2. Phase 3 repairs them and deletes this split.
       # database-tls needs a hand-built TLS Postgres (docs/SECURITY_DATASTORE_PRODUCTION.md §4) and
-      # integration-platform has its own config (next step).
-      - name: e2e suite (88 passing suites — gating)
+      # integration-platform has its own config (next step). Everything else gates: the 15 suites that were
+      # red at the Phase 0 baseline (stale fixtures after deliberate product changes) were repaired in Phase 3,
+      # so there is no longer an informational split.
+      - name: e2e suite (all suites except database-tls and integration-platform)
         run: >-
           npx jest --config ./test/jest-e2e.json --runInBand --ci --forceExit
-          --testPathIgnorePatterns "database-tls\.e2e-spec\.ts$|integration-platform\.e2e-spec\.ts$|activity-log-workflow|appointment-availability|processor-dlq|whatsapp-dlq|clinical-entry-revisions|email-campaign|integration-audit\.e2e|tenant-settings|whatsapp-tech-provider|tenant-targets|booking-payment\.tap|waitlist-offer|appointment-query-count|auth-abuse-forgot-password|analytics-journey\.e2e"
-
-      - name: e2e suites with known failures (15) — informational
-        continue-on-error: true
-        run: >-
-          npx jest --config ./test/jest-e2e.json --runInBand --ci --forceExit
-          --testPathPatterns "(activity-log-workflow|appointment-availability|processor-dlq|whatsapp-dlq|clinical-entry-revisions|email-campaign|integration-audit\.e2e|tenant-settings|whatsapp-tech-provider|tenant-targets|booking-payment\.tap|waitlist-offer|appointment-query-count|auth-abuse-forgot-password|analytics-journey\.e2e)"
+          --testPathIgnorePatterns "database-tls\.e2e-spec\.ts$|integration-platform\.e2e-spec\.ts$"
 
       - name: Integration-platform e2e suite
         run: npx jest --config ./test/jest-e2e-integration-platform.json --ci
 
-  # ── AI security harness + deterministic AI audit — INFORMATIONAL until Phase 3 ──
-  # 87 specs boot the real app against a database and need the topology the harness was designed
-  # for: a PLAIN Postgres for default mode and a separate pgvector Postgres on 5434 for
-  # pgvector mode (test/security/fixtures/HARNESS_GUIDE.md, provision-pgvector-db.js). The first
-  # measured run (2026-10-23, local, no credentials) passes 545 of 580 tests; the remainder are
-  # stale expectations after deliberate product changes, specs that read S3 / Meta / OpenAI settings
-  # a developer .env supplied, and two candidate findings (docs/quality). Until those are repaired
-  # this job REPORTS but does not block: `continue-on-error`. Making it required is a Phase 3 task.
-  # The infrastructure-free security invariants DO gate: see the `unit` job.
+  # ── AI security harness (default mode = PLAIN Postgres; pgvector mode = Postgres on 5434) ─────────
+  # 95 specs boot the real app against a database. They share ONE database and use fixed seed data, so they
+  # MUST run in band (--runInBand): in parallel they collide on unique keys / the appointment-overlap
+  # constraint and on the Redis-outage specs that stop the shared Redis container. Default-mode specs assert
+  # that pgvector is ABSENT (the keyword-fallback path), so the main database must be plain Postgres; the
+  # specs that need pgvector use the second server on 5434, hard-wired in test/security/fixtures/ai-audit-harness.ts.
   ai-security:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    continue-on-error: true
+    timeout-minutes: 75
     services:
       postgres:
         image: postgres:16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: ziyarati
+          POSTGRES_DB: ziyarati_e2e
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres"
@@ -293,7 +292,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-        ports: ["5434:5432"] # hard-wired in test/security/fixtures/ai-audit-harness.ts
+        ports: ["5434:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
@@ -307,7 +306,6 @@ jobs:
       DB_PASSWORD: postgres
       DB_NAME: ziyarati_e2e
       E2E_DB_NAME: ziyarati_e2e
-      E2E_RBAC_SOURCE_DB: ziyarati
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/ziyarati_e2e
       ZT_E2E_REDIS_URL: redis://127.0.0.1:63790
       REDIS_URL: redis://127.0.0.1:63790
@@ -316,7 +314,7 @@ jobs:
       PAYMENT_PROVIDER: noop
       EMAIL_ENABLED: "false"
       # Inert placeholders for specs that construct Meta / encryption config. No provider is reachable:
-      # nothing here is a real credential, and OPENAI_API_KEY stays UNSET on purpose.
+      # nothing here is a real credential. OPENAI_API_KEY stays UNSET (the harness injects a canary).
       META_APP_ID: "000000000000000"
       META_APP_SECRET: ci-placeholder-meta-app-secret
       META_WEBHOOK_VERIFY_TOKEN: ci-placeholder-verify-token
@@ -342,21 +340,76 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Provision both databases from the migration chain (plain Postgres) and seed
+      - name: Provision the default-mode database (plain Postgres) from migrations and seed it
         run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE ziyarati_e2e"
-          for db in ziyarati ziyarati_e2e; do
-            DB_NAME=$db DATABASE_URL="postgres://postgres:postgres@localhost:5432/$db"               node node_modules/typeorm/cli.js migration:run -d dist/src/config/data-source.js
-            DB_NAME=$db DATABASE_URL="postgres://postgres:postgres@localhost:5432/$db" npm run seed
-          done
+          node node_modules/typeorm/cli.js migration:run -d dist/src/config/data-source.js
+          npm run seed
 
-      - name: Provision the pgvector-mode database (16-dim embeddings, port 5434)
+      - name: Provision the pgvector-mode database (16-dim embeddings, port 5434) from migrations and seed it
         run: |
           PGPASSWORD=postgres psql -h localhost -p 5434 -U postgres -c "CREATE EXTENSION IF NOT EXISTS vector"
           PGVECTOR_DB_HOST=127.0.0.1 PGVECTOR_DB_PORT=5434 node test/security/fixtures/provision-pgvector-db.js
 
-      - name: AI security suite (harness-based)
-        run: npx jest --config ./test/jest-security.json --ci --forceExit
+      - name: AI security suite (harness-based, in band)
+        run: npx jest --config ./test/jest-security.json --ci --runInBand --forceExit
 
-      - name: AI audit suite (deterministic)
+  # ── Deterministic AI audit (needs pgvector on its MAIN database: det-06 exercises vector retrieval) ──
+  ai-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ziyarati_e2e
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NODE_ENV: test
+      DB_HOST: localhost
+      DB_PORT: "5432"
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: ziyarati_e2e
+      E2E_DB_NAME: ziyarati_e2e
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/ziyarati_e2e
+      ZT_E2E_REDIS_URL: redis://127.0.0.1:63790
+      REDIS_URL: redis://127.0.0.1:63790
+      JWT_ACCESS_SECRET: backend-ci-access-secret-not-for-production-use
+      JWT_REFRESH_SECRET: backend-ci-refresh-secret-not-for-production-use
+      PAYMENT_PROVIDER: noop
+      EMAIL_ENABLED: "false"
+      META_APP_ID: "000000000000000"
+      META_APP_SECRET: ci-placeholder-meta-app-secret
+      META_WEBHOOK_VERIFY_TOKEN: ci-placeholder-verify-token
+      META_EMBEDDED_SIGNUP_CONFIG_ID: "000000000000000"
+      CREDENTIALS_ENCRYPTION_KEY: BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Start Redis (zt-e2e-redis :63790)
+        run: |
+          docker run -d --name zt-e2e-redis -p 63790:6379 redis:7-alpine
+          for i in $(seq 1 30); do
+            [ "$(docker exec zt-e2e-redis redis-cli ping 2>/dev/null)" = "PONG" ] && exit 0
+            sleep 1
+          done
+          echo "::error::Redis did not become ready"; exit 1
+      - name: Build
+        run: npm run build
+      - name: Provision the database from migrations and seed it
+        run: |
+          node node_modules/typeorm/cli.js migration:run -d dist/src/config/data-source.js
+          npm run seed
+      - name: AI audit suite (deterministic, in band)
         run: npm run test:ai-audit -- --forceExit

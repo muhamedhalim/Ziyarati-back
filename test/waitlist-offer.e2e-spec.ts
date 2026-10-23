@@ -32,6 +32,7 @@ import {
   authHeader,
   type E2eApp,
   type OwnerFixture,
+  grantSystemRole,
 } from './utils/whatsapp-e2e-app';
 
 import { Appointment } from '../src/entities/Calendar&Appointments/Appointment';
@@ -155,6 +156,8 @@ describe('Waitlist offer safety (T154, US9, FR-W009/FR-W011)', () => {
         is_active: true,
       }),
     );
+    // A staff member is only bookable when the account holds a doctor/nurse/branch-manager role.
+    await grantSystemRole(e2e, staffUser.id, 'doctor');
     const staff = await ds.getRepository(StaffProfile).save(
       ds.getRepository(StaffProfile).create({
         public_slug: `stf-${Math.random().toString(36).slice(2, 10)}`,

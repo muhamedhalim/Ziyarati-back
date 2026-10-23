@@ -40,6 +40,10 @@ import {
   toolMeta,
   backingServiceSpy,
 } from './fixtures/ai-w3-tool-catalog';
+import {
+  AI_PUBLIC_BOOKING_TOOLS,
+  PUBLIC_DISCOVERY_TOOL_NAMES,
+} from '../../src/modules/ai/tools/ai-public-booking-tools.constants';
 
 describe('W3 — every tool executed as a principal missing the required permission (T088)', () => {
   let harness: AiAuditHarness;
@@ -63,10 +67,19 @@ describe('W3 — every tool executed as a principal missing the required permiss
     jest.restoreAllMocks();
   });
 
-  it('sanity: exactly 26 tools in the catalog, 11 gated + 15 ungated', () => {
-    expect(ALL_TOOLS).toHaveLength(26);
+  it('sanity: exactly 28 tools in the catalog, 11 gated + 17 ungated', () => {
+    expect(ALL_TOOLS).toHaveLength(28);
     expect(PERMISSION_GATED_TOOLS).toHaveLength(11);
-    expect(UNGATED_TOOLS).toHaveLength(15);
+    expect(UNGATED_TOOLS).toHaveLength(17);
+  });
+
+  it('the catalog covers every tool the guest catalog advertises (a new tool added without a fixture row would escape the drift specs)', () => {
+    const catalogued = new Set(ALL_TOOLS.map((t) => t.name));
+    const advertised = [
+      ...PUBLIC_DISCOVERY_TOOL_NAMES,
+      ...AI_PUBLIC_BOOKING_TOOLS.map((t) => t.name),
+    ];
+    expect(advertised.filter((n) => !catalogued.has(n))).toEqual([]);
   });
 
   describe('11 permission-gated tools — principal has an acting user but EMPTY permissions', () => {
