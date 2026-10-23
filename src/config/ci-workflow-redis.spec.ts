@@ -35,6 +35,30 @@ const runsDefaultUnitSuite = (body: string) =>
         /\bnpx jest\b/.test(l) && !/--config\b/.test(l) && !/^\s*#/.test(l),
     );
 
+describe('the infrastructure-free security step lists no database-booting spec', () => {
+  // `ai-w10-quota-failclosed` boots AppModule against `ziyarati_e2e`, which the `unit` job never creates:
+  // it failed there with `database "ziyarati_e2e" does not exist`. Specs that need a database belong to the
+  // `ai-security` job, which provisions one.
+  const ci = readFileSync(join(WORKFLOWS, 'backend-ci.yml'), 'utf8');
+  const step =
+    /Security invariants \(infrastructure-free\)[\s\S]*?--testPathPatterns "test\/security\/\(([^)]+)\)/.exec(
+      ci,
+    );
+  const listed = step ? step[1].split('|') : [];
+  const securityDir = resolve(__dirname, '../../test/security');
+
+  it('finds the step and its spec list', () => {
+    expect(listed.length).toBeGreaterThan(0);
+  });
+
+  it.each(listed)('%s does not boot the app or the audit harness', (name) => {
+    const source = readFileSync(join(securityDir, `${name}.spec.ts`), 'utf8');
+    expect(source).not.toMatch(
+      /buildAiAuditHarness|seedAiAudit|from '\.\.\/\.\.\/src\/app\.module'/,
+    );
+  });
+});
+
 describe('CI jobs that run the default unit suite provide Redis', () => {
   const files = existsSync(WORKFLOWS)
     ? readdirSync(WORKFLOWS).filter((f) => /\.ya?ml$/.test(f))

@@ -95,12 +95,54 @@ describeIfDocker('Redis resilience (Testcontainers, real redis:7-alpine — gap-
       .withExposedPorts(6379)
       .withCommand(['redis-server', '--appendonly', 'yes', '--appendfsync', 'everysec', '--maxmemory-policy', 'noeviction'])
       .start();
-    redisUrl = `redis://${container.getHost()}:${container.getMappedPort(6379)}`;
+    redisUrl = liveRedisUrl();
   }, 120_000);
 
   afterAll(async () => {
     await container?.stop().catch(() => undefined);
   });
+
+  /**
+   * The CURRENT host:port of the container. Docker re-assigns the published host port every time
+   * the container restarts (32769 → 32773 …), so a URL computed once in `beforeAll` is dead after
+   * `container.restart()` — every later connection is refused. `localhost` is pinned to 127.0.0.1:
+   * Docker publishes on IPv4 only, so a `localhost` client would also try (and be refused on) `::1`.
+   */
+  function liveRedisUrl(): string {
+    const host = container.getHost() === 'localhost' ? '127.0.0.1' : container.getHost();
+    return `redis://${host}:${container.getMappedPort(6379)}`;
+  }
+
+  /** Polls PING on a fresh short-lived client until Redis answers, or fails once `timeoutMs` has passed. */
+  async function waitUntilRedisAnswers(timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const probe = new Redis(redisUrl, {
+        lazyConnect: true,
+        connectTimeout: 1000,
+        commandTimeout: 1000,
+        maxRetriesPerRequest: 0,
+        retryStrategy: () => null,
+      });
+      try {
+        await probe.connect();
+        if ((await probe.ping()) === 'PONG') return;
+      } catch (err) {
+        if (Date.now() > deadline) {
+          throw new Error(`Redis did not answer PING at ${redisUrl} within ${timeoutMs}ms: ${(err as Error).message}`);
+        }
+      } finally {
+        probe.disconnect();
+      }
+    }
+  }
+
+  /** Restart the container, adopt its new port, and wait (bounded) until it answers PING. */
+  async function restartRedis(): Promise<void> {
+    await container.restart();
+    redisUrl = liveRedisUrl();
+    await waitUntilRedisAnswers(15_000);
+  }
 
   function fakeConfig(): ConfigService {
     return { get: (k: string) => (k === 'REDIS_URL' ? redisUrl : undefined) } as unknown as ConfigService;
@@ -117,23 +159,29 @@ describeIfDocker('Redis resilience (Testcontainers, real redis:7-alpine — gap-
     async () => {
       const cfg = fakeConfig();
       const queue = new Queue('resilience-persist-test', { connection: blockingConnectionOptions(cfg) });
-      await queue.add('delayed-job', { hello: 'world' }, { delay: 30_000, jobId: 'persist-me' });
+      try {
+        await queue.add('delayed-job', { hello: 'world' }, { delay: 30_000, jobId: 'persist-me' });
 
-      const before = await queue.getJob('persist-me');
-      expect(before).toBeTruthy();
-      expect(await before!.isDelayed()).toBe(true);
-      await queue.close();
+        const before = await queue.getJob('persist-me');
+        expect(before).toBeTruthy();
+        expect(await before!.isDelayed()).toBe(true);
+      } finally {
+        await queue.close();
+      }
 
-      await container.restart();
+      await restartRedis();
 
-      // Fresh client after restart — proves the DATA survived, not just the process handle.
+      // Fresh client against the NEW port after restart — proves the DATA survived, not just the process handle.
       const queueAfter = new Queue('resilience-persist-test', { connection: blockingConnectionOptions(cfg) });
-      const after = await queueAfter.getJob('persist-me');
-      expect(after).toBeTruthy();
-      expect(after!.data).toEqual({ hello: 'world' });
-      expect(await after!.isDelayed()).toBe(true);
-      await queueAfter.obliterate({ force: true }).catch(() => undefined);
-      await queueAfter.close();
+      try {
+        const after = await queueAfter.getJob('persist-me');
+        expect(after).toBeTruthy();
+        expect(after!.data).toEqual({ hello: 'world' });
+        expect(await after!.isDelayed()).toBe(true);
+      } finally {
+        await queueAfter.obliterate({ force: true }).catch(() => undefined);
+        await queueAfter.close();
+      }
     },
     90_000,
   );
@@ -145,26 +193,31 @@ describeIfDocker('Redis resilience (Testcontainers, real redis:7-alpine — gap-
       const client = new Redis({ ...applicationConnectionOptions(cfg), lazyConnect: true });
       await client.connect();
 
-      const pauseMs = 5000;
-      const pausePromise = pauseRedisCommands(pauseMs);
-
-      const started = Date.now();
-      let threw = false;
       try {
-        await client.ping();
-      } catch {
-        threw = true;
+        // The pause must be IN EFFECT before the ping is sent. `docker exec` takes far longer than a
+        // PING round trip, so firing the exec and pinging straight away let the ping win the race and
+        // succeed against a not-yet-paused Redis. `CLIENT PAUSE` returns OK as soon as it has started.
+        await pauseRedisCommands(5000);
+
+        const started = Date.now();
+        let threw = false;
+        try {
+          await client.ping();
+        } catch {
+          threw = true;
+        }
+        const elapsedMs = Date.now() - started;
+
+        // Let the pause window elapse (bounded poll, not a fixed sleep) so the next test starts clean.
+        await waitUntilRedisAnswers(10_000);
+        expect(threw).toBe(true);
+        // commandTimeout is 2000ms — bounded by that plus generous scheduling
+        // margin, nowhere near the pause window (5000ms) or the unbounded
+        // pre-Phase-0 default (~60-80s).
+        expect(elapsedMs).toBeLessThan(4000);
+      } finally {
+        client.disconnect();
       }
-      const elapsedMs = Date.now() - started;
-
-      await pausePromise; // let the pause window elapse so the next test starts clean
-      expect(threw).toBe(true);
-      // commandTimeout is 2000ms — bounded by that plus generous scheduling
-      // margin, nowhere near the pause window (5000ms) or the unbounded
-      // pre-Phase-0 default (~60-80s).
-      expect(elapsedMs).toBeLessThan(4000);
-
-      await client.quit().catch(() => undefined);
     },
     30_000,
   );
@@ -181,31 +234,33 @@ describeIfDocker('Redis resilience (Testcontainers, real redis:7-alpine — gap-
       });
       const workerErrors: Error[] = [];
       worker.on('error', (err) => workerErrors.push(err));
-      await worker.waitUntilReady();
-
-      // Same blackhole technique as the application-profile test above — a
-      // commandTimeout-bearing client would have thrown well before this
-      // elapses; the blocking Worker must not.
-      await pauseRedisCommands(3000);
-      await new Promise((resolve) => setTimeout(resolve, 3500));
-
-      // Still alive: a job enqueued now is picked up by the SAME worker instance.
       const producerQueue = new Queue('resilience-worker-test', { connection: producerConnectionOptions(cfg) });
-      const completed = await new Promise<string>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('worker did not complete the post-blackhole job in time')), 10_000);
-        worker.once('completed', (job) => {
-          clearTimeout(timer);
-          resolve(job.id as string);
+      try {
+        await worker.waitUntilReady();
+
+        // Same blackhole technique as the application-profile test above — a
+        // commandTimeout-bearing client would have thrown well before this
+        // elapses; the blocking Worker must not.
+        await pauseRedisCommands(3000);
+        await waitUntilRedisAnswers(10_000); // returns once the pause window has ended
+
+        // Still alive: a job enqueued now is picked up by the SAME worker instance.
+        const completed = await new Promise<string>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('worker did not complete the post-blackhole job in time')), 10_000);
+          worker.once('completed', (job) => {
+            clearTimeout(timer);
+            resolve(job.id as string);
+          });
+          void producerQueue.add('after-blackhole', {}, { jobId: 'after-blackhole-1' });
         });
-        void producerQueue.add('after-blackhole', {}, { jobId: 'after-blackhole-1' });
-      });
 
-      expect(completed).toBe('after-blackhole-1');
-      expect(workerErrors).toHaveLength(0);
-
-      await producerQueue.obliterate({ force: true }).catch(() => undefined);
-      await producerQueue.close();
-      await worker.close();
+        expect(completed).toBe('after-blackhole-1');
+        expect(workerErrors).toHaveLength(0);
+      } finally {
+        await producerQueue.obliterate({ force: true }).catch(() => undefined);
+        await producerQueue.close();
+        await worker.close();
+      }
     },
     30_000,
   );

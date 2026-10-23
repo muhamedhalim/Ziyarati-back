@@ -171,9 +171,11 @@ jobs:
       - name: Integration tests (real Postgres/Redis; test/integration/*.int-spec.ts)
         run: npm run test:integration -- --testPathIgnorePatterns "redis-resilience"
 
-      # Testcontainers restarts/blackholes a Redis container. 3 of its tests failed on a Windows
-      # Docker Desktop host (2026-10-23) and have never been observed on Linux CI, so this is
-      # informational until a first CI run shows it is stable; then drop `continue-on-error`.
+      # Testcontainers restarts/blackholes a Redis container. Its failures (ECONNREFUSED on the
+      # container's port) were a spec defect, not a host quirk: Docker re-assigns the published port on
+      # every restart and the spec kept the pre-restart URL — fixed 2026-10-23 (5/5 green on Docker
+      # Desktop). It has not yet run on a Linux runner, so this stays informational until a first CI
+      # run is green; then drop `continue-on-error`.
       - name: Redis resilience (Testcontainers) — informational
         continue-on-error: true
         run: npm run test:integration -- redis-resilience
@@ -182,12 +184,14 @@ jobs:
         run: npm run migration:verify
 
       # The security specs that need no harness/database: route-authorization allow-list, config
-      # invariants, constant-time comparisons, CSWSH handshake, env isolation, route manifest. The harness-based
-      # AI specs run in the gating `ai-security` job below.
+      # invariants, constant-time comparisons, CSWSH handshake, env isolation, route manifest. Anything that
+      # boots AppModule (ai-w10-quota-failclosed included) needs the `ziyarati_e2e` database, which only the
+      # gating `ai-security` job below provisions — it must NOT be listed here (src/config/ci-workflow-redis.spec.ts
+      # fails if a harness/AppModule spec is added to this list).
       - name: Security invariants (infrastructure-free)
         run: >-
           npx jest --config ./test/jest-security.json --ci --forceExit
-          --testPathPatterns "test/security/(ai-d5-ws-rate-limit-degraded|ai-w10-quota-failclosed|ai-w5-embedding-cache-key|config-invariants|e2e-env-invariants|nest-route-metadata|route-authorization|route-manifest|ws-cswsh-handshake)\.spec\.ts$"
+          --testPathPatterns "test/security/(ai-d5-ws-rate-limit-degraded|ai-w5-embedding-cache-key|config-invariants|e2e-env-invariants|nest-route-metadata|route-authorization|route-manifest|ws-cswsh-handshake)\.spec\.ts$"
 
   # ── Real-app e2e (HTTP, auth, tenancy, payments with a fake Tap, webhooks) ─
   e2e:

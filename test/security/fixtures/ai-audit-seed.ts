@@ -343,6 +343,18 @@ export async function teardownAiAuditSeed(
     await q(`DELETE FROM ai_prompts WHERE "tenantId" = $1`, [tenant.id]);
     await q(`DELETE FROM ai_training_files WHERE "tenantId" = $1`, [tenant.id]);
     await q(`DELETE FROM handover_requests WHERE "tenantId" = $1`, [tenant.id]);
+    // Inbox / WhatsApp rows a spec may have created for this tenant. Every FK below is NO ACTION by
+    // design (production must never lose a conversation or a template by deleting its parent), so the
+    // children go first: `messages` and `conversation_participants` cascade from `conversations`,
+    // which in turn blocked `customers`, `whatsapp_accounts` and `tenants`; templates and contacts
+    // blocked `whatsapp_accounts` and `customers`. Before this, each of those deletes failed (and was
+    // swallowed below), leaving the rows behind in the shared e2e database.
+    await q(`DELETE FROM ai_messages WHERE "tenantId" = $1`, [tenant.id]);
+    await q(`DELETE FROM conversations WHERE "tenantId" = $1`, [tenant.id]);
+    await q(`DELETE FROM whatsapp_templates WHERE "tenantId" = $1`, [tenant.id]);
+    await q(`DELETE FROM whatsapp_contacts WHERE "tenantId" = $1`, [tenant.id]);
+    await q(`DELETE FROM whatsapp_accounts WHERE "tenantId" = $1`, [tenant.id]);
+    await q(`DELETE FROM customer_tags WHERE "tenantId" = $1`, [tenant.id]);
     await q(`DELETE FROM ai_kb_embeddings WHERE tenant_id = $1`, [tenant.id]); // pgvector sidecar (only present in pgvector-mode boots)
     await q(`DELETE FROM tenant_settings WHERE tenant_id = $1`, [tenant.id]);
     await q(`DELETE FROM ai_knowledge_bases WHERE "tenantId" = $1`, [tenant.id]);
@@ -353,7 +365,13 @@ export async function teardownAiAuditSeed(
       `DELETE FROM user_roles WHERE "userId" IN (SELECT id FROM users WHERE "tenantId" = $1)`,
       [tenant.id],
     );
+    // `audit_logs.userId` -> users is NO ACTION on purpose: audit history must outlive any attempt to
+    // delete its actor. This tenant is a disposable test tenant in an isolated database, so its OWN
+    // audit rows are removed first (same as `cleanupTenant` in utils/whatsapp-e2e-app.ts) — scoped to
+    // this tenant id, never to a user or to another tenant.
+    await q(`DELETE FROM audit_logs WHERE "tenantId" = $1`, [tenant.id]);
     await q(`DELETE FROM users WHERE "tenantId" = $1`, [tenant.id]);
+    await q(`DELETE FROM roles WHERE "tenantId" = $1`, [tenant.id]); // tenant-defined roles only; system roles have no tenant
     await q(`DELETE FROM customers WHERE "tenantId" = $1`, [tenant.id]);
     await q(`DELETE FROM branches WHERE "tenantId" = $1`, [tenant.id]);
     await q(`DELETE FROM api_logs WHERE "tenantId" = $1`, [tenant.id]);

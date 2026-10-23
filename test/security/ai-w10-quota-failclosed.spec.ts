@@ -71,14 +71,30 @@ describe('AI abuse — quota-exhaustion fail-closed (T151)', () => {
     provider = new ScriptedAiProvider();
     const embedding = new ScriptedEmbeddingProvider(16);
 
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
-      .overrideProvider(AI_COMPLETION_PROVIDERS)
-      .useValue([provider])
-      .overrideProvider(AI_EMBEDDING_PROVIDER)
-      .useValue(embedding)
-      .overrideProvider(BillingModeService)
-      .useValue(ALWAYS_PAID_BILLING_MODE)
-      .compile();
+    // A missing/unreachable database surfaces from `compile()` (TypeORM connects while the module is
+    // built) or `app.init()`. Say so in terms of the setup rather than letting `afterAll` trip over an
+    // undefined `dataSource` and bury the cause.
+    const setupFailed = (err: unknown) =>
+      new Error(
+        `T151 setup failed: the application could not start against the e2e database ` +
+          `("${process.env.E2E_DB_NAME ?? 'ziyarati_e2e'}"). It must exist and be built from the migration chain ` +
+          `(migration:run, then \`npm run seed\`) before this spec runs — see the ai-security job in ` +
+          `.github/workflows/backend-ci.yml. Cause: ${(err as Error).message}`,
+      );
+
+    let moduleRef: Awaited<ReturnType<ReturnType<typeof Test.createTestingModule>['compile']>>;
+    try {
+      moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+        .overrideProvider(AI_COMPLETION_PROVIDERS)
+        .useValue([provider])
+        .overrideProvider(AI_EMBEDDING_PROVIDER)
+        .useValue(embedding)
+        .overrideProvider(BillingModeService)
+        .useValue(ALWAYS_PAID_BILLING_MODE)
+        .compile();
+    } catch (err) {
+      throw setupFailed(err);
+    }
 
     app = moduleRef.createNestApplication();
     registerSecurityHeaders(app);
@@ -94,9 +110,20 @@ describe('AI abuse — quota-exhaustion fail-closed (T151)', () => {
     app.use(cookieParser());
     app.setGlobalPrefix('api/v1');
     app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true, transformOptions: { enableImplicitConversion: true } }));
-    await app.init();
+    try {
+      await app.init();
+    } catch (err) {
+      await app.close().catch(() => undefined);
+      throw setupFailed(err);
+    }
 
     dataSource = app.get(DataSource);
+    // seedAiAudit/teardownAiAuditSeed INSERT and DELETE tenants: prove we are on the e2e database first.
+    const [{ db }] = await dataSource.query(`SELECT current_database() AS db`);
+    const expectedDb = process.env.E2E_DB_NAME ?? 'ziyarati_e2e';
+    if (db !== expectedDb) {
+      throw new Error(`T151 refuses to seed: connected to database "${db}", expected the e2e database "${expectedDb}".`);
+    }
     seed = await seedAiAudit(app, dataSource);
 
     // A real, usable subscription for tenantA — required for `isEnforced()`
@@ -150,6 +177,11 @@ describe('AI abuse — quota-exhaustion fail-closed (T151)', () => {
   }, 120_000);
 
   afterAll(async () => {
+    // Setup may have failed before the data source or seed existed; the beforeAll error is the real one.
+    if (!dataSource || !seed) {
+      await app?.close().catch(() => undefined);
+      return;
+    }
     await dataSource.query(`DELETE FROM feature_flags WHERE "tenantId" = $1 AND feature_key = $2`, [seed.tenantA.id, FeatureKey.AI_ASSISTANT]).catch(() => undefined);
     await dataSource.query(`DELETE FROM subscription_usage WHERE subscription_id = $1`, [subscriptionId]).catch(() => undefined);
     await dataSource.query(`DELETE FROM subscriptions WHERE id = $1`, [subscriptionId]).catch(() => undefined);

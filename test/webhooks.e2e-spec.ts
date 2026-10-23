@@ -21,6 +21,7 @@
  * shared `cleanupTenant` (webhook_endpoints/webhook_deliveries cascade-delete
  * with the tenant via the migration's FK ON DELETE CASCADE).
  */
+import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
@@ -226,7 +227,7 @@ describe('Outbound Webhooks (Phase 2) — HTTP e2e', () => {
       const emitter = e2e.app.get(EventEmitter2);
       await emitter.emitAsync(
         APPOINTMENT_EVENT.NO_SHOW,
-        new AppointmentNoShowEvent(owner.tenantId, 'apt-edit-1', 'cust-edit-1'),
+        new AppointmentNoShowEvent(owner.tenantId, randomUUID(), randomUUID()),
       );
       await new Promise((r) => setTimeout(r, 200));
 
@@ -244,7 +245,7 @@ describe('Outbound Webhooks (Phase 2) — HTTP e2e', () => {
 
       await emitter.emitAsync(
         APPOINTMENT_EVENT.NO_SHOW,
-        new AppointmentNoShowEvent(owner.tenantId, 'apt-edit-2', 'cust-edit-2'),
+        new AppointmentNoShowEvent(owner.tenantId, randomUUID(), randomUUID()),
       );
       await new Promise((r) => setTimeout(r, 200));
 
@@ -286,7 +287,7 @@ describe('Outbound Webhooks (Phase 2) — HTTP e2e', () => {
       const emitter = e2e.app.get(EventEmitter2);
       await emitter.emitAsync(
         APPOINTMENT_EVENT.COMPLETED,
-        new AppointmentCompletedEvent(owner.tenantId, 'apt-retain-1', 'cust-retain-1'),
+        new AppointmentCompletedEvent(owner.tenantId, randomUUID(), randomUUID()),
       );
       await new Promise((r) => setTimeout(r, 200));
 
@@ -393,7 +394,7 @@ describe('Outbound Webhooks (Phase 2) — HTTP e2e', () => {
       const emitter = e2e.app.get(EventEmitter2);
       await emitter.emitAsync(
         APPOINTMENT_EVENT.CANCELLED,
-        new AppointmentCancelledEvent(owner.tenantId, 'apt-1', 'cust-1', 'no reason given'),
+        new AppointmentCancelledEvent(owner.tenantId, randomUUID(), randomUUID(), 'no reason given'),
       );
       // Give the async @OnEvent handler's microtask chain a tick to complete.
       await new Promise((r) => setTimeout(r, 200));
@@ -445,7 +446,7 @@ describe('Outbound Webhooks (Phase 2) — HTTP e2e', () => {
       const emitter = e2e.app.get(EventEmitter2);
       await emitter.emitAsync(
         APPOINTMENT_EVENT.CREATED,
-        new AppointmentCreatedEvent(owner.tenantId, 'apt-2', 'cust-2', 'staff-1', 'branch-1', new Date()),
+        new AppointmentCreatedEvent(owner.tenantId, randomUUID(), randomUUID(), randomUUID(), randomUUID(), new Date()),
       );
       await new Promise((r) => setTimeout(r, 200));
 
@@ -468,7 +469,7 @@ describe('Outbound Webhooks (Phase 2) — HTTP e2e', () => {
       const emitter = e2e.app.get(EventEmitter2);
       await emitter.emitAsync(
         APPOINTMENT_EVENT.COMPLETED,
-        new AppointmentCompletedEvent(owner.tenantId, 'apt-3', 'cust-3'),
+        new AppointmentCompletedEvent(owner.tenantId, randomUUID(), randomUUID()),
       );
       await new Promise((r) => setTimeout(r, 200));
 
@@ -494,7 +495,7 @@ describe('Outbound Webhooks (Phase 2) — HTTP e2e', () => {
       const emitter = e2e.app.get(EventEmitter2);
       await emitter.emitAsync(
         APPOINTMENT_EVENT.COMPLETED,
-        new AppointmentCompletedEvent(owner.tenantId, 'apt-4', 'cust-4'),
+        new AppointmentCompletedEvent(owner.tenantId, randomUUID(), randomUUID()),
       );
       await new Promise((r) => setTimeout(r, 200));
 
@@ -546,7 +547,7 @@ describe('Outbound Webhooks (Phase 2) — HTTP e2e', () => {
       const emitter = e2e.app.get(EventEmitter2);
       await emitter.emitAsync(
         APPOINTMENT_EVENT.COMPLETED,
-        new AppointmentCompletedEvent(owner.tenantId, 'apt-5', 'cust-5'),
+        new AppointmentCompletedEvent(owner.tenantId, randomUUID(), randomUUID()),
       );
       await new Promise((r) => setTimeout(r, 200));
 
