@@ -18,7 +18,29 @@ import { INTEGRATION_API_GUIDE } from './integration-api-guide';
  * rendered page and the machine-readable `-json` document TOGETHER; a route
  * guard would leave the JSON reachable, which is the exact disclosure this
  * gate exists to close (research.md D7).
+ *
+ * Ordering (CR-35): `main.ts` mounts this BEFORE `registerSecurityHeaders` on purpose. The API tier's CSP
+ * is `default-src 'none'` (a JSON-only policy); applied to Swagger UI it blanks the page, which needs inline
+ * script and style. The cost is that the docs pages carry no `nosniff`/`X-Frame-Options`/HSTS. Accepted
+ * because both flags default off in production (`env.validation.ts`); if a surface is ever enabled in
+ * production, give it its own header set here instead of reordering.
  */
+/** Paths of the documentation surfaces that are actually mounted (mirrors the flags `mountApiDocs` reads). */
+export const API_DOCS_PATH = '/docs';
+export const INTEGRATION_DOCS_PATH = '/docs/integrations';
+
+/**
+ * CR-35: what the root `GET /` payload may advertise. Only a surface whose flag is on is listed, and at the
+ * path it is really served from (`SwaggerModule.setup` mounts outside the `api/v1` global prefix, so the
+ * old hard-coded `/api/v1/docs` pointed at a 404 and advertised a disabled surface in production).
+ */
+export function advertisedApiDocs(config: ConfigService): { docs?: string; integrationDocs?: string } {
+  const out: { docs?: string; integrationDocs?: string } = {};
+  if (config.get<string>('ENABLE_API_DOCS') === 'true') out.docs = API_DOCS_PATH;
+  if (config.get<string>('ENABLE_INTEGRATION_DOCS') === 'true') out.integrationDocs = INTEGRATION_DOCS_PATH;
+  return out;
+}
+
 export function mountApiDocs(
   app: INestApplication,
   config: ConfigService,
@@ -50,7 +72,7 @@ export function mountApiDocs(
     // @ApiBearerAuth('JWT-auth') send the token — the rest hit "No auth token".
     swaggerDocument.security = [{ 'JWT-auth': [] }];
 
-    SwaggerModule.setup('docs', app, swaggerDocument, {
+    SwaggerModule.setup(API_DOCS_PATH.slice(1), app, swaggerDocument, {
       swaggerOptions: {
         persistAuthorization: true,
       },
@@ -83,7 +105,7 @@ export function mountApiDocs(
     );
     integrationSwaggerDocument.security = [{ 'ApiKey-auth': [] }];
 
-    SwaggerModule.setup('docs/integrations', app, integrationSwaggerDocument, {
+    SwaggerModule.setup(INTEGRATION_DOCS_PATH.slice(1), app, integrationSwaggerDocument, {
       swaggerOptions: {
         persistAuthorization: true,
       },

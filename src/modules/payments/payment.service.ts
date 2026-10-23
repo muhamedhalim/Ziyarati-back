@@ -620,7 +620,8 @@ export class PaymentService {
       const repo = manager.getRepository(Payment);
       const payment = await repo.findOne({
         where: { id, tenant: { id: tenantId } },
-        lock: { mode: 'pessimistic_write' },
+        // CR-47: the tenant filter LEFT JOINs `tenants`; a bare FOR UPDATE would lock that row too.
+        lock: { mode: 'pessimistic_write', tables: ['payments'] },
       });
       if (!payment) {
         throw new AppError(ErrorCode.NOT_FOUND, { message: 'Payment not found' });
@@ -677,7 +678,8 @@ export class PaymentService {
         const repo = manager.getRepository(Payment);
         const payment = await repo.findOne({
           where: { id, tenant: { id: tenantId } },
-          lock: { mode: 'pessimistic_write' },
+          // CR-47: lock the payment row only, not the joined tenant row.
+          lock: { mode: 'pessimistic_write', tables: ['payments'] },
         });
         if (!payment) {
           throw new AppError(ErrorCode.NOT_FOUND, { message: 'Payment not found' });
@@ -842,7 +844,8 @@ export class PaymentService {
       const repo = manager.getRepository(Payment);
       const payment = await repo.findOne({
         where: { id, tenant: { id: tenantId } },
-        lock: { mode: 'pessimistic_write' },
+        // CR-47: the tenant filter LEFT JOINs `tenants`; a bare FOR UPDATE would lock that row too.
+        lock: { mode: 'pessimistic_write', tables: ['payments'] },
       });
       if (!payment || payment.status !== PaymentStatus.PENDING) return false;
 

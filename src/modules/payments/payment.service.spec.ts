@@ -291,7 +291,7 @@ describe('PaymentService.create (booking payments)', () => {
 
       expect(repo.findOne).toHaveBeenCalledWith({
         where: { id: 'pay-1', tenant: { id: TENANT } },
-        lock: { mode: 'pessimistic_write' },
+        lock: { mode: 'pessimistic_write', tables: ['payments'] },
       });
       expect(repo.save).toHaveBeenCalledWith(
         expect.objectContaining({ status: PaymentStatus.FAILED, failure_reason: 'Superseded by a new payment attempt' }),

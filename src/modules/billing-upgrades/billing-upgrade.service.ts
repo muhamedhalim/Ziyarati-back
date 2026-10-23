@@ -212,7 +212,8 @@ export class BillingUpgradeService {
       const repo = manager.getRepository(BillingUpgradeRequest);
       const request = await repo.findOne({
         where: { id, tenant: { id: tenantId } },
-        lock: { mode: 'pessimistic_write' },
+        // CR-47: lock the request row only, not the joined tenant row.
+        lock: { mode: 'pessimistic_write', tables: ['billing_upgrade_requests'] },
       });
       if (!request) {
         throw new AppError(ErrorCode.NOT_FOUND, { message: 'Request not found' });

@@ -47,7 +47,6 @@ lerna-debug.log*
 .env.local
 .env.production
 .env.strix
-.env.example
 # temp directory
 .temp
 .tmp
@@ -110,3 +109,6 @@ ziyaratech.backup
 
 # LSA-17: perf-run session cookies / tokens are never committed.
 scripts/perf/load/*.txt
+
+# Local run markers written by dev scripts
+.*-start-time.txt

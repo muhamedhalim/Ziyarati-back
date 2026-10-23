@@ -239,7 +239,8 @@ export class RefundService {
   ): Promise<RefundIntent> {
     const payment = await m.getRepository(Payment).findOne({
       where: { id: dto.paymentId, tenant: { id: tenantId } },
-      lock: { mode: 'pessimistic_write' },
+      // CR-47: lock the payment row only, not the joined tenant row.
+      lock: { mode: 'pessimistic_write', tables: ['payments'] },
     });
     if (!payment) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Payment not found' });

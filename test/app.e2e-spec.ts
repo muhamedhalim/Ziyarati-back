@@ -4,6 +4,10 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 import { AllExceptionsFilter } from './../src/common/filters/all-exceptions.filter';
+import { advertisedApiDocs } from './../src/config/api-docs';
+
+// Both documentation flags on, so the payload below is the same whatever NODE_ENV this suite runs under.
+const bothDocsOn = { get: () => 'true' } as unknown as Parameters<typeof advertisedApiDocs>[0];
 
 /**
  * VAL-001′ — rewritten against the REAL running contract (main.ts), not the
@@ -49,8 +53,7 @@ describe('root route + api/v1 contract (FND-005 / VAL-001′)', () => {
         return res.status(200).json({
           status: 'ok',
           message: 'Clinic SaaS API is running',
-          docs: '/api/v1/docs',
-          integrationDocs: '/docs/integrations',
+          ...advertisedApiDocs(bothDocsOn),
           health: '/api/v1/health',
         });
       }
@@ -69,7 +72,8 @@ describe('root route + api/v1 contract (FND-005 / VAL-001′)', () => {
     expect(res.body).toEqual({
       status: 'ok',
       message: 'Clinic SaaS API is running',
-      docs: '/api/v1/docs',
+      // CR-35: the paths the docs are really served from (outside the api/v1 prefix).
+      docs: '/docs',
       integrationDocs: '/docs/integrations',
       health: '/api/v1/health',
     });

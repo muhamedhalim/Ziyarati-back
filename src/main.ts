@@ -24,7 +24,7 @@ import cookieParser from 'cookie-parser';
 import compression from 'compression';
 import { RedisIoAdapter } from './modules/ai-realtime/redis-io.adapter';
 import { runClustered } from './cluster-bootstrap';
-import { mountApiDocs } from './config/api-docs';
+import { advertisedApiDocs, mountApiDocs } from './config/api-docs';
 import { getAppRevision } from './common/utils/app-revision.util';
 import { registerSecurityHeaders } from './config/security-headers';
 import { buildCorsOptions, parseAllowedOrigins } from './config/cors-origins';
@@ -191,13 +191,13 @@ async function bootstrap() {
   });
 
   // ---------------- Root Route ----------------
+  const advertisedDocs = advertisedApiDocs(app.get(ConfigService));
   app.use('/', (_req, res, next) => {
     if (_req.method === 'GET' && _req.url === '/') {
       return res.status(200).json({
         status: 'ok',
         message: 'Clinic SaaS API is running',
-        docs: '/api/v1/docs',
-        integrationDocs: '/docs/integrations',
+        ...advertisedDocs,
         health: '/api/v1/health',
       });
     }

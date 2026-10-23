@@ -5,7 +5,7 @@ import request from 'supertest';
 import type { Server } from 'http';
 import type { AddressInfo } from 'node:net';
 
-import { mountApiDocs } from './api-docs';
+import { advertisedApiDocs, mountApiDocs } from './api-docs';
 
 /**
  * ZT-001 boot-mode coverage — the five combinations from
@@ -98,6 +98,31 @@ describe('mountApiDocs — ZT-001 boot-mode combinations (contracts/api-document
     try {
       await request(baseUrl).get('/docs').expect(404);
       await request(baseUrl).get('/docs/integrations').expect(404);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('advertisedApiDocs — CR-35 root payload tells the truth', () => {
+  it('lists nothing when both surfaces are off (the production default)', () => {
+    expect(advertisedApiDocs(fakeConfig({}))).toEqual({});
+  });
+
+  it('lists only the surface whose flag is on, at the path it is served from', async () => {
+    expect(advertisedApiDocs(fakeConfig({ ENABLE_INTEGRATION_DOCS: 'true' }))).toEqual({
+      integrationDocs: '/docs/integrations',
+    });
+    expect(advertisedApiDocs(fakeConfig({ ENABLE_API_DOCS: 'true' }))).toEqual({ docs: '/docs' });
+  });
+
+  it('every advertised path resolves to a served page (never the old /api/v1/docs 404)', async () => {
+    const values = { ENABLE_API_DOCS: 'true', ENABLE_INTEGRATION_DOCS: 'true' };
+    const { app, baseUrl } = await bootWithFlags(values);
+    try {
+      for (const path of Object.values(advertisedApiDocs(fakeConfig(values)))) {
+        await request(baseUrl).get(path).expect(200);
+      }
     } finally {
       await app.close();
     }

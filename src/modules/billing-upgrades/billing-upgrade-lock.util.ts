@@ -26,7 +26,8 @@ export async function lockRequest(
   const repo = manager.getRepository(BillingUpgradeRequest);
   const locked = await repo.findOne({
     where,
-    lock: { mode: 'pessimistic_write' },
+    // CR-47: callers filter on `tenant: { id }`, which joins `tenants`; `FOR UPDATE OF` keeps that row unlocked.
+    lock: { mode: 'pessimistic_write', tables: ['billing_upgrade_requests'] },
   });
   if (!locked || !relations) return locked;
   return (

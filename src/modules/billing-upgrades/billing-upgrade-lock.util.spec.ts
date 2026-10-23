@@ -32,7 +32,8 @@ describe('billing-upgrade lock helpers', () => {
       await lockRequest(manager as never, { id: 'r1' }, { tenant: true });
 
       const [locked] = repo.findOne.mock.calls[0];
-      expect(locked.lock).toEqual({ mode: 'pessimistic_write' });
+      // CR-47: scoped to the request row, so a tenant-filtered lookup never locks the joined tenant row.
+      expect(locked.lock).toEqual({ mode: 'pessimistic_write', tables: ['billing_upgrade_requests'] });
       expect(locked.relations).toBeUndefined();
     });
 
