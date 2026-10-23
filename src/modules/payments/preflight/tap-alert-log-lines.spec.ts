@@ -64,6 +64,8 @@ describe('Tap CloudWatch alarm log-line contract', () => {
         'hook_reject',
         'misrouted',
         'no_key',
+        // Not Tap-specific: the worker's outbox relay (CR-09) shares this mechanism.
+        'outbox_failed',
         'refetch_fail',
         'timeout',
         'unreachable',
@@ -77,6 +79,7 @@ describe('Tap CloudWatch alarm log-line contract', () => {
     'hook_reject',
     'misrouted',
     'no_key',
+    'outbox_failed',
     'refetch_fail',
     'timeout',
     'unreachable',

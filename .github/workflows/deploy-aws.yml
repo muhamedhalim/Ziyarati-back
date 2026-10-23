@@ -120,6 +120,9 @@ jobs:
       DB_PASSWORD: postgres
       DB_NAME: ziyarati_ci
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/ziyarati_ci # disposable CI database, not a secret
+      # GitHub sets CI=true, so a spec that needs Redis (analytics-no-branch.redis.spec.ts) FAILS, not
+      # skips, when it is missing. Provide it (step below) rather than weakening that rule.
+      REDIS_TEST_URL: redis://127.0.0.1:63790
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
@@ -131,6 +134,16 @@ jobs:
           cache: npm
 
       - run: npm ci --no-audit --no-fund
+
+      # Redis on the port the specs default to (identical to backend-ci.yml).
+      - name: Start Redis (zt-e2e-redis :63790)
+        run: |
+          docker run -d --name zt-e2e-redis -p 63790:6379 redis:7-alpine
+          for i in $(seq 1 30); do
+            [ "$(docker exec zt-e2e-redis redis-cli ping 2>/dev/null)" = "PONG" ] && exit 0
+            sleep 1
+          done
+          echo "::error::Redis did not become ready"; exit 1
 
       - name: Typecheck + build
         run: npm run build
