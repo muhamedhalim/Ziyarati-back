@@ -263,5 +263,10 @@
     "method": "GET",
     "path": "/public/plans",
     "reason": "Public pricing catalogue for the marketing /pricing page: ACTIVE subscription plans only (name, price, billing cycle, configured limits, included feature names) read through SubscriptionService.listPlans — no tenant, subscriber, invoice or finance data. Read-only; plan mutation stays on the super-admin-only /platform/billing/plans routes. Per-IP @Throttle (PUBLIC_PLANS_THROTTLE); Cache-Control: no-store so a deactivation shows on the next request."
+  },
+  {
+    "method": "POST",
+    "path": "/public/contact",
+    "reason": "Marketing-site Contact Us form: an anonymous prospect leaves a name, email and message. Writes one contact_leads row (not tenant data) and sends a best-effort notification to the platform sales inbox; returns only {received:true}, no lookup or disclosure of any account. Validated DTO (length caps, email, subject enum), identical re-submits inside 10 minutes are ignored, strict per-IP @Throttle (PUBLIC_CONTACT_THROTTLE). @SkipCsrf because the route reads no session and a signed-in staff member with a stale cookie must still be able to submit it."
   }
 ]

@@ -4,6 +4,7 @@ import { EmailCampaignDeliveryProvider } from './email-campaign-delivery.provide
 import { CampaignDeliveryPayload } from './campaign-delivery.provider.interface';
 import { CAMPAIGN_CHANNEL } from '../campaign.constants';
 import { EmailProviderFactory } from '../../email/providers/email-provider.factory';
+import { UnsubscribeTokenService } from '../../email/unsubscribe-token.service';
 
 function payload(
   overrides: Partial<CampaignDeliveryPayload> = {},
@@ -29,6 +30,9 @@ describe('EmailCampaignDeliveryProvider', () => {
   let provider: EmailCampaignDeliveryProvider;
   let send: jest.Mock;
   let resolve: jest.Mock;
+  const unsubscribeTokens = new UnsubscribeTokenService(
+    makeConfig({ EMAIL_UNSUBSCRIBE_SECRET: 'unit-test-unsubscribe-secret' }),
+  );
 
   beforeEach(() => {
     send = jest.fn();
@@ -38,6 +42,7 @@ describe('EmailCampaignDeliveryProvider', () => {
     provider = new EmailCampaignDeliveryProvider(
       { resolve } as unknown as EmailProviderFactory,
       makeConfig({ EMAIL_ENABLED: 'true', APP_URL: 'https://app.test' }),
+      unsubscribeTokens,
     );
   });
 
@@ -70,6 +75,33 @@ describe('EmailCampaignDeliveryProvider', () => {
         }),
       );
       expect(result).toEqual({ success: true, providerRef: 'resend-msg-1' });
+    });
+
+    it('embeds a verifiable unsubscribe link and the RFC 8058 one-click headers (CR-03)', async () => {
+      send.mockResolvedValueOnce({ success: true, providerMessageId: 'm1' });
+      await provider.send(payload({ tenantId: 'tenant-9', email: 'Patient@Example.com' }));
+
+      const msg = send.mock.calls[0][0];
+      const pageUrl = /https:\/\/app\.test\/unsubscribe\/([A-Za-z0-9_-]+)/.exec(msg.html);
+      expect(pageUrl).not.toBeNull();
+      expect(msg.text).toContain(`https://app.test/unsubscribe/${pageUrl![1]}`);
+      // The token authorises exactly this (tenant, normalised email) pair.
+      expect(unsubscribeTokens.verify(pageUrl![1])).toEqual({
+        tenantId: 'tenant-9',
+        email: 'patient@example.com',
+      });
+      expect(msg.headers).toEqual({
+        'List-Unsubscribe': `<https://app.test/api/v1/public/unsubscribe/${pageUrl![1]}>`,
+        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      });
+    });
+
+    it('campaign metadata cannot override the unsubscribe link (CR-03)', async () => {
+      send.mockResolvedValueOnce({ success: true, providerMessageId: 'm1' });
+      await provider.send(payload({ metadata: { unsubscribeUrl: 'https://evil.test/x' } }));
+      const msg = send.mock.calls[0][0];
+      expect(msg.html).not.toContain('evil.test');
+      expect(msg.html).toContain('https://app.test/unsubscribe/');
     });
 
     it('sets reply-to from the payload (FR-E018 — clinic contact, not the platform sender)', async () => {

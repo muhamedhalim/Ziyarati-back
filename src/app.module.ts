@@ -41,6 +41,7 @@ import { PlatformAiMonitoringModule } from './modules/platform-ai-monitoring/pla
 import { PublicDiscoveryModule } from './modules/public-discovery/public-discovery.module';
 import { GuestChatModule } from './modules/guest-chat/guest-chat.module';
 import { PublicBookingModule } from './modules/public-booking/public-booking.module';
+import { PublicContactModule } from './modules/public-contact/public-contact.module';
 import { WorkflowModule } from './modules/workflow/workflow.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { CrmModule } from './modules/crm/crm.module';
@@ -199,6 +200,7 @@ import { validate } from './config/env.validation';
     PublicDiscoveryModule,
     GuestChatModule,
     PublicBookingModule,
+    PublicContactModule,
     WorkflowModule,
     PaymentsModule,
     CrmModule,

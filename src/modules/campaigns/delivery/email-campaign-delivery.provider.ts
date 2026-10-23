@@ -10,6 +10,7 @@ import { CAMPAIGN_CHANNEL } from '../campaign.constants';
 import { EmailProviderFactory } from '../../email/providers/email-provider.factory';
 import { EMAIL_BRAND_NAME, resolveEmailConfig } from '../../email/email.config';
 import { renderEmail } from '../../email/email.templates';
+import { UnsubscribeTokenService } from '../../email/unsubscribe-token.service';
 
 /**
  * REAL email campaign delivery (Phase 11, US7, T131).
@@ -40,6 +41,7 @@ export class EmailCampaignDeliveryProvider implements CampaignDeliveryProvider {
   constructor(
     private readonly providers: EmailProviderFactory,
     private readonly config: ConfigService,
+    private readonly unsubscribeTokens: UnsubscribeTokenService,
   ) {}
 
   supports(channel?: string): boolean {
@@ -62,12 +64,21 @@ export class EmailCampaignDeliveryProvider implements CampaignDeliveryProvider {
 
     try {
       const cfg = resolveEmailConfig(this.config);
+      // CR-03 — every marketing email carries a working opt-out: a footer link to the public page
+      // and the RFC 8058 one-click headers. The token is the stateless (tenant, email) HMAC, so it
+      // keeps working permanently. Our values are spread LAST so campaign metadata can never
+      // replace the link with one pointing elsewhere.
+      const base = cfg.appUrl.replace(/\/+$/, '');
+      const token = this.unsubscribeTokens.issue(payload.tenantId, to);
+      const unsubscribeUrl = `${base}/unsubscribe/${token}`;
+      const oneClickUrl = `${base}/api/v1/public/unsubscribe/${token}`;
       const rendered = renderEmail(
         'campaign_marketing',
         {
           subject: payload.emailSubject,
           body: payload.emailBody,
           ...payload.metadata,
+          unsubscribeUrl,
         },
         { appUrl: cfg.appUrl, locale: cfg.defaultLocale, brand: EMAIL_BRAND_NAME },
       );
@@ -83,6 +94,10 @@ export class EmailCampaignDeliveryProvider implements CampaignDeliveryProvider {
         // the clinic's own contact set as reply-to. No per-clinic sending
         // domain is introduced.
         replyTo: payload.replyTo ?? cfg.replyTo,
+        headers: {
+          'List-Unsubscribe': `<${oneClickUrl}>`,
+          'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+        },
         tags: [{ name: 'campaign', value: payload.campaignId }],
       });
 

@@ -60,6 +60,8 @@ import { CampaignsModule } from '../campaigns/campaigns.module';
     EmailDeliveryService,
     EmailProviderFactory,
     EmailSuppressionService,
+    // Campaign email delivery signs the opt-out link it embeds in every marketing send (CR-03).
+    UnsubscribeTokenService,
   ],
 })
 export class EmailModule {}

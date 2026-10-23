@@ -2,8 +2,9 @@ import {
   CanActivate,
   ExecutionContext,
   Injectable,
-  ServiceUnavailableException,
 } from '@nestjs/common';
+
+import { AppError, ErrorCode } from '../../../common/errors';
 
 import { SystemSettingService } from '../system-setting.service';
 import { SettingKey } from '../settings.registry';
@@ -31,8 +32,8 @@ export class MaintenanceGuard implements CanActivate {
     if (!req.user) return true; // unauthenticated / public routes pass through
     if (req.user.roles?.includes(ROLE.SUPER_ADMIN)) return true;
 
-    throw new ServiceUnavailableException(
-      'The platform is currently under maintenance. Please try again later.',
-    );
+    // A dedicated code (not the generic SERVICE_UNAVAILABLE) so clients can tell real
+    // maintenance from any other 503 (CR-04).
+    throw new AppError(ErrorCode.MAINTENANCE_MODE);
   }
 }

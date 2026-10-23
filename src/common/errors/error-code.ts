@@ -22,6 +22,13 @@ export enum ErrorCode {
    * retryable — the client should back off and retry.
    */
   SERVICE_UNAVAILABLE = 'SERVICE_UNAVAILABLE',
+  /**
+   * The platform is in maintenance mode (`platform.maintenance_mode`). Distinct from
+   * `SERVICE_UNAVAILABLE` on purpose: the web client sends the user to the maintenance page for
+   * THIS code only, so an unrelated 503 (checkout unavailable, AI provider down, export
+   * backpressure) is shown as the error it is instead of as "maintenance" (CR-04).
+   */
+  MAINTENANCE_MODE = 'MAINTENANCE_MODE',
 
   // ── File uploads ─────────────────────────────────────────────────────
   /**
@@ -195,6 +202,10 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
   [ErrorCode.SERVICE_UNAVAILABLE]: {
     status: HttpStatus.SERVICE_UNAVAILABLE,
     message: 'Service temporarily unavailable — please retry',
+  },
+  [ErrorCode.MAINTENANCE_MODE]: {
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    message: 'The platform is currently under maintenance. Please try again later.',
   },
 
   [ErrorCode.FILE_TOO_LARGE]: {
