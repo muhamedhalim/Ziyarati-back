@@ -424,3 +424,41 @@ describe('AiModelRouterService — registry and capability validation', () => {
     });
   });
 });
+
+/**
+ * `ai.default_model` precedence — the platform setting must actually decide the
+ * model for a turn whose agent pins none, in BOTH routing states.
+ */
+describe('AiModelRouterService — platform default precedence', () => {
+  const base = { tenantId: 't', conversationId: 'c', feature: 'chat', route: 'ai.chat.api' };
+  const on = { AI_MODEL_ROUTING_ENABLED: 'true', AI_MODEL_ROUTING_ROLLOUT_PERCENT: 100 };
+  const make = (env: Record<string, unknown>) => new AiModelRouterService(new ConfigService(env));
+
+  it('routing OFF, agent pins nothing → the platform default', () => {
+    const d = make({}).resolve({ ...base, platformDefaultModel: 'gpt-5.6-terra' });
+    expect(d.model).toBe('gpt-5.6-terra');
+  });
+
+  it('routing OFF, agent pins a model → the pin wins over the platform default', () => {
+    const d = make({}).resolve({ ...base, legacyModel: 'gpt-5.6-luna', platformDefaultModel: 'gpt-5.6-terra' });
+    expect(d.model).toBe('gpt-5.6-luna');
+  });
+
+  it('routing ON, AI_ECONOMY_MODEL unset → the platform default beats the tier default', () => {
+    const d = make(on).resolve({ ...base, platformDefaultModel: 'gpt-5.6-terra' });
+    expect(d.model).toBe('gpt-5.6-terra');
+  });
+
+  it('routing ON, AI_ECONOMY_MODEL set → the explicit operator override wins', () => {
+    const d = make({ ...on, AI_ECONOMY_MODEL: 'gpt-5.6-luna' }).resolve({
+      ...base,
+      platformDefaultModel: 'gpt-5.6-terra',
+    });
+    expect(d.model).toBe('gpt-5.6-luna');
+  });
+
+  it('refuses nothing silently: an unpermitted platform default falls to the tier default', () => {
+    const d = make(on).resolve({ ...base, platformDefaultModel: 'gpt-4o' });
+    expect(d.model).toBe('gpt-5.6-luna');
+  });
+});

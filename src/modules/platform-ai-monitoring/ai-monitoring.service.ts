@@ -5,6 +5,13 @@ import { DataSource } from 'typeorm';
 import { QueueService } from '../../queue/queue.service';
 import { QUEUE } from '../../queue/queue.constants';
 import { currentPeriodMonth } from '../ai/ai.constants';
+import { SystemSettingService } from '../platform/system-setting.service';
+import { SettingKey } from '../platform/settings.registry';
+import {
+  AI_MODEL_REGISTRY_GA,
+  AI_SELECTABLE_MODELS,
+  allowedModelId,
+} from '../ai/routing/ai-model-registry';
 
 const n = (v: unknown): number => {
   const x = Number(v);
@@ -30,7 +37,69 @@ export class AiMonitoringService {
     private readonly dataSource: DataSource,
     private readonly queues: QueueService,
     private readonly config: ConfigService,
+    private readonly platformSettings: SystemSettingService,
   ) {}
+
+  /**
+   * What `ai.default_model` is ACTUALLY doing right now — read-only, no secrets,
+   * no message content, no tenant identity. Powers the status block on
+   * /platform/system-settings so a saved value is never mistaken for an applied
+   * one: it names which requests the setting governs (agents with no pinned
+   * model), how many agents override it, and the last model observed in use.
+   */
+  async modelRuntime() {
+    const [defaultModel, overrideRow, pinned, requested, served] = await Promise.all([
+      this.platformSettings.getTyped<string>(SettingKey.AI_DEFAULT_MODEL),
+      this.dataSource.query(`SELECT 1 FROM system_settings WHERE key = $1 LIMIT 1`, [
+        SettingKey.AI_DEFAULT_MODEL,
+      ]),
+      this.dataSource.query(
+        `SELECT model, count(*)::int AS agents FROM ai_agents
+          WHERE deleted_at IS NULL GROUP BY model ORDER BY agents DESC`,
+      ),
+      this.dataSource.query(
+        `SELECT model, created_at FROM ai_execution_metrics
+          WHERE success = true ORDER BY created_at DESC LIMIT 1`,
+      ),
+      this.dataSource.query(
+        `SELECT model, created_at FROM ai_cost_entries
+          WHERE success = true AND request_kind = 'CHAT' ORDER BY created_at DESC LIMIT 1`,
+      ),
+    ]);
+    const pinnedRows = (pinned as Array<{ model: string | null; agents: number }>).map((r) => ({
+      model: r.model,
+      agents: n(r.agents),
+    }));
+    const economy = this.config.get<string>('AI_ECONOMY_MODEL');
+    const powerful = this.config.get<string>('AI_POWERFUL_MODEL');
+    return {
+      defaultModel: allowedModelId(defaultModel) ?? defaultModel,
+      source: overrideRow.length > 0 ? 'override' : 'default',
+      models: AI_SELECTABLE_MODELS,
+      temperatureApplicable: AI_MODEL_REGISTRY_GA.some((m) => m.supportsTemperature),
+      routing: {
+        enabled: String(this.config.get('AI_MODEL_ROUTING_ENABLED', 'false')) === 'true',
+        rolloutPercent: n(this.config.get('AI_MODEL_ROUTING_ROLLOUT_PERCENT', 0)),
+        economyOverride: economy || null,
+        powerfulOverride: powerful || null,
+      },
+      fallbackModel: this.config.get<string>('AI_FALLBACK_MODEL') ?? null,
+      providerConfigured: !!this.config.get<string>('OPENAI_API_KEY'),
+      agents: {
+        // NULL model = follows the platform default; anything else is pinned.
+        followingDefault: pinnedRows.filter((r) => r.model === null).reduce((a, r) => a + r.agents, 0),
+        pinned: pinnedRows.filter((r) => r.model !== null),
+      },
+      lastObserved:
+        requested[0] || served[0]
+          ? {
+              requestedModel: requested[0]?.model ?? null,
+              servedModel: served[0]?.model ?? null,
+              at: served[0]?.created_at ?? requested[0]?.created_at ?? null,
+            }
+          : null,
+    };
+  }
 
   async overview() {
     const period = currentPeriodMonth();

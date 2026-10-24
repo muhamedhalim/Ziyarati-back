@@ -3,7 +3,6 @@ import * as Joi from 'joi';
 import {
   AI_MODEL_IDS_ALL,
   DEFAULT_AI_MODEL_ID,
-  defaultModelForTier,
 } from '../modules/ai/routing/ai-model-registry';
 import { formatFromAddress } from '../modules/email/email.config';
 
@@ -757,9 +756,14 @@ export const validate = (config: Record<string, unknown>) => {
     // model was the registry's first ECONOMY entry and GPT-5.6 Luna is the
     // ECONOMY entry of the permitted set. Derived, so retiring a model moves
     // this with it instead of leaving a literal that no longer validates.
+    //
+    // No Joi default any more: a default made `AI_ECONOMY_MODEL` ALWAYS set, so
+    // with routing enabled it outranked `ai.default_model` and the platform
+    // setting was ignored. Unset now means "follow the platform setting" (then
+    // the tier's registry default); set means an explicit operator override.
     AI_ECONOMY_MODEL: Joi.string()
       .valid(...AI_MODEL_IDS_ALL)
-      .default(defaultModelForTier('ECONOMY')),
+      .allow('', null),
     AI_POWERFUL_MODEL: Joi.string()
       .valid(...AI_MODEL_IDS_ALL)
       .allow('', null),

@@ -6,6 +6,7 @@ describe('BillingUpgradeAiEstimateService', () => {
   let config: { unitProviderCostMinor: jest.Mock; unitInfraCostMinor: jest.Mock; fallbackMarginMultiplier: number };
   let modelRouter: { resolve: jest.Mock };
   let costs: { quoteChat: jest.Mock; record: jest.Mock };
+  let platformSettings: { getTyped: jest.Mock };
   let service: BillingUpgradeAiEstimateService;
 
   const input = {
@@ -35,11 +36,13 @@ describe('BillingUpgradeAiEstimateService', () => {
       quoteChat: jest.fn().mockReturnValue({ status: 'PRICED', costMicrousd: 1n }),
       record: jest.fn().mockResolvedValue({ inserted: true, costMicrousd: 1n }),
     };
+    platformSettings = { getTyped: jest.fn().mockResolvedValue('gpt-5.6-luna') };
     service = new BillingUpgradeAiEstimateService(
       providers as any,
       config as any,
       modelRouter as any,
       costs as any,
+      platformSettings as any,
     );
   });
 
@@ -213,5 +216,32 @@ describe('BillingUpgradeAiEstimateService', () => {
 
     expect(result.source).toBe('ai');
     expect(result.recommendedPriceMinor).toBe(3);
+  });
+});
+
+describe('BillingUpgradeAiEstimateService — platform default model', () => {
+  it('hands ai.default_model to the router so the setting governs this call', async () => {
+    const modelRouter = {
+      resolve: jest.fn().mockReturnValue({ model: 'gpt-5.6-terra', routed: false, reason: 'legacy_flag' }),
+    };
+    const platformSettings = { getTyped: jest.fn().mockResolvedValue('gpt-5.6-terra') };
+    const providers = { resolve: jest.fn().mockReturnValue({ complete: jest.fn().mockRejectedValue(new Error('down')) }) };
+    const service = new BillingUpgradeAiEstimateService(
+      providers as any,
+      { unitProviderCostMinor: jest.fn().mockReturnValue(2), unitInfraCostMinor: jest.fn().mockReturnValue(1), fallbackMarginMultiplier: 1.3 } as any,
+      modelRouter as any,
+      { quoteChat: jest.fn(), record: jest.fn() } as any,
+      platformSettings as any,
+    );
+
+    await service.estimate({
+      tenantId: 't', requestId: 'r', requestType: BILLING_UPGRADE_TYPE.USAGE_LIMIT, targetKey: 'AI_TOKENS',
+      requestedQuantity: 1, currentUsage: 0, currentLimit: 1, billingPeriod: 'monthly',
+      historicalAverageUsage: 0, currency: 'SAR',
+    });
+
+    expect(modelRouter.resolve).toHaveBeenCalledWith(
+      expect.objectContaining({ platformDefaultModel: 'gpt-5.6-terra' }),
+    );
   });
 });

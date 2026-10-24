@@ -148,8 +148,14 @@ jobs:
       - name: Typecheck + build
         run: npm run build
 
+      - name: pgvector is available on the CI Postgres (fail here, not in an AI spec)
+        run: node scripts/ci/require-pgvector.js pre
+
       - name: Provision the CI database from the migration chain
         run: node node_modules/typeorm/cli.js migration:run -d dist/src/config/data-source.js
+
+      - name: AI vector schema exists after the migration chain (extension, ai_kb_embeddings, indexes)
+        run: node scripts/ci/require-pgvector.js post
 
       - name: Tests (no bypass - any failure stops the pipeline before AWS is touched)
         run: npx jest --ci

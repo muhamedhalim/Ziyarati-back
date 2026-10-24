@@ -51,7 +51,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg17 # det-06 uses the vector path; plain postgres:<n> has no vector.control. Production is PG17.
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -95,7 +95,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -104,11 +104,16 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: pgvector is available on the CI Postgres (fail here, not in an AI spec)
+        run: node scripts/ci/require-pgvector.js pre
+
       - name: Provision database from the migration chain
         run: node node_modules/typeorm/cli.js migration:run -d dist/src/config/data-source.js
 
       - name: Seed system RBAC catalogue and platform admin
-        run: npm run seed
+        run: |
+          npm run seed
+          node scripts/ci/require-pgvector.js post
 
       - name: Deterministic AI-audit suite (det-*.spec.ts)
         run: npm run test:ai-audit
@@ -120,7 +125,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg17 # det-06 uses the vector path; plain postgres:<n> has no vector.control. Production is PG17.
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -174,7 +179,7 @@ jobs:
       - uses: actions/setup-node@v4
         if: ${{ env.OPENAI_KEY_PRESENT == 'true' }}
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -185,13 +190,19 @@ jobs:
         if: ${{ env.OPENAI_KEY_PRESENT == 'true' }}
         run: npm run build
 
+      - name: pgvector is available on the CI Postgres (fail here, not in an AI spec)
+        if: ${{ env.OPENAI_KEY_PRESENT == 'true' }}
+        run: node scripts/ci/require-pgvector.js pre
+
       - name: Provision database from the migration chain
         if: ${{ env.OPENAI_KEY_PRESENT == 'true' }}
         run: node node_modules/typeorm/cli.js migration:run -d dist/src/config/data-source.js
 
       - name: Seed system RBAC catalogue and platform admin
         if: ${{ env.OPENAI_KEY_PRESENT == 'true' }}
-        run: npm run seed
+        run: |
+          npm run seed
+          node scripts/ci/require-pgvector.js post
 
       - name: Live AI-audit suite (live-*.spec.ts — real model, capped calls)
         if: ${{ env.OPENAI_KEY_PRESENT == 'true' }}

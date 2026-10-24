@@ -38,6 +38,7 @@ import type {
   AiEmbeddingResult,
 } from '../../src/modules/ai/providers/ai-provider.interface';
 import { AiPgVector1730000000000 } from '../../src/migrations/1730000000000-AiPgVector';
+import { infraUnavailable } from '../utils/require-infra';
 
 const DIM = 1536; // matches production OPENAI_EMBEDDING_DIM default
 const RAW = process.env.PGVECTOR_TEST_DATABASE_URL ?? '';
@@ -93,6 +94,9 @@ async function boot() {
 beforeAll(async () => {
   if (!RAW) {
     skipReason = 'PGVECTOR_TEST_DATABASE_URL not set';
+    // Locally this is an opt-out; under CI / REQUIRE_TESTCONTAINERS it fails, because every test below
+    // would otherwise return early and the suite would go green having exercised no pgvector at all.
+    infraUnavailable('A pgvector Postgres (PGVECTOR_TEST_DATABASE_URL)');
     return;
   }
   try {
@@ -744,18 +748,23 @@ describe('pgvector — performance sanity (EXPLAIN ANALYZE on a real local datas
     agentId: string,
     n: number,
   ): Promise<void> {
-    for (let i = 0; i < n; i += 1) {
-      const vec = `[${Array.from({ length: DIM }, () => (Math.random() * 2 - 1).toFixed(6)).join(',')}]`;
-      const [kb] = await ds!.query(
-        `INSERT INTO ai_knowledge_bases ("tenantId","agentId",content,content_hash,embedding_version)
-         VALUES ($1,$2,$3,$4,'v1') RETURNING id`,
-        [tenantId, agentId, `perf chunk ${randomUUID()}`, randomUUID()],
-      );
-      await ds!.query(
-        `INSERT INTO ai_kb_embeddings (kb_id, tenant_id, agent_id, embedding) VALUES ($1,$2,$3,$4::vector)`,
-        [kb.id, tenantId, agentId, vec],
-      );
-    }
+    // Set-based: one statement per call instead of 2n round trips of 1536 random numbers each. The
+    // 6,500-row "DECISIVE finding" test below took >120 s row-by-row on a loaded machine (and so could
+    // not run as a CI gate at all); the data it needs is still n independent random unit-scale vectors.
+    // `WHERE kb.id IS NOT NULL` correlates the subquery with the row, so Postgres re-evaluates it per
+    // row instead of hoisting one shared vector.
+    await ds!.query(
+      `WITH kb AS (
+         INSERT INTO ai_knowledge_bases ("tenantId","agentId",content,content_hash,embedding_version)
+         SELECT $1, $2, 'perf chunk ' || gen_random_uuid()::text, gen_random_uuid()::text, 'v1'
+           FROM generate_series(1, $3::int)
+         RETURNING id)
+       INSERT INTO ai_kb_embeddings (kb_id, tenant_id, agent_id, embedding)
+       SELECT kb.id, $1, $2,
+              (SELECT array_agg((random() * 2 - 1)::real) FROM generate_series(1, ${DIM}) g WHERE kb.id IS NOT NULL)::vector
+         FROM kb`,
+      [tenantId, agentId, n],
+    );
   }
 
   async function explain(tenantId: string, agentId: string): Promise<string> {

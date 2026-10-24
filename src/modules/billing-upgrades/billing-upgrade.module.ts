@@ -9,6 +9,7 @@ import { ResourcePriceCatalog } from '../../entities/ResourcePricing/ResourcePri
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { AiModule } from '../ai/ai.module';
+import { PlatformModule } from '../platform/platform.module';
 
 import { BillingUpgradeService } from './billing-upgrade.service';
 import { BillingUpgradeAdminService } from './billing-upgrade-admin.service';
@@ -43,6 +44,7 @@ import { PlatformBillingUpgradeController } from './platform-billing-upgrade.con
     SubscriptionBillingModule,
     PaymentsModule,
     AiModule,
+    PlatformModule,
   ],
   controllers: [BillingUpgradeController, PlatformBillingUpgradeController],
   providers: [

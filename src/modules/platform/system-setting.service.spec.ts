@@ -234,15 +234,22 @@ describe('SystemSettingService — F-22 listTyped() source', () => {
   });
 
   it('reports source "default" for ai.default_model when no row exists', async () => {
-    settings.findOne.mockResolvedValue(undefined);
+    settings.find.mockResolvedValue([]);
     const list = await service.listTyped();
     const entry = list.find((s) => s.key === SettingKey.AI_DEFAULT_MODEL);
     expect(entry?.source).toBe('default');
     expect(entry?.value).toBe(entry?.default);
   });
 
+  it('reads every key with a single query', async () => {
+    settings.find.mockResolvedValue([]);
+    await service.listTyped();
+    expect(settings.find).toHaveBeenCalledTimes(1);
+    expect(settings.findOne).not.toHaveBeenCalled();
+  });
+
   it('reports source "override" for ai.default_model once a super admin has upserted it', async () => {
-    settings.findOne.mockResolvedValue({ id: 's1', key: SettingKey.AI_DEFAULT_MODEL, value: 'gpt-5.6-luna' });
+    settings.find.mockResolvedValue([{ id: 's1', key: SettingKey.AI_DEFAULT_MODEL, value: 'gpt-5.6-luna' }]);
     const list = await service.listTyped();
     const entry = list.find((s) => s.key === SettingKey.AI_DEFAULT_MODEL);
     expect(entry?.source).toBe('override');
@@ -250,13 +257,24 @@ describe('SystemSettingService — F-22 listTyped() source', () => {
   });
 
   it('reports source independently per key, not platform-wide', async () => {
-    settings.findOne.mockImplementation(async ({ where: { key } }: { where: { key: SettingKey } }) =>
-      key === SettingKey.AI_DEFAULT_MODEL ? { id: 's1', key, value: 'gpt-5.6-terra' } : undefined,
-    );
+    settings.find.mockResolvedValue([{ id: 's1', key: SettingKey.AI_DEFAULT_MODEL, value: 'gpt-5.6-terra' }]);
     const list = await service.listTyped();
     const model = list.find((s) => s.key === SettingKey.AI_DEFAULT_MODEL);
     const other = list.find((s) => s.key === SettingKey.MAINTENANCE_MODE);
     expect(model?.source).toBe('override');
     expect(other?.source).toBe('default');
+  });
+
+  it('a lost first-write race (unique violation) is retried as an update, not a 500', async () => {
+    const winner = { id: 's9', key: SettingKey.MAINTENANCE_MODE, value: false };
+    settings.findOne.mockResolvedValueOnce(null).mockResolvedValueOnce(winner);
+    settings.create.mockImplementation((r: any) => r);
+    settings.save
+      .mockRejectedValueOnce(Object.assign(new Error('duplicate key'), { code: '23505' }))
+      .mockImplementationOnce(async (s: any) => s);
+    await expect(service.upsertByKey(SettingKey.MAINTENANCE_MODE, true)).resolves.toMatchObject({
+      id: 's9',
+      value: true,
+    });
   });
 });

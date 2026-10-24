@@ -33,15 +33,18 @@ export class AiAgentService {
 
   async create(tenantId: string, dto: CreateAiAgentDto): Promise<AiAgent> {
     if (dto.branchId) await this.assertBranch(tenantId, dto.branchId);
-    const [defaultModel, defaultTemp] = await Promise.all([
-      this.platformSettings.getTyped<string>(SettingKey.AI_DEFAULT_MODEL),
-      this.platformSettings.getTyped<number>(SettingKey.AI_DEFAULT_TEMP),
-    ]);
+    const defaultTemp = await this.platformSettings.getTyped<number>(
+      SettingKey.AI_DEFAULT_TEMP,
+    );
     const agent = this.agents.create({
       tenant: { id: tenantId } as Tenant,
       branch: dto.branchId ? ({ id: dto.branchId } as Branch) : undefined,
       name: dto.name,
-      model: dto.model ?? defaultModel,
+      // Only an EXPLICIT choice pins a model. Copying `ai.default_model` here
+      // froze whatever the default was at creation time, so later changes on
+      // /platform/system-settings never reached the agent (the router prefers
+      // the agent's own model). NULL = "follow the platform default".
+      model: dto.model,
       system_prompt: dto.systemPrompt,
       temperature: dto.temperature ?? defaultTemp,
       is_active: dto.isActive ?? true,

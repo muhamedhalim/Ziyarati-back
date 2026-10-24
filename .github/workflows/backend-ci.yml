@@ -31,8 +31,13 @@ permissions:
 
 env:
   NODE_VERSION: "24" # engines >=22; the production image is node 24
-# The Postgres service image is pgvector/pgvector:pg17 in every job below: the AI migrations need
-# the `vector` extension, exactly as on RDS. The credentials are for disposable CI databases.
+# The Postgres service image is pgvector/pgvector:pg17 in every job below except the ai-security job's
+# default-mode server (plain postgres:17, on purpose — see that job): the AI migrations need the `vector`
+# extension, exactly as on RDS (engine_major_version 17 in infra/terraform/environments/production). Each job
+# verifies that with scripts/ci/require-pgvector.js BEFORE migrating, so a wrong image fails at once and by
+# name, not as a late "extension vector is not available" / missing ai_kb_embeddings spec failure.
+# src/config/ci-workflow-pgvector.spec.ts keeps every workflow on this rule. The credentials are for
+# disposable CI databases.
 
 jobs:
   # ── Fast checks: nothing here needs a database ─────────────────────────────
@@ -116,6 +121,10 @@ jobs:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/ziyarati_ci
       REDIS_URL: redis://127.0.0.1:63790
       REDIS_TEST_URL: redis://127.0.0.1:63790
+      # pgvector.int-spec.ts creates its own throw-away database on this server. Without it the spec returned
+      # early and the AI knowledge-base integration tests passed having run nothing; with CI=true it now fails
+      # instead of skipping (test/utils/require-infra.ts).
+      PGVECTOR_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
       JWT_ACCESS_SECRET: backend-ci-access-secret-not-for-production-use
       JWT_REFRESH_SECRET: backend-ci-refresh-secret-not-for-production-use
       PAYMENT_PROVIDER: noop
@@ -150,8 +159,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: pgvector is available on the CI Postgres (fail here, not in an AI spec)
+        run: node scripts/ci/require-pgvector.js pre
+
       - name: Provision the CI database from the migration chain
         run: node node_modules/typeorm/cli.js migration:run -d dist/src/config/data-source.js
+
+      - name: AI vector schema exists after the migration chain (extension, ai_kb_embeddings, indexes)
+        run: node scripts/ci/require-pgvector.js post
 
       - name: Unit tests (with coverage)
         run: npx jest --ci --coverage
@@ -252,10 +267,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: pgvector is available on the CI Postgres (fail here, not in an AI spec)
+        run: node scripts/ci/require-pgvector.js pre
+
       - name: Provision the database from the migration chain, then seed the RBAC catalogue + platform admin
         run: |
           node node_modules/typeorm/cli.js migration:run -d dist/src/config/data-source.js
           npm run seed
+          node scripts/ci/require-pgvector.js post
 
       # database-tls needs a hand-built TLS Postgres (docs/SECURITY_DATASTORE_PRODUCTION.md §4) and
       # integration-platform has its own config (next step). Everything else gates: the 15 suites that were
@@ -280,7 +299,7 @@ jobs:
     timeout-minutes: 75
     services:
       postgres:
-        image: postgres:16
+        image: postgres:17 # plain on purpose (default-mode specs assert pgvector is ABSENT); same major as production
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -344,6 +363,11 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Server roles are what the specs assume (5432 plain, 5434 pgvector)
+        run: |
+          node scripts/ci/require-pgvector.js pre --expect absent
+          node scripts/ci/require-pgvector.js pre --port 5434 --database postgres
+
       - name: Provision the default-mode database (plain Postgres) from migrations and seed it
         run: |
           node node_modules/typeorm/cli.js migration:run -d dist/src/config/data-source.js
@@ -353,6 +377,7 @@ jobs:
         run: |
           PGPASSWORD=postgres psql -h localhost -p 5434 -U postgres -c "CREATE EXTENSION IF NOT EXISTS vector"
           PGVECTOR_DB_HOST=127.0.0.1 PGVECTOR_DB_PORT=5434 node test/security/fixtures/provision-pgvector-db.js
+          node scripts/ci/require-pgvector.js post --port 5434
 
       - name: AI security suite (harness-based, in band)
         run: npx jest --config ./test/jest-security.json --ci --runInBand --forceExit
@@ -411,9 +436,12 @@ jobs:
           echo "::error::Redis did not become ready"; exit 1
       - name: Build
         run: npm run build
+      - name: pgvector is available on the CI Postgres (fail here, not in an AI spec)
+        run: node scripts/ci/require-pgvector.js pre
       - name: Provision the database from migrations and seed it
         run: |
           node node_modules/typeorm/cli.js migration:run -d dist/src/config/data-source.js
           npm run seed
+          node scripts/ci/require-pgvector.js post
       - name: AI audit suite (deterministic, in band)
         run: npm run test:ai-audit -- --forceExit

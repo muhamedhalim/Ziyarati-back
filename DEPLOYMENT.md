@@ -88,6 +88,44 @@ empty, asserts schema, exercises the down migration, drops):
 npm run migration:verify
 ```
 
+### pgvector (the `vector` extension)
+
+The AI knowledge base stores embeddings in `ai_kb_embeddings` (migration
+`1730000000000-AiPgVector`). That migration needs the `vector` extension to be
+**installed on the server**, not merely creatable:
+
+| Environment | Behaviour when the server has no pgvector |
+| --- | --- |
+| `NODE_ENV=production` | The migration **throws** — the deploy fails loudly. It never degrades silently. |
+| any other `NODE_ENV` | The migration logs a warning and skips; RAG falls back to keyword search. This is for laptops. |
+| `AI_PGVECTOR_ENABLED=false` | Explicit opt-out in any environment; the migration does nothing. |
+
+Postgres major versions in use: **production RDS 17** (`engine_major_version` in
+`infra/terraform/environments/production/terraform.tfvars`), CI **17**
+(`pgvector/pgvector:pg17`), local compose 18. CI must track production's major;
+`src/config/ci-workflow-pgvector.spec.ts` fails if a workflow's Postgres service
+drifts from it or is a plain `postgres:<n>` image.
+
+CI checks it explicitly, around every migration run:
+
+```bash
+node scripts/ci/require-pgvector.js pre    # before migration:run — vector must be available (prints version() and the pgvector version)
+node scripts/ci/require-pgvector.js post   # after  — extension, ai_kb_embeddings, PK, tenant/agent index, HNSW cosine index, FK
+```
+
+The one deliberate exception is the `ai-security` job's default-mode database:
+its specs assert pgvector is *absent* (the keyword-fallback path), so that
+server is plain Postgres and is checked with `pre --expect absent`; the specs
+that need pgvector get a second server on port 5434.
+
+**Enabling pgvector on a production database** (RDS PostgreSQL 17 ships the
+extension; no instance change is needed): connect as a role that is a member of
+`rds_superuser` and run `CREATE EXTENSION IF NOT EXISTS vector;` once, then
+deploy. Verify first on a non-production instance of the same engine version
+with `node scripts/ci/require-pgvector.js pre` followed by the migration run and
+`post`. Do the check before the deploy, not after: the migration is
+expand-only (`CREATE ... IF NOT EXISTS`) and safe to re-run.
+
 ---
 
 ## 4. Required production environment

@@ -107,8 +107,29 @@ export function normalizeException(
  */
 function asBodyParserError(exception: unknown): NormalizedError | null {
   if (!(exception instanceof Error)) return null;
-  const e = exception as Error & { type?: unknown; status?: unknown; statusCode?: unknown };
-  if (typeof e.type !== 'string' || !e.type.startsWith('entity.') && !e.type.startsWith('charset.') && !e.type.startsWith('encoding.')) {
+  const e = exception as Error & {
+    type?: unknown;
+    status?: unknown;
+    statusCode?: unknown;
+    code?: unknown;
+    errno?: unknown;
+    expose?: unknown;
+  };
+  const hasBodyParserType =
+    typeof e.type === 'string' &&
+    (e.type.startsWith('entity.') || e.type.startsWith('charset.') || e.type.startsWith('encoding.'));
+  // A corrupt compressed body (bad gzip/deflate/brotli stream) reaches us as the raw zlib error, which
+  // body-parser stamps with `status: 400, expose: true` but NO `type` (`code: 'Z_DATA_ERROR'`, brotli's
+  // `ERR_…`, negative `errno`). Without this it fell through to the 500 branch: a client-controlled input
+  // fault logged and counted as a server error. All three markers must be present, so an unrelated
+  // internal error that merely has a `code` is never dressed up as a client error.
+  const isDecompressionFailure =
+    e.expose === true &&
+    typeof e.code === 'string' &&
+    /^(Z_[A-Z_]+|ERR_[A-Z0-9_]+)$/.test(e.code) &&
+    typeof e.errno === 'number' &&
+    e.errno < 0;
+  if (!hasBodyParserType && !isDecompressionFailure) {
     return null;
   }
   const status = typeof e.status === 'number' ? e.status : typeof e.statusCode === 'number' ? e.statusCode : 0;

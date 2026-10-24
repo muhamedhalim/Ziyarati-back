@@ -34,4 +34,15 @@ export class PlatformAiMonitoringController {
   overview() {
     return this.monitoring.overview();
   }
+
+  @ApiOperation({
+    summary: 'Which AI model is actually in effect (super-admin)',
+    description:
+      'The saved `ai.default_model` and whether it is an override or the code default, routing flags, how many agents follow the default versus pin their own model, and the last model observed in use. Read-only; never returns keys, message content or tenant identity.',
+  })
+  @ApiOkResponse({ description: 'Model runtime status.' })
+  @Get('model-runtime')
+  modelRuntime() {
+    return this.monitoring.modelRuntime();
+  }
 }

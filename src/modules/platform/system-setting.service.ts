@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 
 import { SystemSetting } from '../../entities/System&Lookup/SystemSetting';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
@@ -91,7 +91,18 @@ export class SystemSettingService {
       existing.value = value;
       result = await this.settings.save(existing);
     } else {
-      result = await this.settings.save(this.settings.create({ key, value }));
+      try {
+        result = await this.settings.save(this.settings.create({ key, value }));
+      } catch (err) {
+        // Two first-time writes of the same key raced: the loser hit the unique
+        // index (23505). Re-read and update the winner's row instead of
+        // surfacing a 500 for a perfectly valid request.
+        if ((err as { code?: string })?.code !== '23505') throw err;
+        const winner = await this.settings.findOne({ where: { key } });
+        if (!winner) throw err;
+        winner.value = value;
+        result = await this.settings.save(winner);
+      }
     }
 
     this.typedCache.delete(key);
@@ -117,16 +128,22 @@ export class SystemSettingService {
    * looked". Without it, `value` alone can't tell the two apart.
    */
   async listTyped(): Promise<Array<SettingDefinition & { value: unknown; source: 'override' | 'default' }>> {
-    return Promise.all(
-      Object.values(SettingKey).map(async (key) => {
-        const def = SETTINGS_REGISTRY[key];
-        const [value, row] = await Promise.all([
-          this.getTyped(key),
-          this.settings.findOne({ where: { key } }),
-        ]);
-        return { ...def, value, source: row ? ('override' as const) : ('default' as const) };
-      }),
-    );
+    // ONE query for every key (was two per key). Reads the DB directly rather
+    // than the 30 s cache so the admin page never shows a stale value right
+    // after a save; the cache is refreshed from the same rows.
+    const keys = Object.values(SettingKey);
+    const rows = await this.settings.find({ where: { key: In(keys) } });
+    const byKey = new Map(rows.map((r) => [r.key, r]));
+    return keys.map((key) => {
+      const def = SETTINGS_REGISTRY[key];
+      const row = byKey.get(key);
+      const value = row?.value ?? def.default;
+      this.typedCache.set(key, {
+        value,
+        expiresAt: Date.now() + SystemSettingService.CACHE_TTL_MS,
+      });
+      return { ...def, value, source: row ? ('override' as const) : ('default' as const) };
+    });
   }
 
   /** Returns the full registry definition for the frontend to introspect. */

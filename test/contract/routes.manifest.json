@@ -201,6 +201,7 @@
     "GET /permissions",
     "GET /permissions/:param",
     "GET /platform/ai-monitoring/overview",
+    "GET /platform/ai-monitoring/model-runtime",
     "GET /platform/api-keys",
     "GET /platform/api-keys/:param",
     "GET /platform/api-logs",

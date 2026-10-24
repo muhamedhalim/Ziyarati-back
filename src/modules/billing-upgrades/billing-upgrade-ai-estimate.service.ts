@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { AiProviderFactory } from '../ai/providers/ai-provider.factory';
 import { AiCostLedgerService } from '../ai/cost/ai-cost-ledger.service';
 import { AiModelRouterService } from '../ai/routing/ai-model-router.service';
+import { SystemSettingService } from '../platform/system-setting.service';
+import { SettingKey } from '../platform/settings.registry';
 import { BillingUpgradeConfig } from './billing-upgrade.config';
 import { BillingUpgradeType } from './billing-upgrade.constants';
 
@@ -73,6 +75,9 @@ export class BillingUpgradeAiEstimateService {
     // reporting, and permanently pinned to the provider's default model.
     private readonly modelRouter: AiModelRouterService,
     private readonly costs: AiCostLedgerService,
+    // `ai.default_model` from /platform/system-settings: without it this call
+    // always landed on the tier default and ignored the platform setting.
+    private readonly platformSettings: SystemSettingService,
   ) {}
 
   async estimate(input: AiEstimateInput): Promise<AiEstimateResult> {
@@ -90,6 +95,9 @@ export class BillingUpgradeAiEstimateService {
         conversationId: input.requestId,
         feature: ESTIMATE_FEATURE,
         route: ESTIMATE_ROUTE,
+        platformDefaultModel: await this.platformSettings.getTyped<string>(
+          SettingKey.AI_DEFAULT_MODEL,
+        ),
       });
       const provider = this.providers.resolve(routed.model);
       const result = await provider.complete({
