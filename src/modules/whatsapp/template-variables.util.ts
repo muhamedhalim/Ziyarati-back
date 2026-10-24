@@ -9,6 +9,8 @@
  * type that carries customer-facing variable substitutions in this codebase.
  */
 
+import { WHATSAPP_BUTTON_PARAM_PREFIX } from './whatsapp.constants';
+
 interface TemplateComponent {
   type?: string;
   text?: string;
@@ -40,7 +42,12 @@ export function missingVariables(
   components: unknown,
   variables: Record<string, unknown> | undefined,
 ): string[] {
-  const required = extractRequiredVariables(components);
+  // A dynamic URL button needs its own value too (`button_<index>`): a message
+  // sent without it is refused by Meta with an opaque parameter-count error.
+  const required = [
+    ...extractRequiredVariables(components),
+    ...urlButtonParameters(components).map((p) => p.key),
+  ];
   if (required.length === 0) return [];
   const supplied = variables ?? {};
   return required.filter((name) => {
@@ -114,20 +121,62 @@ function componentList(components: unknown): RawComponent[] {
  * order is cosmetic).
  */
 export function orderedBodyParameters(components: unknown): string[] {
-  const names = extractRequiredVariables({ components: componentList(components) });
+  const names = extractRequiredVariables({
+    components: componentList(components),
+  });
   if (names.length > 0 && names.every((n) => /^\d+$/.test(n))) {
     return [...names].sort((a, b) => Number(a) - Number(b));
   }
   return names;
 }
 
+/**
+ * A URL button's base is fixed text; the only thing Meta lets a template vary
+ * is ONE `{{1}}` at the very end of it. Anything else (`{{2}}`, a placeholder
+ * mid-URL, two of them) is not a button this platform can fill.
+ */
+const DYNAMIC_URL = /^https?:\/\/[^{}\s]*\{\{1\}\}$/i;
+
+export function isDynamicUrl(url: string | undefined): boolean {
+  return /\{\{[^{}]*\}\}/.test(url ?? '');
+}
+
+export function isFillableDynamicUrl(url: string | undefined): boolean {
+  return DYNAMIC_URL.test((url ?? '').trim());
+}
+
+export interface UrlButtonParameter {
+  /** Position among ALL the template's buttons — what Meta calls `index`. */
+  index: number;
+  /** Key under which the value lives in `variables` / `variable_mapping`. */
+  key: string;
+}
+
+/** The dynamic URL buttons of a template (their parameters are not in the body). */
+export function urlButtonParameters(components: unknown): UrlButtonParameter[] {
+  const out: UrlButtonParameter[] = [];
+  for (const c of componentList(components)) {
+    if (String(c.type ?? '').toUpperCase() !== 'BUTTONS') continue;
+    (c.buttons ?? []).forEach((b, index) => {
+      if (String(b.type ?? '').toUpperCase() === 'URL' && isDynamicUrl(b.url)) {
+        out.push({ index, key: `${WHATSAPP_BUTTON_PARAM_PREFIX}${index}` });
+      }
+    });
+  }
+  return out;
+}
+
 /** `NAMED` when the template declares named parameters, else `POSITIONAL`. */
 export function templateParameterFormat(
   components: unknown,
 ): 'POSITIONAL' | 'NAMED' {
-  const declared = (components as { parameter_format?: string } | undefined)?.parameter_format;
-  if (typeof declared === 'string' && declared.toUpperCase() === 'NAMED') return 'NAMED';
-  const names = extractRequiredVariables({ components: componentList(components) });
+  const declared = (components as { parameter_format?: string } | undefined)
+    ?.parameter_format;
+  if (typeof declared === 'string' && declared.toUpperCase() === 'NAMED')
+    return 'NAMED';
+  const names = extractRequiredVariables({
+    components: componentList(components),
+  });
   return names.some((n) => !/^\d+$/.test(n)) ? 'NAMED' : 'POSITIONAL';
 }
 
@@ -139,7 +188,9 @@ export function templateParameterFormat(
  * checks and refused by Meta with an opaque "parameter count mismatch" — so it
  * is refused here, up front, with a reason a clinic can act on.
  */
-export function unsupportedTemplateShape(components: unknown): string | undefined {
+export function unsupportedTemplateShape(
+  components: unknown,
+): string | undefined {
   for (const c of componentList(components)) {
     const type = String(c.type ?? '').toUpperCase();
     if (type === 'HEADER') {
@@ -154,8 +205,8 @@ export function unsupportedTemplateShape(components: unknown): string | undefine
       for (const b of c.buttons ?? []) {
         const bt = String(b.type ?? '').toUpperCase();
         if (bt === 'URL') {
-          if (/\{\{[^{}]*\}\}/.test(b.url ?? '')) {
-            return 'has a link button with a placeholder, which this platform cannot fill';
+          if (isDynamicUrl(b.url) && !isFillableDynamicUrl(b.url)) {
+            return 'has a link button with a placeholder that is not a single {{1}} at the end of the link, which this platform cannot fill';
           }
         } else if (bt !== 'QUICK_REPLY' && bt !== 'PHONE_NUMBER') {
           return `has a ${bt.toLowerCase().replace(/_/g, ' ')} button, which needs send-time parameters this platform does not supply`;

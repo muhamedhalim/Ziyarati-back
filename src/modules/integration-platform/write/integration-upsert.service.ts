@@ -32,11 +32,18 @@ import {
   UpsertLifecycle,
   UpsertOutcome,
 } from '../integration-platform.constants';
-import { decideConflict, sanitizeExternalInput, viewFingerprint } from './source-of-truth';
+import {
+  decideConflict,
+  sanitizeExternalInput,
+  viewFingerprint,
+} from './source-of-truth';
 import { parseOffsetTimestamp } from './iso-timestamp';
 import { IntegrationIdMapService } from '../mappings/integration-id-map.service';
 import { IntegrationConnectionService } from '../connections/integration-connection.service';
-import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
+import {
+  IntegrationAuditService,
+  INTEGRATION_AUDIT_ACTION,
+} from '../integration-audit.service';
 import { IntegrationConflictService } from '../conflicts/integration-conflict.service';
 import { IntegrationStaffProvisioningService } from '../staff/integration-staff-provisioning.service';
 
@@ -89,7 +96,8 @@ export interface DirtyInternalPage {
 }
 
 /** UUID shape check — API-key principals (`apikey:<id>`) are NOT real users. */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Outbound cursor codec — `{updated_at ISO}|{id}` so a resume point can break a
@@ -187,10 +195,22 @@ interface ResourceAdapter {
     ctx: AdapterContext,
     externalId: string,
   ): Promise<void>;
-  create(tenantId: string, data: Record<string, unknown>, ctx: AdapterContext): Promise<{ id: string }>;
-  update(tenantId: string, id: string, data: Record<string, unknown>, ctx: AdapterContext): Promise<{ id: string }>;
+  create(
+    tenantId: string,
+    data: Record<string, unknown>,
+    ctx: AdapterContext,
+  ): Promise<{ id: string }>;
+  update(
+    tenantId: string,
+    id: string,
+    data: Record<string, unknown>,
+    ctx: AdapterContext,
+  ): Promise<{ id: string }>;
   /** Comparable (allowlist-keyed) current view, or null if the record is gone. */
-  currentView(tenantId: string, id: string): Promise<Record<string, unknown> | null>;
+  currentView(
+    tenantId: string,
+    id: string,
+  ): Promise<Record<string, unknown> | null>;
   /**
    * Existing internal record matching the external record's natural key, or null.
    * `clean` is the sanitized (writable) payload; `raw` is the original request so
@@ -220,24 +240,32 @@ interface ResourceAdapter {
 @Injectable()
 export class IntegrationUpsertService {
   private readonly logger = new Logger(IntegrationUpsertService.name);
-  private readonly adapters: Record<IntegrationResource, ResourceAdapter | undefined>;
+  private readonly adapters: Record<
+    IntegrationResource,
+    ResourceAdapter | undefined
+  >;
 
   constructor(
     private readonly customers: CustomerService,
     private readonly servicesSvc: ServiceService,
     private readonly staffSvc: StaffDomainService,
     private readonly appointmentsSvc: AppointmentsService,
-    @InjectRepository(Customer) private readonly customerRepo: Repository<Customer>,
-    @InjectRepository(Service) private readonly serviceRepo: Repository<Service>,
-    @InjectRepository(StaffProfile) private readonly staffRepo: Repository<StaffProfile>,
-    @InjectRepository(Appointment) private readonly appointmentRepo: Repository<Appointment>,
+    @InjectRepository(Customer)
+    private readonly customerRepo: Repository<Customer>,
+    @InjectRepository(Service)
+    private readonly serviceRepo: Repository<Service>,
+    @InjectRepository(StaffProfile)
+    private readonly staffRepo: Repository<StaffProfile>,
+    @InjectRepository(Appointment)
+    private readonly appointmentRepo: Repository<Appointment>,
     private readonly idMap: IntegrationIdMapService,
     private readonly connections: IntegrationConnectionService,
     private readonly audit: IntegrationAuditService,
     private readonly conflicts: IntegrationConflictService,
     // Staff-only review queue. Optional so the pipeline still constructs (and
     // unit-tests) without it; the conflict remains the durable record either way.
-    @Optional() private readonly staffProvisioning?: IntegrationStaffProvisioningService,
+    @Optional()
+    private readonly staffProvisioning?: IntegrationStaffProvisioningService,
   ) {
     this.adapters = {
       [INTEGRATION_RESOURCE.CUSTOMER]: this.customerAdapter(),
@@ -270,13 +298,23 @@ export class IntegrationUpsertService {
   ): Promise<DirtyInternalPage> {
     switch (resource) {
       case INTEGRATION_RESOURCE.CUSTOMER:
-        return this.listDirtyRows(this.customerRepo, tenantId, cursorRaw, limit);
+        return this.listDirtyRows(
+          this.customerRepo,
+          tenantId,
+          cursorRaw,
+          limit,
+        );
       case INTEGRATION_RESOURCE.SERVICE:
         return this.listDirtyRows(this.serviceRepo, tenantId, cursorRaw, limit);
       case INTEGRATION_RESOURCE.STAFF:
         return this.listDirtyRows(this.staffRepo, tenantId, cursorRaw, limit);
       case INTEGRATION_RESOURCE.APPOINTMENT:
-        return this.listDirtyRows(this.appointmentRepo, tenantId, cursorRaw, limit);
+        return this.listDirtyRows(
+          this.appointmentRepo,
+          tenantId,
+          cursorRaw,
+          limit,
+        );
       default:
         return { rows: [], hasMore: false };
     }
@@ -290,14 +328,23 @@ export class IntegrationUpsertService {
   ): Promise<DirtyInternalPage> {
     const decoded = cursorRaw ? decodeOutboundCursor(cursorRaw) : null;
     if (cursorRaw && !decoded) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Outbound sync cursor is invalid' });
+      throw new AppError(ErrorCode.VALIDATION_ERROR, {
+        message: 'Outbound sync cursor is invalid',
+      });
     }
 
     const base = { tenant: { id: tenantId } } as unknown as FindOptionsWhere<T>;
     const where: FindOptionsWhere<T>[] = decoded
       ? [
-          { ...base, updated_at: MoreThan(decoded.ts) } as unknown as FindOptionsWhere<T>,
-          { ...base, updated_at: decoded.ts, id: MoreThan(decoded.id) } as unknown as FindOptionsWhere<T>,
+          {
+            ...base,
+            updated_at: MoreThan(decoded.ts),
+          } as unknown as FindOptionsWhere<T>,
+          {
+            ...base,
+            updated_at: decoded.ts,
+            id: MoreThan(decoded.id),
+          } as unknown as FindOptionsWhere<T>,
         ]
       : [base];
 
@@ -314,7 +361,10 @@ export class IntegrationUpsertService {
       hasMore,
       rows: page.map((r) => {
         const row = r as unknown as { id: string; updated_at: Date };
-        return { internalId: row.id, cursor: encodeOutboundCursor(row.updated_at, row.id) };
+        return {
+          internalId: row.id,
+          cursor: encodeOutboundCursor(row.updated_at, row.id),
+        };
       }),
     };
   }
@@ -349,18 +399,37 @@ export class IntegrationUpsertService {
     externalId: string,
     rawData: Record<string, unknown>,
     actor: UpsertActor,
-    opts: { safe?: boolean; dryRun?: boolean; lifecycle?: UpsertLifecycle } = {},
+    opts: {
+      safe?: boolean;
+      dryRun?: boolean;
+      lifecycle?: UpsertLifecycle;
+    } = {},
   ): Promise<UpsertResult> {
     try {
-      return await this.run(tenantId, resource, connectionId, conflictPolicy, externalId, rawData, actor, {
-        dryRun: opts.dryRun,
-        lifecycle: opts.lifecycle,
-      });
+      return await this.run(
+        tenantId,
+        resource,
+        connectionId,
+        conflictPolicy,
+        externalId,
+        rawData,
+        actor,
+        {
+          dryRun: opts.dryRun,
+          lifecycle: opts.lifecycle,
+        },
+      );
     } catch (err) {
       if (!opts.safe) throw err;
       // Safe (batch) mode: convert to a per-record failure the caller can report.
-      const message = err instanceof AppError ? err.message : 'Record failed to import';
-      return { outcome: UPSERT_OUTCOME.FAILED, externalId, internalId: null, error: message };
+      const message =
+        err instanceof AppError ? err.message : 'Record failed to import';
+      return {
+        outcome: UPSERT_OUTCOME.FAILED,
+        externalId,
+        internalId: null,
+        error: message,
+      };
     }
   }
 
@@ -389,14 +458,27 @@ export class IntegrationUpsertService {
     // offset (never the API process' time zone) and id lists compare as sets, so
     // an equivalent resend is a no-op instead of a phantom "change".
     const clean = adapter.normalize
-      ? await adapter.normalize(tenantId, sanitized, { actor, raw, connectionId, lifecycle })
+      ? await adapter.normalize(tenantId, sanitized, {
+          actor,
+          raw,
+          connectionId,
+          lifecycle,
+        })
       : sanitized;
 
-    const mapping = await this.idMap.findByExternalId(tenantId, connectionId, resource, externalId);
+    const mapping = await this.idMap.findByExternalId(
+      tenantId,
+      connectionId,
+      resource,
+      externalId,
+    );
 
     // ── Known mapping → update under the conflict policy ──────────────────
     if (mapping) {
-      const current = await adapter.currentView(tenantId, mapping.internal_resource_id);
+      const current = await adapter.currentView(
+        tenantId,
+        mapping.internal_resource_id,
+      );
       if (!current) {
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
           message: 'The mapped internal record no longer exists',
@@ -408,25 +490,46 @@ export class IntegrationUpsertService {
       // it. Identical → no-op; anything else is refused and queued for review —
       // a cancel/reschedule needs its own explicitly allowed event type.
       if (lifecycle === UPSERT_LIFECYCLE.CREATE) {
-        const diff = decideConflict(CONFLICT_POLICY.EXTERNAL_WINS, clean, current).changedFields;
+        const diff = decideConflict(
+          CONFLICT_POLICY.EXTERNAL_WINS,
+          clean,
+          current,
+        ).changedFields;
         if (diff.length === 0) {
-          return { outcome: UPSERT_OUTCOME.SKIPPED, externalId, internalId: mapping.internal_resource_id };
+          return {
+            outcome: UPSERT_OUTCOME.SKIPPED,
+            externalId,
+            internalId: mapping.internal_resource_id,
+          };
         }
         if (!dryRun) {
           await this.conflicts.record({
-            tenantId, connectionId, resource, externalId,
+            tenantId,
+            connectionId,
+            resource,
+            externalId,
             internalId: mapping.internal_resource_id,
-            changedFields: diff, policy: conflictPolicy,
-            externalValues: clean, platformValues: current,
+            changedFields: diff,
+            policy: conflictPolicy,
+            externalValues: clean,
+            platformValues: current,
             reason: CONFLICT_REASON.LIFECYCLE_NOT_ALLOWED,
           });
         }
-        return this.conflicted(externalId, mapping.internal_resource_id, diff, CONFLICT_REASON.LIFECYCLE_NOT_ALLOWED);
+        return this.conflicted(
+          externalId,
+          mapping.internal_resource_id,
+          diff,
+          CONFLICT_REASON.LIFECYCLE_NOT_ALLOWED,
+        );
       }
 
       const platformUntouched =
-        !!mapping.last_synced_hash && mapping.last_synced_hash === viewFingerprint(current);
-      const decision = decideConflict(conflictPolicy as never, clean, current, { platformUntouched });
+        !!mapping.last_synced_hash &&
+        mapping.last_synced_hash === viewFingerprint(current);
+      const decision = decideConflict(conflictPolicy as never, clean, current, {
+        platformUntouched,
+      });
       // A LIFECYCLE request (cancel / reschedule) is an instruction, not a value,
       // so it carries no field diff and must not be mistaken for "nothing
       // changed". The domain lifecycle still rejects a transition it disallows.
@@ -434,52 +537,113 @@ export class IntegrationUpsertService {
       // is authoritative; the payload's own `action` is only consulted for the
       // API-key route, whose scope — not an event allow-list — gates it.
       // (`create` returned above, so a defined lifecycle here is reschedule|cancel.)
-      const lifecycleIntent = lifecycle ? true : !!adapter.hasLifecycleIntent?.(raw);
+      const lifecycleIntent = lifecycle
+        ? true
+        : !!adapter.hasLifecycleIntent?.(raw);
       if (decision.report && !lifecycleIntent) {
         if (!dryRun) {
           await this.conflicts.record({
-            tenantId, connectionId, resource, externalId,
+            tenantId,
+            connectionId,
+            resource,
+            externalId,
             internalId: mapping.internal_resource_id,
-            changedFields: decision.changedFields, policy: conflictPolicy,
-            externalValues: clean, platformValues: current,
+            changedFields: decision.changedFields,
+            policy: conflictPolicy,
+            externalValues: clean,
+            platformValues: current,
           });
         }
-        return this.conflicted(externalId, mapping.internal_resource_id, decision.changedFields);
+        return this.conflicted(
+          externalId,
+          mapping.internal_resource_id,
+          decision.changedFields,
+        );
       }
       if (!decision.apply && !lifecycleIntent) {
         // Identical to what the partner sent → remember that as the baseline so
         // a mapping created before baselines existed becomes updatable.
-        if (!dryRun && decision.changedFields.length === 0 && !platformUntouched) {
+        if (
+          !dryRun &&
+          decision.changedFields.length === 0 &&
+          !platformUntouched
+        ) {
           await this.idMap.recordBaseline(mapping.id, viewFingerprint(current));
         }
-        return { outcome: UPSERT_OUTCOME.SKIPPED, externalId, internalId: mapping.internal_resource_id };
+        return {
+          outcome: UPSERT_OUTCOME.SKIPPED,
+          externalId,
+          internalId: mapping.internal_resource_id,
+        };
       }
-      if (!adapter.validatesInAdapter) await this.validateOrThrow(adapter.updateDto, clean);
+      if (!adapter.validatesInAdapter)
+        await this.validateOrThrow(adapter.updateDto, clean);
       if (dryRun) {
-        return { outcome: UPSERT_OUTCOME.UPDATED, externalId, internalId: mapping.internal_resource_id, changedFields: decision.changedFields };
+        return {
+          outcome: UPSERT_OUTCOME.UPDATED,
+          externalId,
+          internalId: mapping.internal_resource_id,
+          changedFields: decision.changedFields,
+        };
       }
-      const updated = await adapter.update(tenantId, mapping.internal_resource_id, clean, {
-        actor, raw, connectionId, lifecycle, changedFields: decision.changedFields,
-      });
+      const updated = await adapter.update(
+        tenantId,
+        mapping.internal_resource_id,
+        clean,
+        {
+          actor,
+          raw,
+          connectionId,
+          lifecycle,
+          changedFields: decision.changedFields,
+        },
+      );
       // The platform record now equals what the integration asked for, so it is
       // the new baseline — but only when no competing clinic edit was present
       // (untouched) or the policy deliberately overwrote it (external_wins).
-      if (platformUntouched || conflictPolicy === CONFLICT_POLICY.EXTERNAL_WINS) {
+      if (
+        platformUntouched ||
+        conflictPolicy === CONFLICT_POLICY.EXTERNAL_WINS
+      ) {
         await this.refreshBaseline(tenantId, adapter, mapping.id, updated.id);
       }
-      await this.audit.record(INTEGRATION_AUDIT_ACTION.UPSERT, tenantId, resource, updated.id, actor, {
-        connectionId, externalId, outcome: UPSERT_OUTCOME.UPDATED, changedFields: decision.changedFields,
-      });
-      return { outcome: UPSERT_OUTCOME.UPDATED, externalId, internalId: updated.id, changedFields: decision.changedFields };
+      await this.audit.record(
+        INTEGRATION_AUDIT_ACTION.UPSERT,
+        tenantId,
+        resource,
+        updated.id,
+        actor,
+        {
+          connectionId,
+          externalId,
+          outcome: UPSERT_OUTCOME.UPDATED,
+          changedFields: decision.changedFields,
+        },
+      );
+      return {
+        outcome: UPSERT_OUTCOME.UPDATED,
+        externalId,
+        internalId: updated.id,
+        changedFields: decision.changedFields,
+      };
     }
 
     // ── Unmapped cancel / reschedule is never an implicit create ──────────
-    if (lifecycle === UPSERT_LIFECYCLE.CANCEL || lifecycle === UPSERT_LIFECYCLE.RESCHEDULE) {
+    if (
+      lifecycle === UPSERT_LIFECYCLE.CANCEL ||
+      lifecycle === UPSERT_LIFECYCLE.RESCHEDULE
+    ) {
       if (!dryRun) {
         await this.conflicts.record({
-          tenantId, connectionId, resource, externalId, internalId: null,
-          changedFields: Object.keys(clean), policy: conflictPolicy,
-          externalValues: clean, platformValues: {},
+          tenantId,
+          connectionId,
+          resource,
+          externalId,
+          internalId: null,
+          changedFields: Object.keys(clean),
+          policy: conflictPolicy,
+          externalValues: clean,
+          platformValues: {},
           reason: CONFLICT_REASON.LIFECYCLE_NOT_ALLOWED,
         });
       }
@@ -503,57 +667,120 @@ export class IntegrationUpsertService {
       }
 
       if (dryRun) {
-        if (decision.report) return this.conflicted(externalId, existing.id, decision.changedFields);
-        if (decision.apply) return { outcome: UPSERT_OUTCOME.UPDATED, externalId, internalId: existing.id, changedFields: decision.changedFields };
-        return { outcome: UPSERT_OUTCOME.LINKED, externalId, internalId: existing.id };
+        if (decision.report)
+          return this.conflicted(
+            externalId,
+            existing.id,
+            decision.changedFields,
+          );
+        if (decision.apply)
+          return {
+            outcome: UPSERT_OUTCOME.UPDATED,
+            externalId,
+            internalId: existing.id,
+            changedFields: decision.changedFields,
+          };
+        return {
+          outcome: UPSERT_OUTCOME.LINKED,
+          externalId,
+          internalId: existing.id,
+        };
       }
 
       // Link the mapping (dedup) then apply policy against the existing record.
-      const linked = await this.idMap.link(tenantId, connectionId, resource, externalId, existing.id, MAPPING_SOURCE.PLATFORM);
-      await this.audit.record(INTEGRATION_AUDIT_ACTION.MAPPING_LINK, tenantId, resource, existing.id, actor, {
-        connectionId, externalId,
-      });
+      const linked = await this.idMap.link(
+        tenantId,
+        connectionId,
+        resource,
+        externalId,
+        existing.id,
+        MAPPING_SOURCE.PLATFORM,
+      );
+      await this.audit.record(
+        INTEGRATION_AUDIT_ACTION.MAPPING_LINK,
+        tenantId,
+        resource,
+        existing.id,
+        actor,
+        {
+          connectionId,
+          externalId,
+        },
+      );
       if (decision.report) {
         await this.conflicts.record({
-          tenantId, connectionId, resource, externalId, internalId: existing.id,
-          changedFields: decision.changedFields, policy: conflictPolicy,
-          externalValues: clean, platformValues: current,
+          tenantId,
+          connectionId,
+          resource,
+          externalId,
+          internalId: existing.id,
+          changedFields: decision.changedFields,
+          policy: conflictPolicy,
+          externalValues: clean,
+          platformValues: current,
         });
         return this.conflicted(externalId, existing.id, decision.changedFields);
       }
       if (decision.apply) {
         await adapter.update(tenantId, existing.id, clean, {
-          actor, raw, connectionId, lifecycle, changedFields: decision.changedFields,
+          actor,
+          raw,
+          connectionId,
+          lifecycle,
+          changedFields: decision.changedFields,
         });
         await this.refreshBaseline(tenantId, adapter, linked.id, existing.id);
-        return { outcome: UPSERT_OUTCOME.UPDATED, externalId, internalId: existing.id, changedFields: decision.changedFields };
+        return {
+          outcome: UPSERT_OUTCOME.UPDATED,
+          externalId,
+          internalId: existing.id,
+          changedFields: decision.changedFields,
+        };
       }
       if (decision.changedFields.length === 0) {
         await this.idMap.recordBaseline(linked.id, viewFingerprint(current));
       }
-      return { outcome: UPSERT_OUTCOME.LINKED, externalId, internalId: existing.id };
+      return {
+        outcome: UPSERT_OUTCOME.LINKED,
+        externalId,
+        internalId: existing.id,
+      };
     }
 
     // ── No mapping, no natural match → create (unless creation is forbidden) ──
     if (adapter.canCreate === false) {
-      const reason = adapter.cannotCreateReason ?? CONFLICT_REASON.MISSING_DEPENDENCY;
+      const reason =
+        adapter.cannotCreateReason ?? CONFLICT_REASON.MISSING_DEPENDENCY;
       // Creating this resource would require a privileged platform action (e.g.
       // provisioning a user account for staff). Raise a reviewable conflict
       // instead of silently creating anything.
       if (!dryRun) {
         await this.conflicts.record({
-          tenantId, connectionId, resource, externalId, internalId: null,
-          changedFields: Object.keys(clean), policy: conflictPolicy,
-          externalValues: clean, platformValues: {},
+          tenantId,
+          connectionId,
+          resource,
+          externalId,
+          internalId: null,
+          changedFields: Object.keys(clean),
+          policy: conflictPolicy,
+          externalValues: clean,
+          platformValues: {},
           reason,
         });
         // …and, where the resource has a review queue, enqueue an ACTIONABLE
         // request so the admin can approve/link/reject rather than only seeing
         // that something failed. Best-effort: the conflict above is the record
         // of truth, so a hiccup here must not fail the import.
-        await adapter.onCreateBlocked?.(tenantId, clean, {
-          actor, raw, connectionId,
-        }, externalId);
+        await adapter.onCreateBlocked?.(
+          tenantId,
+          clean,
+          {
+            actor,
+            raw,
+            connectionId,
+          },
+          externalId,
+        );
       }
       return {
         outcome: UPSERT_OUTCOME.CONFLICTED,
@@ -561,21 +788,48 @@ export class IntegrationUpsertService {
         internalId: null,
         changedFields: Object.keys(clean),
         reason,
-        error: 'No matching internal record; creating this resource from an integration is not permitted',
+        error:
+          'No matching internal record; creating this resource from an integration is not permitted',
       };
     }
 
-    if (!adapter.validatesInAdapter) await this.validateOrThrow(adapter.createDto, clean);
+    if (!adapter.validatesInAdapter)
+      await this.validateOrThrow(adapter.createDto, clean);
     if (dryRun) {
       return { outcome: UPSERT_OUTCOME.CREATED, externalId, internalId: null };
     }
-    const created = await adapter.create(tenantId, clean, { actor, raw, connectionId, lifecycle });
-    const createdMap = await this.idMap.link(tenantId, connectionId, resource, externalId, created.id, MAPPING_SOURCE.EXTERNAL);
-    await this.refreshBaseline(tenantId, adapter, createdMap.id, created.id);
-    await this.audit.record(INTEGRATION_AUDIT_ACTION.UPSERT, tenantId, resource, created.id, actor, {
-      connectionId, externalId, outcome: UPSERT_OUTCOME.CREATED,
+    const created = await adapter.create(tenantId, clean, {
+      actor,
+      raw,
+      connectionId,
+      lifecycle,
     });
-    return { outcome: UPSERT_OUTCOME.CREATED, externalId, internalId: created.id };
+    const createdMap = await this.idMap.link(
+      tenantId,
+      connectionId,
+      resource,
+      externalId,
+      created.id,
+      MAPPING_SOURCE.EXTERNAL,
+    );
+    await this.refreshBaseline(tenantId, adapter, createdMap.id, created.id);
+    await this.audit.record(
+      INTEGRATION_AUDIT_ACTION.UPSERT,
+      tenantId,
+      resource,
+      created.id,
+      actor,
+      {
+        connectionId,
+        externalId,
+        outcome: UPSERT_OUTCOME.CREATED,
+      },
+    );
+    return {
+      outcome: UPSERT_OUTCOME.CREATED,
+      externalId,
+      internalId: created.id,
+    };
   }
 
   /** Store the record's current comparable view as the integration's baseline. Never throws. */
@@ -587,7 +841,8 @@ export class IntegrationUpsertService {
   ): Promise<void> {
     try {
       const view = await adapter.currentView(tenantId, internalId);
-      if (view) await this.idMap.recordBaseline(mappingId, viewFingerprint(view));
+      if (view)
+        await this.idMap.recordBaseline(mappingId, viewFingerprint(view));
     } catch (e) {
       this.logger.warn(`baseline refresh failed: ${(e as Error)?.message}`);
     }
@@ -599,13 +854,27 @@ export class IntegrationUpsertService {
     changedFields: string[],
     reason: ConflictReason = CONFLICT_REASON.FIELD_DIVERGENCE,
   ): UpsertResult {
-    return { outcome: UPSERT_OUTCOME.CONFLICTED, externalId, internalId, changedFields, reason };
+    return {
+      outcome: UPSERT_OUTCOME.CONFLICTED,
+      externalId,
+      internalId,
+      changedFields,
+      reason,
+    };
   }
 
   /** Reuse the domain DTO's own class-validator rules (never duplicated here). */
-  private async validateOrThrow(dtoClass: ClassConstructor<object>, data: Record<string, unknown>): Promise<void> {
-    const instance = plainToInstance(dtoClass, data, { enableImplicitConversion: false });
-    const errors = await validate(instance as object, { whitelist: true, forbidNonWhitelisted: false });
+  private async validateOrThrow(
+    dtoClass: ClassConstructor<object>,
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    const instance = plainToInstance(dtoClass, data, {
+      enableImplicitConversion: false,
+    });
+    const errors = await validate(instance as object, {
+      whitelist: true,
+      forbidNonWhitelisted: false,
+    });
     if (errors.length > 0) {
       const fields = errors.map((e) => e.property);
       throw new AppError(ErrorCode.VALIDATION_ERROR, {
@@ -621,10 +890,18 @@ export class IntegrationUpsertService {
     return {
       createDto: CreateCustomerDto,
       updateDto: UpdateCustomerDto,
-      create: async (tenantId, data) => this.customers.create(tenantId, data as unknown as CreateCustomerDto),
-      update: async (tenantId, id, data) => this.customers.update(tenantId, id, data as UpdateCustomerDto),
+      create: async (tenantId, data) =>
+        this.customers.create(tenantId, data as unknown as CreateCustomerDto, {
+          source: 'integration',
+        }),
+      update: async (tenantId, id, data) =>
+        this.customers.update(tenantId, id, data as UpdateCustomerDto, {
+          source: 'integration',
+        }),
       currentView: async (tenantId, id) => {
-        const c = await this.customerRepo.findOne({ where: { id, tenant: { id: tenantId } } });
+        const c = await this.customerRepo.findOne({
+          where: { id, tenant: { id: tenantId } },
+        });
         if (!c) return null;
         return {
           full_name: c.full_name ?? null,
@@ -640,7 +917,9 @@ export class IntegrationUpsertService {
       naturalMatch: async (tenantId, data) => {
         const phone = data.phone as string | undefined;
         if (!phone) return null;
-        const c = await this.customerRepo.findOne({ where: { tenant: { id: tenantId }, phone } });
+        const c = await this.customerRepo.findOne({
+          where: { tenant: { id: tenantId }, phone },
+        });
         return c ? { id: c.id } : null;
       },
     };
@@ -684,7 +963,12 @@ export class IntegrationUpsertService {
     ): Promise<string | null> => {
       if (typeof internalId === 'string' && internalId) return internalId;
       if (typeof externalId === 'string' && externalId) {
-        const m = await this.idMap.findByExternalId(tenantId, connectionId, resource, externalId);
+        const m = await this.idMap.findByExternalId(
+          tenantId,
+          connectionId,
+          resource,
+          externalId,
+        );
         return m?.internal_resource_id ?? null;
       }
       return null;
@@ -703,13 +987,17 @@ export class IntegrationUpsertService {
       internal: unknown,
       external: unknown,
     ): Promise<string[] | undefined> => {
-      if (Array.isArray(internal) && internal.length) return internal as string[];
+      if (Array.isArray(internal) && internal.length)
+        return internal as string[];
       if (!Array.isArray(external) || !external.length) return undefined;
       const ids: string[] = [];
       for (const ext of external) {
         if (typeof ext !== 'string') continue;
         const m = await this.idMap.findByExternalId(
-          tenantId, connectionId, INTEGRATION_RESOURCE.SERVICE, ext,
+          tenantId,
+          connectionId,
+          INTEGRATION_RESOURCE.SERVICE,
+          ext,
         );
         if (!m) missingDependency('service');
         ids.push((m as { internal_resource_id: string }).internal_resource_id);
@@ -728,14 +1016,16 @@ export class IntegrationUpsertService {
       // `cancel` carries no writable field, so without this the empty diff would
       // be read as "nothing changed" and the cancellation silently skipped.
       hasLifecycleIntent: (raw) => {
-        const action = typeof raw.action === 'string' ? raw.action.toLowerCase() : '';
+        const action =
+          typeof raw.action === 'string' ? raw.action.toLowerCase() : '';
         return action === 'cancel' || action === 'reschedule';
       },
       normalize: async (tenantId, clean, ctx) => {
         const out: Record<string, unknown> = { ...clean };
         // Explicit-offset ISO-8601 only; stored/compared as a UTC instant.
         for (const f of ['startAt', 'endAt'] as const) {
-          if (out[f] !== undefined) out[f] = parseOffsetTimestamp(out[f], f).toISOString();
+          if (out[f] !== undefined)
+            out[f] = parseOffsetTimestamp(out[f], f).toISOString();
         }
         if (
           typeof out.startAt === 'string' &&
@@ -748,9 +1038,16 @@ export class IntegrationUpsertService {
           });
         }
         // Service ids are a SET: resolve external hints, de-duplicate, sort.
-        let ids: unknown[] | undefined = Array.isArray(out.serviceIds) ? out.serviceIds : undefined;
+        let ids: unknown[] | undefined = Array.isArray(out.serviceIds)
+          ? out.serviceIds
+          : undefined;
         if (!ids) {
-          ids = await resolveServiceIds(tenantId, ctx.connectionId, undefined, ctx.raw.serviceExternalIds);
+          ids = await resolveServiceIds(
+            tenantId,
+            ctx.connectionId,
+            undefined,
+            ctx.raw.serviceExternalIds,
+          );
         }
         if (ids) out.serviceIds = [...new Set(ids)].sort();
         return out;
@@ -759,23 +1056,41 @@ export class IntegrationUpsertService {
         const userId = requireActorUser(ctx.actor);
         // Branches are not external-id mapped: the id comes from
         // GET /integrations/branches (tenant-validated again by the service).
-        const branchId = typeof data.branchId === 'string' && data.branchId ? data.branchId : null;
+        const branchId =
+          typeof data.branchId === 'string' && data.branchId
+            ? data.branchId
+            : null;
         const customerId = await resolveRef(
-          tenantId, ctx.connectionId, INTEGRATION_RESOURCE.CUSTOMER, data.customerId, ctx.raw.customerExternalId,
+          tenantId,
+          ctx.connectionId,
+          INTEGRATION_RESOURCE.CUSTOMER,
+          data.customerId,
+          ctx.raw.customerExternalId,
         );
         const staffId = await resolveRef(
-          tenantId, ctx.connectionId, INTEGRATION_RESOURCE.STAFF, data.staffId, ctx.raw.staffExternalId,
+          tenantId,
+          ctx.connectionId,
+          INTEGRATION_RESOURCE.STAFF,
+          data.staffId,
+          ctx.raw.staffExternalId,
         );
         if (!branchId) {
           throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-            message: 'branchId is required — list your branch ids with GET /integrations/branches',
-            publicContext: { reason: CONFLICT_REASON.MISSING_DEPENDENCY, field: 'branchId' },
+            message:
+              'branchId is required — list your branch ids with GET /integrations/branches',
+            publicContext: {
+              reason: CONFLICT_REASON.MISSING_DEPENDENCY,
+              field: 'branchId',
+            },
           });
         }
         if (!customerId) missingDependency('customer');
         if (!staffId) missingDependency('staff');
         const serviceIds = await resolveServiceIds(
-          tenantId, ctx.connectionId, data.serviceIds, ctx.raw.serviceExternalIds,
+          tenantId,
+          ctx.connectionId,
+          data.serviceIds,
+          ctx.raw.serviceExternalIds,
         );
 
         // Delegated wholesale: tenant-scoped reference checks, the REAL
@@ -798,31 +1113,47 @@ export class IntegrationUpsertService {
         // An explicit lifecycle (inbound event type) is authoritative and the
         // payload's own `action` is ignored; only the API-key route reads it.
         const action = ctx.lifecycle
-          ? ctx.lifecycle === 'create' ? '' : ctx.lifecycle
-          : typeof ctx.raw.action === 'string' ? ctx.raw.action.toLowerCase() : '';
-        const reason = typeof ctx.raw.reason === 'string' ? ctx.raw.reason.slice(0, 1000) : undefined;
+          ? ctx.lifecycle === 'create'
+            ? ''
+            : ctx.lifecycle
+          : typeof ctx.raw.action === 'string'
+            ? ctx.raw.action.toLowerCase()
+            : '';
+        const reason =
+          typeof ctx.raw.reason === 'string'
+            ? ctx.raw.reason.slice(0, 1000)
+            : undefined;
         const changed = ctx.changedFields;
-        const has = (f: string) => (changed ? changed.includes(f) : data[f] !== undefined);
+        const has = (f: string) =>
+          changed ? changed.includes(f) : data[f] !== undefined;
 
         if (action === 'cancel') {
           // Reason only — refunds/amounts/settlement are platform-owned and are
           // never settable by an external system.
-          await this.appointmentsSvc.cancel(tenantId, userId, id, { reason } as never);
+          await this.appointmentsSvc.cancel(tenantId, userId, id, {
+            reason,
+          } as never);
           return { id };
         }
 
         if (has('customerId')) {
           throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-            message: 'The customer of an existing appointment cannot be changed by an integration',
-            publicContext: { reason: CONFLICT_REASON.LIFECYCLE_NOT_ALLOWED, field: 'customerId' },
+            message:
+              'The customer of an existing appointment cannot be changed by an integration',
+            publicContext: {
+              reason: CONFLICT_REASON.LIFECYCLE_NOT_ALLOWED,
+              field: 'customerId',
+            },
           });
         }
 
-        const timeChanged = action === 'reschedule' || has('startAt') || has('endAt');
+        const timeChanged =
+          action === 'reschedule' || has('startAt') || has('endAt');
         if (timeChanged) {
           if (!data.startAt) {
             throw new AppError(ErrorCode.VALIDATION_ERROR, {
-              message: 'A new start time is required to reschedule this appointment',
+              message:
+                'A new start time is required to reschedule this appointment',
             });
           }
           // Lifecycle guards (not-terminal) + availability re-check run inside
@@ -837,15 +1168,27 @@ export class IntegrationUpsertService {
         // Reassignment / notes go through the domain update (tenant-validated,
         // availability re-checked inside its transaction).
         const patch: Record<string, unknown> = {};
-        if (has('staffId') && typeof data.staffId === 'string') patch.staffId = data.staffId;
-        if (has('branchId') && typeof data.branchId === 'string') patch.branchId = data.branchId;
-        if (has('notes') && typeof data.notes === 'string') patch.notes = data.notes;
+        if (has('staffId') && typeof data.staffId === 'string')
+          patch.staffId = data.staffId;
+        if (has('branchId') && typeof data.branchId === 'string')
+          patch.branchId = data.branchId;
+        if (has('notes') && typeof data.notes === 'string')
+          patch.notes = data.notes;
         if (Object.keys(patch).length > 0) {
-          await this.appointmentsSvc.update(tenantId, userId, id, patch as never);
+          await this.appointmentsSvc.update(
+            tenantId,
+            userId,
+            id,
+            patch as never,
+          );
         }
 
         // Replace the service set only when it genuinely differs.
-        if (has('serviceIds') && Array.isArray(data.serviceIds) && data.serviceIds.length > 0) {
+        if (
+          has('serviceIds') &&
+          Array.isArray(data.serviceIds) &&
+          data.serviceIds.length > 0
+        ) {
           await this.appointmentsSvc.setServices(tenantId, userId, id, {
             serviceIds: data.serviceIds as string[],
           } as never);
@@ -858,7 +1201,12 @@ export class IntegrationUpsertService {
       currentView: async (tenantId, id) => {
         const a = await this.appointmentRepo.findOne({
           where: { id, tenant: { id: tenantId } },
-          relations: { staff: true, branch: true, customer: true, services: { service: true } },
+          relations: {
+            staff: true,
+            branch: true,
+            customer: true,
+            services: { service: true },
+          },
         });
         if (!a) return null;
         return {
@@ -908,7 +1256,9 @@ export class IntegrationUpsertService {
       update: async (tenantId, id, data) =>
         this.staffSvc.update(tenantId, id, data as UpdateStaffDto),
       currentView: async (tenantId, id) => {
-        const s = await this.staffRepo.findOne({ where: { id, tenant: { id: tenantId } } });
+        const s = await this.staffRepo.findOne({
+          where: { id, tenant: { id: tenantId } },
+        });
         if (!s) return null;
         return {
           title: s.title ?? null,
@@ -939,13 +1289,19 @@ export class IntegrationUpsertService {
             tenantId,
             connectionId: ctx.connectionId,
             externalId,
-            fullName: typeof ctx.raw.fullName === 'string' ? ctx.raw.fullName : null,
-            email: typeof ctx.raw.matchEmail === 'string' ? ctx.raw.matchEmail : null,
+            fullName:
+              typeof ctx.raw.fullName === 'string' ? ctx.raw.fullName : null,
+            email:
+              typeof ctx.raw.matchEmail === 'string'
+                ? ctx.raw.matchEmail
+                : null,
             profile: clean,
             candidateStaffIds: candidates.map((c) => c.id),
           })
           .catch((e) =>
-            this.logger.warn(`staff provisioning enqueue failed: ${(e as Error)?.message}`),
+            this.logger.warn(
+              `staff provisioning enqueue failed: ${(e as Error)?.message}`,
+            ),
           );
       },
     };
@@ -956,7 +1312,10 @@ export class IntegrationUpsertService {
     tenantId: string,
     raw: Record<string, unknown>,
   ): Promise<Array<{ id: string }>> {
-    const email = typeof raw.matchEmail === 'string' ? raw.matchEmail.trim().toLowerCase() : '';
+    const email =
+      typeof raw.matchEmail === 'string'
+        ? raw.matchEmail.trim().toLowerCase()
+        : '';
     if (!email) return [];
     return this.staffRepo.find({
       where: { tenant: { id: tenantId }, user: { email } },
@@ -970,10 +1329,15 @@ export class IntegrationUpsertService {
     return {
       createDto: CreateServiceDto,
       updateDto: UpdateServiceDto,
-      create: async (tenantId, data) => this.servicesSvc.create(tenantId, data as unknown as CreateServiceDto),
-      update: async (tenantId, id, data) => this.servicesSvc.update(tenantId, id, data as UpdateServiceDto),
+      create: async (tenantId, data) =>
+        this.servicesSvc.create(tenantId, data as unknown as CreateServiceDto),
+      update: async (tenantId, id, data) =>
+        this.servicesSvc.update(tenantId, id, data as UpdateServiceDto),
       currentView: async (tenantId, id) => {
-        const s = await this.serviceRepo.findOne({ where: { id, tenant: { id: tenantId } }, relations: { category: true } });
+        const s = await this.serviceRepo.findOne({
+          where: { id, tenant: { id: tenantId } },
+          relations: { category: true },
+        });
         if (!s) return null;
         return {
           name: s.name,
@@ -988,7 +1352,9 @@ export class IntegrationUpsertService {
       naturalMatch: async (tenantId, data) => {
         const name = data.name as string | undefined;
         if (!name) return null;
-        const s = await this.serviceRepo.findOne({ where: { tenant: { id: tenantId }, name, deleted_at: IsNull() } });
+        const s = await this.serviceRepo.findOne({
+          where: { tenant: { id: tenantId }, name, deleted_at: IsNull() },
+        });
         return s ? { id: s.id } : null;
       },
     };

@@ -4,6 +4,7 @@ import {
   Column,
   ManyToOne,
   CreateDateColumn,
+  Check,
 } from 'typeorm';
 
 import { Tenant } from '../SaaS-Core/Tenant';
@@ -12,6 +13,7 @@ import { User } from '../Auth&RBAC/User';
 import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 
 @Entity('refunds')
+@Check('CHK_refunds_amount_positive', '"amount" > 0')
 export class Refund {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

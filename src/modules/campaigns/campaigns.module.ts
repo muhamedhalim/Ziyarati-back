@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { CampaignScheduledLaunchService } from './campaign-scheduled-launch.service';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { Campaign } from '../../entities/Campaigns/Campaign';
@@ -97,6 +98,7 @@ import { CampaignAuditService } from './campaign-audit.service';
     CampaignRecipientService,
     CampaignRunService,
     CampaignExecutionService,
+    CampaignScheduledLaunchService,
     CampaignFanoutService,
     CampaignDispatchService,
     CampaignAnalyticsService,
@@ -126,6 +128,7 @@ import { CampaignAuditService } from './campaign-audit.service';
     CampaignRecipientService,
     CampaignRunService,
     CampaignExecutionService,
+    CampaignScheduledLaunchService,
     CampaignFanoutService,
     CampaignDispatchService,
     CampaignAnalyticsService,

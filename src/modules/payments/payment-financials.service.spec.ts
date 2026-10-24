@@ -57,6 +57,21 @@ describe('PaymentFinancialsService.applyOnPaid — fee finality (Tap Phase 2)', 
     expect(p.fees_reconciled_at ?? null).toBeNull();
   });
 
+  it('FIN-P1 (interim): a payment the gateway settles straight to the clinic carries NO platform fee — nothing collects one', () => {
+    const p = payment({ settlement_mode: 'PROVIDER' } as Partial<Payment>);
+    service({ PLATFORM_FEE_PERCENT: 2, PLATFORM_FEE_FIXED: 1 }).applyOnPaid(p, {
+      gatewayFee: 1.5,
+    });
+    expect(p.platform_fee).toBe(0);
+    expect(p.net_amount).toBe(98.5);
+  });
+
+  it('a platform-held (INTERNAL) payment still carries the configured fee', () => {
+    const p = payment({ settlement_mode: 'INTERNAL' } as Partial<Payment>);
+    service({ PLATFORM_FEE_PERCENT: 2 }).applyOnPaid(p);
+    expect(p.platform_fee).toBe(2);
+  });
+
   it('keeps net = gross − gateway fee − platform fee', () => {
     const p = payment();
     service({ PLATFORM_FEE_PERCENT: 2, PLATFORM_FEE_FIXED: 1 }).applyOnPaid(p, {

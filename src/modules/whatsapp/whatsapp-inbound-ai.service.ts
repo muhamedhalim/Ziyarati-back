@@ -1268,9 +1268,7 @@ export class WhatsappInboundAiService {
       page: 1,
       limit: 5,
     } as never);
-    const match = search.data.find(
-      (c) => c.phone === waId || c.whatsapp_id === waId,
-    );
+    const match = search.data.find(matchesWaId(waId));
     if (match) return match;
 
     try {
@@ -1289,9 +1287,7 @@ export class WhatsappInboundAiService {
       // message).
       const winner = await this.customers
         .search(tenantId, { q: waId, page: 1, limit: 5 } as never)
-        .then((r) =>
-          r.data.find((c) => c.phone === waId || c.whatsapp_id === waId),
-        )
+        .then((r) => r.data.find(matchesWaId(waId)))
         .catch(() => undefined);
       if (winner) return winner;
       throw err;
@@ -1354,3 +1350,16 @@ export class WhatsappInboundAiService {
     }
   }
 }
+
+/**
+ * Does this CRM customer own the WhatsApp number `waId` (digits only, no '+')?
+ * Compared on DIGITS: staff type `+966…`, `966…` or `+966 5…`, while Meta's `wa_id`
+ * never has the '+'. An exact string match missed the real patient, created a
+ * duplicate, and sent the patient's opt-out to the duplicate, so the patient kept
+ * receiving marketing.
+ */
+const matchesWaId =
+  (waId: string) =>
+  (c: { phone?: string | null; whatsapp_id?: string | null }) =>
+    c.whatsapp_id === waId ||
+    (!!c.phone && c.phone.replace(/\D/g, '') === waId.replace(/\D/g, ''));

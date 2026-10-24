@@ -496,17 +496,23 @@ export class MarketplaceFinanceService {
     // Four independent domains (payments, subscriptions, subscription-plan MRR,
     // tenants) — none depends on another's result, so they run concurrently
     // instead of as four sequential round-trips (PERF-BE-005).
-    const [[r], [subs], [mrrRow], [clinics], currencyRows, platformRows] = await Promise.all([
-      // Payment-derived metrics — single pass over the PAID set (no per-card query).
+    const [[r], [subs], [mrrRow], [clinics], currencyRows, platformRows, revenueRows] = await Promise.all([
+      // Payment-derived metrics — single pass over the money-kept set (no per-card query).
+      // FIN-X3: a part-refunded payment still earned money, and every revenue figure is
+      // what is left AFTER its refunds (`net_paid`), not the amount first charged.
       this.dataSource.query(`
-      WITH paid AS (SELECT * FROM payments WHERE status = 'PAID' AND purpose = ANY($1))
+      WITH paid AS (
+        SELECT *, amount - COALESCE(refunded_amount, 0) AS net_paid
+          FROM payments
+         WHERE status IN ('PAID', 'PARTIALLY_REFUNDED') AND purpose = ANY($1)
+      )
       SELECT
-        COALESCE((SELECT SUM(amount) FROM paid WHERE paid_at >= date_trunc('day', now())), 0) AS today_revenue,
+        COALESCE((SELECT SUM(net_paid) FROM paid WHERE paid_at >= date_trunc('day', now())), 0) AS today_revenue,
         COALESCE((SELECT COUNT(*) FROM paid WHERE paid_at >= date_trunc('day', now())), 0) AS today_transactions,
-        COALESCE((SELECT SUM(amount) FROM paid WHERE paid_at >= date_trunc('month', now())), 0) AS month_revenue,
+        COALESCE((SELECT SUM(net_paid) FROM paid WHERE paid_at >= date_trunc('month', now())), 0) AS month_revenue,
         COALESCE((SELECT SUM(platform_fee) FROM paid), 0) AS platform_fee_total,
         COALESCE((SELECT SUM(gateway_fee) FROM paid), 0) AS gateway_fee_total,
-        COALESCE((SELECT SUM(amount - gateway_fee) FROM paid), 0) AS net_of_gateway_total,
+        COALESCE((SELECT SUM(net_paid - gateway_fee) FROM paid), 0) AS net_of_gateway_total,
         COALESCE((SELECT SUM(COALESCE(net_amount, amount)) FROM paid WHERE settlement_status = 'UNSETTLED'), 0) AS waiting_split,
         COALESCE((SELECT SUM(net_amount) FROM settlements WHERE status IN ('PENDING','PROCESSING')), 0) AS waiting_payout,
         COALESCE((SELECT SUM(net_amount) FROM settlements WHERE status = 'PAID'), 0) AS completed_payouts,
@@ -515,7 +521,7 @@ export class MarketplaceFinanceService {
         COALESCE((SELECT SUM(rf.amount) FROM refunds rf JOIN payments rp ON rp.id = rf."paymentId" WHERE rf.status = 'SUCCEEDED' AND rp.purpose = ANY($1)), 0) AS refunds_total,
         COALESCE((SELECT AVG(amount) FROM paid), 0) AS avg_booking_value,
         COALESCE((SELECT COUNT(DISTINCT "tenantId") FROM paid), 0) AS clinic_count,
-        COALESCE((SELECT SUM(COALESCE(net_amount, amount)) FROM paid), 0) AS net_total
+        COALESCE((SELECT SUM(COALESCE(net_amount, amount) - COALESCE(refunded_amount, 0)) FROM paid), 0) AS net_total
     `, [[...CLINIC_REVENUE_PURPOSES]]),
       // Subscription metrics (distinct domain — not a payment calculation).
       this.dataSource.query(`
@@ -539,11 +545,24 @@ export class MarketplaceFinanceService {
       // visible to the caller instead of leaving it to be discovered later; the
       // sums themselves are unchanged (additive field, no contract break).
       this.dataSource.query(
-        `SELECT DISTINCT currency FROM payments WHERE status = 'PAID' AND purpose = ANY($1) AND currency IS NOT NULL ORDER BY currency`,
+        `SELECT DISTINCT currency FROM payments WHERE status IN ('PAID', 'PARTIALLY_REFUNDED') AND purpose = ANY($1) AND currency IS NOT NULL ORDER BY currency`,
         [[...CLINIC_REVENUE_PURPOSES]],
       ),
       // What the platform itself collected, per currency (never summed across currencies).
       this.platformRevenueByCurrency(),
+      // FIN-X3: the same revenue figures, one row per currency, so a deployment with
+      // more than one currency has a number it can actually show.
+      this.dataSource.query(
+        `SELECT currency,
+                COALESCE(SUM(amount - COALESCE(refunded_amount, 0)) FILTER (WHERE paid_at >= date_trunc('day', now())), 0) AS today_revenue,
+                COALESCE(SUM(amount - COALESCE(refunded_amount, 0)) FILTER (WHERE paid_at >= date_trunc('month', now())), 0) AS month_revenue,
+                COALESCE(SUM(gateway_fee), 0) AS gateway_fees,
+                COALESCE(SUM(platform_fee), 0) AS platform_fees
+           FROM payments
+          WHERE status IN ('PAID', 'PARTIALLY_REFUNDED') AND purpose = ANY($1) AND currency IS NOT NULL
+          GROUP BY currency ORDER BY currency`,
+        [[...CLINIC_REVENUE_PURPOSES]],
+      ),
     ]);
 
     const clinicCount = n(r.clinic_count);
@@ -582,6 +601,14 @@ export class MarketplaceFinanceService {
        * with a single currency symbol.
        */
       currencies: (currencyRows as { currency: string }[]).map((c) => c.currency),
+      /** The revenue / fee figures above, split by currency (use these when `currencies` has more than one). */
+      revenueByCurrency: (revenueRows as Record<string, unknown>[]).map((c) => ({
+        currency: c.currency as string,
+        todayRevenue: round2(n(c.today_revenue)),
+        monthlyRevenue: round2(n(c.month_revenue)),
+        gatewayFees: round2(n(c.gateway_fees)),
+        platformFees: round2(n(c.platform_fees)),
+      })),
       /**
        * What ZiyaraTech itself collected — NOT clinic money, so none of the figures above
        * include it: paid subscription invoices and the clinics' add-on / billing-upgrade

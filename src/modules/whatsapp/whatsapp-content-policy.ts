@@ -4,6 +4,7 @@ import {
   type ProhibitedCategory,
 } from '../../common/utils/prohibited-content.util';
 import { renderTemplateBody } from './template-variables.util';
+import { WHATSAPP_BUTTON_PARAM_PREFIX } from './whatsapp.constants';
 import type { WhatsappSessionPayload } from './providers/whatsapp-message.provider.interface';
 
 /**
@@ -50,6 +51,10 @@ export function assessTemplateContent(
 
   for (const [name, raw] of Object.entries(variables ?? {})) {
     if (raw === null || raw === undefined) continue;
+    // A dynamic-button value is the opaque secret WE issued, not clinic or
+    // patient text: a random token can contain a long digit run that the
+    // identifier detector would mistake for a national ID and block the send.
+    if (name.startsWith(WHATSAPP_BUTTON_PARAM_PREFIX)) continue;
     const value = typeof raw === 'string' ? raw : String(raw);
     for (const category of findProhibitedIdentifiers(value)) {
       violations.push({ category, variable: name, scope: 'variable' });

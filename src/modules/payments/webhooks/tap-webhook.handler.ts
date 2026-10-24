@@ -345,6 +345,10 @@ export class TapWebhookHandler {
       eventLabel: `charge.${status.toLowerCase()}`,
       capturedMinorUnits: target === 'paid' ? amountMinor : undefined,
       capturedCurrency: target === 'paid' ? charge.currency : undefined,
+      // Only reported when strict checking is on (FIN-P4); '' = Tap named no merchant.
+      merchantId: this.config.tapStrictMerchantEcho
+        ? String(charge.merchant?.id ?? '')
+        : undefined,
       failureReason:
         target === 'failed'
           ? safeFailureReason(charge.response?.code, charge.status)

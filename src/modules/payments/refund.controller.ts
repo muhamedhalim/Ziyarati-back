@@ -141,6 +141,6 @@ export class RefundController {
   @Get(':id')
   @RequirePermissions(PERMISSION.PAYMENTS_READ)
   findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.refunds.findOne(this.ctx.requireTenantId(), id);
+    return this.refunds.findOneForClient(this.ctx.requireTenantId(), id);
   }
 }

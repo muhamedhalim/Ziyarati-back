@@ -30,9 +30,15 @@ describe('MetaWhatsappProvider — template parameters', () => {
     });
     global.fetch = fetchMock as unknown as typeof fetch;
     resolver = {
-      byId: jest.fn().mockResolvedValue({ id: 'acc-1', phoneNumberId: 'pid-1', accessToken: 'tok' }),
+      byId: jest.fn().mockResolvedValue({
+        id: 'acc-1',
+        phoneNumberId: 'pid-1',
+        accessToken: 'tok',
+      }),
     };
-    provider = new MetaWhatsappProvider(resolver as unknown as WhatsappAccountResolver);
+    provider = new MetaWhatsappProvider(
+      resolver as unknown as WhatsappAccountResolver,
+    );
   });
 
   afterEach(() => jest.restoreAllMocks());
@@ -56,20 +62,72 @@ describe('MetaWhatsappProvider — template parameters', () => {
     ]);
   });
 
+  it('adds a url-button component addressed by index, after the body', async () => {
+    await provider.send({
+      ...base,
+      variables: { '1': 'Sara' },
+      templateParameters: ['1'],
+      buttonParameters: [{ index: 1, text: 'Zx9-secret_token' }],
+    });
+    expect(sentBody().template.components).toEqual([
+      { type: 'body', parameters: [{ type: 'text', text: 'Sara' }] },
+      {
+        type: 'button',
+        sub_type: 'url',
+        index: '1', // Meta wants the index as a string
+        parameters: [{ type: 'text', text: 'Zx9-secret_token' }],
+      },
+    ]);
+  });
+
+  it('sends a button component even when the body has no placeholders', async () => {
+    await provider.send({
+      ...base,
+      templateParameters: [],
+      buttonParameters: [{ index: 0, text: 'tok' }],
+    });
+    expect(sentBody().template.components).toEqual([
+      {
+        type: 'button',
+        sub_type: 'url',
+        index: '0',
+        parameters: [{ type: 'text', text: 'tok' }],
+      },
+    ]);
+  });
+
+  it('sends no button component for a template without a dynamic link', async () => {
+    await provider.send({
+      ...base,
+      variables: { '1': 'Sara' },
+      templateParameters: ['1'],
+      buttonParameters: [],
+    });
+    expect(sentBody().template.components.map((c: any) => c.type)).toEqual([
+      'body',
+    ]);
+  });
+
   it('with non-numeric keys, uses the declared order rather than insertion order', async () => {
     await provider.send({
       ...base,
       variables: { date: '12 Oct', name: 'Sara' }, // inserted date-first
       templateParameters: ['name', 'date'],
     });
-    const params = sentBody().template.components[0].parameters.map((p: any) => p.text);
+    const params = sentBody().template.components[0].parameters.map(
+      (p: any) => p.text,
+    );
     expect(params).toEqual(['Sara', '12 Oct']);
   });
 
   it('sends ONLY the template’s parameters — extra keys cannot cause a count mismatch', async () => {
     await provider.send({
       ...base,
-      variables: { '1': 'Sara', cancelUrl: 'https://x/cancel', rescheduleUrl: 'https://x/re' },
+      variables: {
+        '1': 'Sara',
+        cancelUrl: 'https://x/cancel',
+        rescheduleUrl: 'https://x/re',
+      },
       templateParameters: ['1'],
     });
     expect(sentBody().template.components[0].parameters).toHaveLength(1);
@@ -99,7 +157,9 @@ describe('MetaWhatsappProvider — template parameters', () => {
 
   it('keeps the legacy behaviour for callers that pass no parameter list', async () => {
     await provider.send({ ...base, variables: { a: 'one', b: 'two' } });
-    expect(sentBody().template.components[0].parameters.map((p: any) => p.text)).toEqual(['one', 'two']);
+    expect(
+      sentBody().template.components[0].parameters.map((p: any) => p.text),
+    ).toEqual(['one', 'two']);
   });
 
   it('uses the template’s own language code and normalises the recipient', async () => {
@@ -120,7 +180,9 @@ describe('MetaWhatsappProvider — template parameters', () => {
     fetchMock.mockResolvedValueOnce({
       ok: false,
       status: 400,
-      json: async () => ({ error: { code: 132015, message: 'Template is paused' } }),
+      json: async () => ({
+        error: { code: 132015, message: 'Template is paused' },
+      }),
     });
     const res = await provider.send({ ...base, templateParameters: [] });
     expect(res).toEqual({
@@ -131,8 +193,12 @@ describe('MetaWhatsappProvider — template parameters', () => {
   });
 
   it('never throws on a timeout: it reports failure so the caller can reconcile', async () => {
-    fetchMock.mockRejectedValueOnce(Object.assign(new Error('aborted'), { name: 'AbortError' }));
-    await expect(provider.send({ ...base, templateParameters: [] })).resolves.toEqual({
+    fetchMock.mockRejectedValueOnce(
+      Object.assign(new Error('aborted'), { name: 'AbortError' }),
+    );
+    await expect(
+      provider.send({ ...base, templateParameters: [] }),
+    ).resolves.toEqual({
       success: false,
       error: 'Meta API timeout',
     });

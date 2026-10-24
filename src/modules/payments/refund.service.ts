@@ -206,14 +206,38 @@ export class RefundService {
     if (query.paymentId) where.payment = { id: query.paymentId };
     if (query.status) where.status = query.status;
 
-    const [data, total] = await this.refunds.findAndCount({
+    const [rows, total] = await this.refunds.findAndCount({
       where,
       relations: { payment: true },
       order: { created_at: 'DESC' },
       skip: (query.page - 1) * query.limit,
       take: query.limit,
     });
-    return { data, total, page: query.page, limit: query.limit };
+    return {
+      data: rows.map((r) => this.forClient(r)),
+      total,
+      page: query.page,
+      limit: query.limit,
+    };
+  }
+
+  /**
+   * FIN-X7 — the clinic sees which payment a refund belongs to and in what
+   * currency, not the payment row itself (gateway ids, metadata, raw failure text).
+   */
+  private forClient(refund: Refund): Refund {
+    const p = refund.payment;
+    return {
+      ...refund,
+      payment: p
+        ? ({ id: p.id, currency: p.currency, status: p.status } as Payment)
+        : refund.payment,
+    };
+  }
+
+  /** The controller-facing read; internal callers use the repository directly. */
+  async findOneForClient(tenantId: string, id: string): Promise<Refund> {
+    return this.forClient(await this.findOne(tenantId, id));
   }
 
   async findOne(tenantId: string, id: string): Promise<Refund> {

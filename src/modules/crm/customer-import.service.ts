@@ -203,6 +203,7 @@ export class CustomerImportService {
         await this.customerService.create(
           tenantId,
           row.data as CreateCustomerDto,
+          { source: 'import' },
         );
         imported += 1;
       } catch (err) {

@@ -387,10 +387,19 @@ export class TapGatewayProvider implements PaymentGatewayProvider {
     const landedOn = charge.merchant?.id ? String(charge.merchant.id) : '';
     const own = this.config.tapMerchantId;
     const onOurOwnAccount = !!own && landedOn === String(own);
-    if (landedOn && !onOurOwnAccount) return undefined;
+    // FIN-P4: the charge must belong to THE CLINIC we routed it to. "Any merchant that
+    // is not ours" is not enough — a stored or echoed id for a different sub-merchant
+    // would hand this patient's money to another clinic.
+    if (this.config.tapStrictMerchantEcho) {
+      if (landedOn && landedOn === String(request.settlementMerchantId)) {
+        return undefined;
+      }
+    } else if (landedOn && !onOurOwnAccount) {
+      return undefined;
+    }
     this.logger.error(
       `Tap clinic charge ${charge.id} was NOT routed to the clinic merchant ` +
-        `(${onOurOwnAccount ? 'it belongs to the platform account' : 'the response names no merchant'}); payment refused`,
+        `(${onOurOwnAccount ? 'it belongs to the platform account' : landedOn ? 'it belongs to a different merchant' : 'the response names no merchant'}); payment refused`,
     );
     return {
       success: false,

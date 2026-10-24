@@ -28,7 +28,9 @@ export class NoopWhatsappProvider implements WhatsappMessageProvider {
     return { success: true, providerMessageId: `noop_wamid_${Date.now()}` };
   }
 
-  async sendSession(payload: WhatsappSessionPayload): Promise<WhatsappSendResult> {
+  async sendSession(
+    payload: WhatsappSessionPayload,
+  ): Promise<WhatsappSendResult> {
     const kind = payload.interactive?.list
       ? 'list'
       : payload.interactive?.buttons?.length

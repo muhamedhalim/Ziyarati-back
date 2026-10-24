@@ -166,6 +166,42 @@ describe('PaymentsProcessor', () => {
       await expect(processor.process(outcomeJob())).rejects.toThrow('db down');
     });
 
+    describe('payments.expireUnpaidBookings (decision D-2)', () => {
+      const expiryJob = { name: JOB.PAYMENTS_EXPIRE_UNPAID_BOOKINGS } as any;
+      const withExpiry = (ttl?: number) => {
+        const { processor, reconciliation, lock, outcome, metrics } = build('t');
+        const expire = jest
+          .fn()
+          .mockResolvedValue({ scanned: 2, expired: 2, skipped: 0 });
+        const p = processor as any;
+        p.appointments = { expireUnpaidBookings: expire };
+        p.appConfig = { get: jest.fn().mockReturnValue(ttl) };
+        return { p: processor, expire, reconciliation, lock, outcome, metrics };
+      };
+
+      it('runs the expiry with the configured TTL, and never the payment sweep', async () => {
+        const { p, expire, reconciliation, lock } = withExpiry(20);
+        const res = await p.process(expiryJob);
+        expect(expire).toHaveBeenCalledWith(20);
+        expect(res).toMatchObject({ expired: 2 });
+        expect(reconciliation.reconcileStalePending).not.toHaveBeenCalled();
+        expect(lock.acquire).not.toHaveBeenCalled();
+      });
+
+      it('defaults to 15 minutes when the setting is absent', async () => {
+        const { p, expire } = withExpiry(undefined);
+        await p.process(expiryJob);
+        expect(expire).toHaveBeenCalledWith(15);
+      });
+
+      it('is a harmless no-op where the appointment service is not wired', async () => {
+        const { processor } = build('t');
+        expect(await processor.process(expiryJob)).toEqual({
+          skipped: 'not_wired',
+        });
+      });
+    });
+
     it('any other job name still runs the sweep (backward compatible with the repeatable job)', async () => {
       const { processor, reconciliation, outcome } = build('token');
       await processor.process({ name: JOB.PAYMENTS_RECONCILE } as any);

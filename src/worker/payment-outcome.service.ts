@@ -8,7 +8,10 @@ import { PaymentsOutcomeJob } from '../queue/job-data.interface';
 import { AppointmentsService } from '../modules/appointment/appointment.service';
 import { BillingUpgradeEntitlementListener } from '../modules/billing-upgrades/billing-upgrade-entitlement.listener';
 import { ResourceEntitlementListener } from '../modules/resource-pricing/resource-entitlement.listener';
-import { PAYMENT_PURPOSE } from '../modules/payments/payments.constants';
+import {
+  PAYMENT_PURPOSE,
+  RECONCILIATION_KIND,
+} from '../modules/payments/payments.constants';
 import { PaymentLinkService } from '../modules/payments/payment-link.service';
 import { PAYMENT_OUTCOME } from '../modules/payments/payment-outcome.outbox';
 import { ReconciliationExceptionService } from '../modules/payments/reconciliation/reconciliation-exception.service';
@@ -130,11 +133,18 @@ export class PaymentOutcomeService {
         // Replay what actually happened, in order: it was paid (this confirms the
         // booking); if a refund already landed before this job ran, reflect that
         // too. Both calls are idempotent.
-        await this.appointments.applyPaymentOutcome(
+        const applied = await this.appointments.applyPaymentOutcome(
           payment.tenant.id,
           appointmentId,
           'paid',
         );
+        if (applied === 'booking_closed') {
+          // D-2: the booking was cancelled before this payment landed. It is NOT
+          // confirmed and NOT marked paid; a person decides (refund policy is open).
+          await this.flagPaidOnCancelledBooking(payment, appointmentId);
+          consumers.push('reconciliation-exception');
+          return;
+        }
         await this.reflectRefundOnAppointment(payment, appointmentId);
         consumers.push('appointment');
         // The booking is paid, so its pay link is spent: a patient re-opening it
@@ -151,6 +161,30 @@ export class PaymentOutcomeService {
         await this.noticeDuplicateCapture(payment.id);
       }
     }
+  }
+
+  private async flagPaidOnCancelledBooking(
+    payment: Payment,
+    appointmentId: string,
+  ): Promise<void> {
+    this.logger.error(
+      `ALERT: payment ${payment.id} was captured for CANCELLED booking ${appointmentId} — not confirmed; review in the reconciliation queue`,
+    );
+    if (!this.exceptions) return;
+    await this.exceptions.raiseQuietly({
+      kind: RECONCILIATION_KIND.STATUS_MISMATCH,
+      provider: payment.gateway ?? 'unknown',
+      objectId: payment.gateway_payment_id ?? payment.id,
+      tenantId: payment.tenant.id,
+      paymentId: payment.id,
+      details: {
+        reason: 'paid_on_cancelled_booking',
+        appointmentId,
+        amount: Number(payment.amount),
+        currency: payment.currency,
+        paymentStatus: payment.status,
+      },
+    });
   }
 
   private async noticeDuplicateCapture(paymentId: string): Promise<void> {

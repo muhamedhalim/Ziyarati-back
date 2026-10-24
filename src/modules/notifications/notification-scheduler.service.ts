@@ -3,20 +3,26 @@ import { InjectRepository } from '@nestjs/typeorm';
 import {
   Between,
   FindOptionsWhere,
+  In,
   LessThan,
+  Like,
   MoreThanOrEqual,
   Repository,
 } from 'typeorm';
 
 import { ScheduledNotification } from '../../entities/Notifications/ScheduledNotification';
 import { NotificationTemplate } from '../../entities/Notifications/NotificationTemplate';
+import { NotificationRule } from '../../entities/Notifications/NotificationRule';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { NotificationDispatchService } from './notification-dispatch.service';
 import { QueueService } from '../../queue/queue.service';
-import { NotificationAuditService, NOTIFICATION_AUDIT_ACTION } from './notification-audit.service';
+import {
+  NotificationAuditService,
+  NOTIFICATION_AUDIT_ACTION,
+} from './notification-audit.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ScheduleNotificationDto } from './dto/schedule-notification.dto';
 import { UpdateScheduledNotificationDto } from './dto/update-scheduled-notification.dto';
@@ -83,9 +89,13 @@ export class NotificationSchedulerService {
     // a `cancelUrl`, for instance — without a template author having to
     // template-author "the appointment's own values" a second time.
     variables?: Record<string, unknown>,
+    // INTERNAL-only, like `sourceRef`: the rule that produced this row, so a rule's
+    // counts and execution list are exact. Never part of the public DTO.
+    ruleId?: string,
   ): Promise<ScheduledNotification> {
     if (dto.templateId) await this.assertTemplate(tenantId, dto.templateId);
-    if (dto.appointmentId) await this.assertAppointment(tenantId, dto.appointmentId);
+    if (dto.appointmentId)
+      await this.assertAppointment(tenantId, dto.appointmentId);
 
     const row = this.scheduled.create({
       tenant: { id: tenantId } as Tenant,
@@ -101,14 +111,22 @@ export class NotificationSchedulerService {
       status: NOTIFICATION_STATUS.SCHEDULED,
       source_ref: sourceRef,
       variables,
+      notification_rule: ruleId
+        ? ({ id: ruleId } as NotificationRule)
+        : undefined,
     });
 
     let saved: ScheduledNotification;
     try {
       saved = await this.scheduled.save(row);
     } catch (err) {
-      if (sourceRef && (err as { code?: string })?.code === PG_UNIQUE_VIOLATION) {
-        const existing = await this.scheduled.findOne({ where: { source_ref: sourceRef } });
+      if (
+        sourceRef &&
+        (err as { code?: string })?.code === PG_UNIQUE_VIOLATION
+      ) {
+        const existing = await this.scheduled.findOne({
+          where: { source_ref: sourceRef },
+        });
         // Already scheduled by a prior attempt for this EXACT business
         // operation — return it as-is, WITHOUT enqueuing a second dispatch
         // job (the first `schedule()` call already did that).
@@ -120,6 +138,43 @@ export class NotificationSchedulerService {
     // performs the send (NotificationDispatchService) — no in-process scheduler.
     await this.enqueueDispatch(tenantId, saved.id, saved.scheduled_at);
     return saved;
+  }
+
+  /**
+   * Cancels the PENDING rows whose `source_ref` matches `likePattern` (and their
+   * queued jobs), recording why. Only rows that have not started sending are
+   * touched; a row already PROCESSING is left to the dispatcher's own re-check.
+   * Tenant-scoped.
+   */
+  async cancelRuleRows(tenantId: string, likePattern: string): Promise<number> {
+    const rows = await this.scheduled.find({
+      where: {
+        tenant: { id: tenantId },
+        source_ref: Like(likePattern),
+        status: In([
+          NOTIFICATION_STATUS.PENDING,
+          NOTIFICATION_STATUS.SCHEDULED,
+        ]),
+      },
+      select: { id: true },
+    });
+    for (const row of rows) {
+      await this.scheduled.update(
+        {
+          id: row.id,
+          status: In([
+            NOTIFICATION_STATUS.PENDING,
+            NOTIFICATION_STATUS.SCHEDULED,
+          ]),
+        },
+        {
+          status: NOTIFICATION_STATUS.CANCELLED,
+          skip_reason: 'APPOINTMENT_CHANGED',
+        },
+      );
+      await this.queue.removeNotificationDispatch(row.id);
+    }
+    return rows.length;
   }
 
   async findAll(tenantId: string, filter: ScheduledNotificationFilterDto) {
@@ -280,7 +335,10 @@ export class NotificationSchedulerService {
       id,
       { previousStatus: row.status, previousSendAttempted: row.send_attempted },
     );
-    const job = await this.queue.retryNotificationDispatch({ tenantId, notificationId: id });
+    const job = await this.queue.retryNotificationDispatch({
+      tenantId,
+      notificationId: id,
+    });
     return { queued: true, notificationId: id, jobId: job.id };
   }
 
@@ -293,10 +351,16 @@ export class NotificationSchedulerService {
     scheduledAt: Date,
   ): Promise<void> {
     const delay = Math.max(0, scheduledAt.getTime() - Date.now());
-    await this.queue.enqueueNotificationDispatch({ tenantId, notificationId }, { delay });
+    await this.queue.enqueueNotificationDispatch(
+      { tenantId, notificationId },
+      { delay },
+    );
   }
 
-  private async assertTemplate(tenantId: string, templateId: string): Promise<void> {
+  private async assertTemplate(
+    tenantId: string,
+    templateId: string,
+  ): Promise<void> {
     const ok = await this.templates.exists({
       where: { id: templateId, tenant: { id: tenantId } },
     });
@@ -307,7 +371,10 @@ export class NotificationSchedulerService {
     }
   }
 
-  private async assertAppointment(tenantId: string, appointmentId: string): Promise<void> {
+  private async assertAppointment(
+    tenantId: string,
+    appointmentId: string,
+  ): Promise<void> {
     const ok = await this.appointments.exists({
       where: { id: appointmentId, tenant: { id: tenantId } },
     });

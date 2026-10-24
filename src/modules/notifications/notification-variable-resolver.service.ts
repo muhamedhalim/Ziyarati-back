@@ -7,10 +7,15 @@ import { Customer } from '../../entities/CRM/Customer';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { WhatsappTemplate } from '../../entities/WhatsApp/WhatsappTemplate';
 import {
+  fixedSourceValue,
+  isFixedSource,
   WHATSAPP_TEMPLATE_VARIABLE_SOURCE as SRC,
   WhatsappTemplateVariableSource,
 } from '../whatsapp/whatsapp.constants';
-import { orderedBodyParameters } from '../whatsapp/template-variables.util';
+import {
+  orderedBodyParameters,
+  urlButtonParameters,
+} from '../whatsapp/template-variables.util';
 
 export interface ResolvedTemplateVariables {
   /** Values for the template's placeholders (plus any pass-through extras). */
@@ -51,7 +56,10 @@ export class NotificationVariableResolver {
 
   async resolve(
     tenantId: string,
-    template: Pick<WhatsappTemplate, 'components' | 'variable_mapping' | 'language'>,
+    template: Pick<
+      WhatsappTemplate,
+      'components' | 'variable_mapping' | 'language'
+    >,
     input: {
       customer: Pick<Customer, 'id' | 'full_name'>;
       appointmentId?: string;
@@ -59,7 +67,11 @@ export class NotificationVariableResolver {
       supplied: Record<string, unknown>;
     },
   ): Promise<ResolvedTemplateVariables> {
-    const declared = orderedBodyParameters(template.components);
+    // Body placeholders plus any dynamic URL button parameter (`button_<i>`).
+    const declared = [
+      ...orderedBodyParameters(template.components),
+      ...urlButtonParameters(template.components).map((p) => p.key),
+    ];
     const mapping = template.variable_mapping ?? {};
     const out: Record<string, unknown> = { ...input.supplied };
     const unresolved: ResolvedTemplateVariables['unresolved'] = [];
@@ -78,13 +90,28 @@ export class NotificationVariableResolver {
 
     const appointment =
       needsAppointment && input.appointmentId
-        ? await this.loadAppointment(tenantId, input.appointmentId, input.customer.id)
+        ? await this.loadAppointment(
+            tenantId,
+            input.appointmentId,
+            input.customer.id,
+          )
         : undefined;
-    const clinicName = needsClinic ? await this.loadClinicName(tenantId) : undefined;
+    const clinicName = needsClinic
+      ? await this.loadClinicName(tenantId)
+      : undefined;
     const locale = this.localeOf(template.language);
 
     for (const name of declared) {
-      const source = mapping[name] as WhatsappTemplateVariableSource | undefined;
+      const source = mapping[name] as
+        | WhatsappTemplateVariableSource
+        | undefined;
+      // A clinic-typed constant (`fixed:<text>`), e.g. a promotion's offer.
+      if (isFixedSource(source)) {
+        const fixed = this.clean(fixedSourceValue(source));
+        if (fixed) out[name] = fixed;
+        else unresolved.push({ placeholder: name, source: 'fixed' });
+        continue;
+      }
       if (!source) {
         // No binding: only a value the caller already supplied may fill it.
         if (!this.hasValue(out[name])) unresolved.push({ placeholder: name });
@@ -118,6 +145,10 @@ export class NotificationVariableResolver {
     switch (source) {
       case SRC.PATIENT_NAME:
         return this.clean(ctx.customer.full_name);
+      case SRC.PATIENT_FIRST_NAME:
+        return this.clean(ctx.customer.full_name)?.split(' ')[0];
+      case SRC.RESCHEDULE_TOKEN:
+        return this.tokenOf(ctx.supplied['rescheduleUrl']);
       case SRC.CLINIC_NAME:
         return this.clean(ctx.clinicName);
       case SRC.BRANCH_NAME:
@@ -157,7 +188,8 @@ export class NotificationVariableResolver {
       },
     });
     // Belongs to someone else → behave as if there were no appointment.
-    if (!appointment || appointment.customer?.id !== customerId) return undefined;
+    if (!appointment || appointment.customer?.id !== customerId)
+      return undefined;
     return appointment;
   }
 
@@ -203,11 +235,27 @@ export class NotificationVariableResolver {
     }).format(new Date(a.start_at));
   }
 
+  /**
+   * The secret at the end of an issued `…/appointment-action/<secret>` link —
+   * what a dynamic URL button appends to its fixed base. Anything that is not
+   * that exact shape yields nothing (the send is then blocked), so a stray
+   * value can never be turned into a path suffix.
+   */
+  private tokenOf(url: unknown): string | undefined {
+    const match = /\/appointment-action\/([A-Za-z0-9_-]{16,200})\/?$/.exec(
+      String(url ?? ''),
+    );
+    return match?.[1];
+  }
+
   private clean(value: unknown): string | undefined {
     if (value === null || value === undefined) return undefined;
     // Meta rejects a parameter containing newlines / tabs or 4+ consecutive
     // spaces, so a free-text name is normalised rather than risk the send.
-    const text = String(value).replace(/[\r\n\t]+/g, ' ').replace(/ {2,}/g, ' ').trim();
+    const text = String(value)
+      .replace(/[\r\n\t]+/g, ' ')
+      .replace(/ {2,}/g, ' ')
+      .trim();
     return text.length > 0 ? text : undefined;
   }
 

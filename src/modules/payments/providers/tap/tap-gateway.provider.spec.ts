@@ -230,6 +230,29 @@ describe('TapGatewayProvider', () => {
         expect(res.success).toBe(true);
       });
 
+      describe('FIN-P4 — TAP_STRICT_MERCHANT_ECHO', () => {
+        beforeEach(() => {
+          cfg.tapStrictMerchantEcho = true;
+        });
+
+        it("refuses a charge Tap says belongs to a DIFFERENT merchant than the clinic's", async () => {
+          client.createCharge.mockResolvedValueOnce(chargeOwnedBy('merchant_OTHER'));
+          const res = await build().createPayment(clinicRequest());
+          expect(res).toMatchObject({
+            success: false,
+            status: 'failed',
+            failureCode: 'TAP_ROUTING_UNVERIFIED',
+          });
+          expect(res.redirectUrl).toBeUndefined();
+        });
+
+        it("accepts a charge whose echo equals the clinic's merchant", async () => {
+          client.createCharge.mockResolvedValueOnce(chargeOwnedBy('merchant_CLINIC'));
+          const res = await build().createPayment(clinicRequest());
+          expect(res.success).toBe(true);
+        });
+      });
+
       it("a platform-revenue charge is MEANT to be on the platform's own account", async () => {
         client.createCharge.mockResolvedValueOnce(
           chargeOwnedBy('merchant_PLATFORM'),

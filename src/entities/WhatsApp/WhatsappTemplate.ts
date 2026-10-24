@@ -25,6 +25,11 @@ import { WhatsappAccount } from './WhatsappAccount';
 @Entity('whatsapp_templates')
 @Unique(['tenant', 'name', 'language'])
 @Index('IDX_whatsapp_template_waba', ['waba_id'])
+// Mirrors 1730126000000-WhatsappTemplateLibrary.ts (the migration is the DDL).
+@Index('UQ_whatsapp_templates_tenant_library_key', ['tenant', 'library_key'], {
+  unique: true,
+  where: '"library_key" IS NOT NULL AND "deleted_at" IS NULL',
+})
 export class WhatsappTemplate {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -46,8 +51,20 @@ export class WhatsappTemplate {
   @Column({ length: 50, nullable: true })
   category?: string;
 
-  @Column({ default: 'PENDING' })
+  @Column({ default: 'draft' })
   status!: string;
+
+  /**
+   * Which catalog entry (`template-library.catalog.ts`) this row was adopted
+   * from; NULL for hand-authored and synced templates. With `library_version`
+   * it lets a newer catalog revision be OFFERED without overwriting the clinic's
+   * edits.
+   */
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  library_key?: string | null;
+
+  @Column({ type: 'int', nullable: true })
+  library_version?: number | null;
 
   @Column({ type: 'jsonb', nullable: true })
   components?: Record<string, any>;

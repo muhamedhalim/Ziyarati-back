@@ -12,6 +12,12 @@ import { InvoiceStatus } from '../enums';
   unique: true,
   where: `"provider_reference" IS NOT NULL AND "status" <> 'VOID'`,
 })
+// One invoice per subscription period (migration SubscriptionInvoicePeriodAndCurrency).
+// Declared here so a dev synchronize boot does not drop it.
+@Index('UQ_sub_invoice_period', ['subscription_id', 'period_start'], {
+  unique: true,
+  where: `"status" <> 'VOID'`,
+})
 @Index('UQ_sub_invoice_open_per_subscription', ['subscription_id'], {
   unique: true,
   where: `"status" = 'OPEN'`,

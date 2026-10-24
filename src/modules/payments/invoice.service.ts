@@ -204,11 +204,23 @@ export class InvoiceService {
 
     const [data, total] = await this.invoices.findAndCount({
       where,
+      // The list shows who the invoice is for; id + name only.
+      relations: { customer: true },
       order: { created_at: 'DESC' },
       skip: (query.page - 1) * query.limit,
       take: query.limit,
     });
-    return { data, total, page: query.page, limit: query.limit };
+    return {
+      // Name only: the list does not need the customer's contact details.
+      data: data.map((i) =>
+        i.customer
+          ? { ...i, customer: { id: i.customer.id, full_name: i.customer.full_name } as typeof i.customer }
+          : i,
+      ),
+      total,
+      page: query.page,
+      limit: query.limit,
+    };
   }
 
   /** Invoice with its composed line items (entity has no inverse relation). */

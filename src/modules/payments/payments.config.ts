@@ -141,6 +141,20 @@ export class PaymentsConfig {
    * clinic has been onboarded and approved: while off, a booking is confirmed as
    * "pay at the clinic" and no pay link is issued.
    */
+  /**
+   * FIN-P4 — require Tap's echo of a clinic charge's merchant to EQUAL the clinic's
+   * merchant id (create time and every confirmation). Off by default: the form Tap
+   * echoes for a sub-merchant on a Platform charge is not yet confirmed against a live
+   * Platform account, and an over-strict match would refuse every legitimate payment.
+   * Turn on once the sandbox/live Platform run (Phase 6) shows the echoed form.
+   */
+  get tapStrictMerchantEcho(): boolean {
+    const raw = this.config.get<string | boolean>('TAP_STRICT_MERCHANT_ECHO');
+    return (
+      raw === true || String(raw ?? '').trim().toLowerCase() === 'true'
+    );
+  }
+
   get tapBookingPaymentsEnabled(): boolean {
     const raw = this.config.get<string | boolean>(
       'TAP_BOOKING_PAYMENTS_ENABLED',

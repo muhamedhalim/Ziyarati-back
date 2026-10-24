@@ -36,23 +36,43 @@ export class WhatsappTemplateButtonDto {
   @IsIn(WHATSAPP_TEMPLATE_BUTTON_TYPES)
   type!: string;
 
-  @ApiProperty({ description: 'Button label shown to the recipient.', example: 'Confirm', maxLength: 25 })
+  @ApiProperty({
+    description: 'Button label shown to the recipient.',
+    example: 'Confirm',
+    maxLength: 25,
+  })
   @IsString()
   @MinLength(1)
   @MaxLength(25)
   text!: string;
 
-  @ApiPropertyOptional({ description: 'Destination for a `URL` button.', example: 'https://ziyaratech.com/appointments' })
+  @ApiPropertyOptional({
+    description: 'Destination for a `URL` button.',
+    example: 'https://ziyaratech.com/appointments',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(2000)
   url?: string;
 
-  @ApiPropertyOptional({ description: 'E.164 number for a `PHONE_NUMBER` button.', example: '+966501234567' })
+  @ApiPropertyOptional({
+    description: 'E.164 number for a `PHONE_NUMBER` button.',
+    example: '+966501234567',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(20)
   phoneNumber?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Complete sample link for a `URL` button whose `url` ends in `{{1}}` (Meta requires it).',
+    example: 'https://app.example.com/appointment-action/abc123',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  example?: string;
 }
 
 /**
@@ -101,7 +121,10 @@ export class WhatsappTemplateComponentDto {
   @MaxLength(300, { each: true })
   example?: string[];
 
-  @ApiPropertyOptional({ type: [WhatsappTemplateButtonDto], description: 'Buttons for a BUTTONS component (max 3).' })
+  @ApiPropertyOptional({
+    type: [WhatsappTemplateButtonDto],
+    description: 'Buttons for a BUTTONS component (max 3).',
+  })
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(3)
@@ -137,7 +160,8 @@ export class CreateWhatsappTemplateDto {
   @MinLength(1)
   @MaxLength(100)
   @Matches(WHATSAPP_TEMPLATE_NAME_PATTERN, {
-    message: 'name must contain only lower-case letters, digits and underscores',
+    message:
+      'name must contain only lower-case letters, digits and underscores',
   })
   name!: string;
 
@@ -151,7 +175,8 @@ export class CreateWhatsappTemplateDto {
   @MinLength(2)
   @MaxLength(10)
   @Matches(WHATSAPP_TEMPLATE_LANGUAGE_PATTERN, {
-    message: 'language must be a Meta language code such as `en`, `en_US` or `ar`',
+    message:
+      'language must be a Meta language code such as `en`, `en_US` or `ar`',
   })
   language!: string;
 

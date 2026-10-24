@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Logger, Optional } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 
@@ -20,6 +20,8 @@ import { WaitlistOfferService } from '../../modules/waitlist/waitlist-offer.serv
 import { PatientQueueService } from '../../modules/patient-queue/patient-queue.service';
 import { ReportExportService } from '../../modules/report-export/report-export.service';
 import { BirthdayGreetingSweepService } from '../../modules/workflow/birthday-greeting.sweep.service';
+import { NotificationRulesSweepService } from '../../modules/notifications/rule-library/notification-rules.sweep.service';
+import { CampaignScheduledLaunchService } from '../../modules/campaigns/campaign-scheduled-launch.service';
 import { FreeAccessNoticeService } from '../../modules/subscription-billing/free-access-notice.service';
 
 /** See `NotificationsProcessor`'s identical reap lock — same reasoning, own key. */
@@ -41,6 +43,11 @@ const EXPORT_EXPIRY_LOCK_TTL_MS = 45_000;
  * outlive the whole run — a duplicate concurrent sweep is what would otherwise
  * be able to race the once-per-occurrence guard.
  */
+const RULES_SWEEP_LOCK_KEY = 'lock:notification-rules-sweep';
+const RULES_SWEEP_LOCK_TTL_MS = 120_000;
+// Ticks every minute: the lock outlives a slow run but expires well before a stuck one matters.
+const SCHEDULED_LAUNCH_LOCK_KEY = 'lock:campaigns-scheduled-launch';
+const SCHEDULED_LAUNCH_LOCK_TTL_MS = 55_000;
 const BIRTHDAY_GREETINGS_LOCK_KEY = 'lock:birthday-greetings';
 const BIRTHDAY_GREETINGS_LOCK_TTL_MS = 60_000;
 
@@ -120,6 +127,11 @@ export class PlatformProcessor extends WorkerHost {
     private readonly reportExport: ReportExportService,
     private readonly birthdayGreetings: BirthdayGreetingSweepService,
     private readonly freeAccessNotice: FreeAccessNoticeService,
+    // Optional + last: a processor built without them (older direct constructions)
+    // simply has nothing to run for these two jobs.
+    @Optional() private readonly rulesSweep?: NotificationRulesSweepService,
+    @Optional()
+    private readonly scheduledLaunch?: CampaignScheduledLaunchService,
   ) {
     super();
   }
@@ -138,6 +150,10 @@ export class PlatformProcessor extends WorkerHost {
         return this.processExportExpiry();
       case JOB.PLATFORM_BIRTHDAY_GREETINGS:
         return this.processBirthdayGreetings();
+      case JOB.PLATFORM_NOTIFICATION_RULES_SWEEP:
+        return this.processRulesSweep();
+      case JOB.PLATFORM_CAMPAIGNS_SCHEDULED_LAUNCH:
+        return this.processScheduledLaunch();
       case JOB.PLATFORM_FREE_ACCESS_NOTICE:
         return this.processFreeAccessNotice(job);
       case JOB.PLATFORM_FREE_ACCESS_EXPIRY_SWEEP:
@@ -343,6 +359,67 @@ export class PlatformProcessor extends WorkerHost {
       return result;
     } finally {
       await this.lock.release(BIRTHDAY_GREETINGS_LOCK_KEY, lockToken);
+    }
+  }
+
+  /** Time-driven ready-made rules; one run at a time across all workers. */
+  private async processRulesSweep() {
+    if (!this.rulesSweep) return { skipped: true };
+    const lockToken = await this.lock.acquire(
+      RULES_SWEEP_LOCK_KEY,
+      RULES_SWEEP_LOCK_TTL_MS,
+    );
+    if (!lockToken) {
+      this.logger.log(
+        'notification rules sweep already in progress elsewhere (or the lock is unavailable) — skipping this run',
+      );
+      return { skipped: true };
+    }
+    try {
+      const result = await this.rulesSweep.sweep(new Date(), {
+        keepAlive: () =>
+          this.lock.renew(
+            RULES_SWEEP_LOCK_KEY,
+            lockToken,
+            RULES_SWEEP_LOCK_TTL_MS,
+          ),
+      });
+      this.logger.log(
+        `notification rules sweep: tenants=${result.tenants} processed=${result.processed} scheduled=${result.scheduled}`,
+      );
+      this.metrics.setWorkerHeartbeat('platform.notificationRulesSweep');
+      return result;
+    } finally {
+      await this.lock.release(RULES_SWEEP_LOCK_KEY, lockToken);
+    }
+  }
+
+  /** Launches scheduled campaigns that came due; one run at a time across all workers. */
+  private async processScheduledLaunch() {
+    if (!this.scheduledLaunch) return { skipped: true };
+    const lockToken = await this.lock.acquire(
+      SCHEDULED_LAUNCH_LOCK_KEY,
+      SCHEDULED_LAUNCH_LOCK_TTL_MS,
+    );
+    if (!lockToken) return { skipped: true };
+    try {
+      const result = await this.scheduledLaunch.sweep(new Date(), {
+        keepAlive: () =>
+          this.lock.renew(
+            SCHEDULED_LAUNCH_LOCK_KEY,
+            lockToken,
+            SCHEDULED_LAUNCH_LOCK_TTL_MS,
+          ),
+      });
+      if (result.due > 0) {
+        this.logger.log(
+          `scheduled campaign launch: due=${result.due} launched=${result.launched} failed=${result.failed}`,
+        );
+      }
+      this.metrics.setWorkerHeartbeat('platform.campaignsScheduledLaunch');
+      return result;
+    } finally {
+      await this.lock.release(SCHEDULED_LAUNCH_LOCK_KEY, lockToken);
     }
   }
 

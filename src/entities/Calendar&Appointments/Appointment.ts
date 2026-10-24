@@ -25,7 +25,11 @@ import { AppointmentService } from './AppointmentService';
 import { AppointmentHistory } from './AppointmentHistory';
 import { AppointmentStatusLog } from './AppointmentStatusLog';
 import { AppointmentNote } from './AppointmentNote';
-import { AppointmentSource, AppointmentStatus, AppointmentPaymentStatus } from '../enums';
+import {
+  AppointmentSource,
+  AppointmentStatus,
+  AppointmentPaymentStatus,
+} from '../enums';
 import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 
 @Entity('appointments')
@@ -44,8 +48,18 @@ import { decimalTransformer } from '../../common/transformers/decimal.transforme
  * Index Scan, no sort (3 buffers) on a 1,200-row tenant.
  */
 @Index(['tenant', 'start_at'])
+@Index(
+  'IDX_appointments_tenant_follow_up_due',
+  ['tenant', 'follow_up_due_on'],
+  {
+    where: '"follow_up_due_on" IS NOT NULL AND "deleted_at" IS NULL',
+  },
+)
 @Check('appointments_end_after_start', '"end_at" > "start_at"')
-@Check('appointments_total_nonneg', '"total_amount" IS NULL OR "total_amount" >= 0')
+@Check(
+  'appointments_total_nonneg',
+  '"total_amount" IS NULL OR "total_amount" >= 0',
+)
 /**
  * P0.1 — the race-proof double-booking guard, declared here so that TypeORM
  * KNOWS ABOUT IT.
@@ -167,28 +181,28 @@ export class Appointment {
   })
   booked_by?: User;
 
-  @OneToMany(
-    () => AppointmentService,
-    (service) => service.appointment,
-  )
+  /** Calendar date (no time, no zone) a clinician asked the patient to return by.
+   *  Set only by a person, only on a COMPLETED appointment; drives the follow-up rule. */
+  @Column({ type: 'date', nullable: true })
+  follow_up_due_on?: string | null;
+
+  @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'follow_up_set_by_id' })
+  follow_up_set_by?: User | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  follow_up_set_at?: Date | null;
+
+  @OneToMany(() => AppointmentService, (service) => service.appointment)
   services!: AppointmentService[];
 
-  @OneToMany(
-    () => AppointmentHistory,
-    (history) => history.appointment,
-  )
+  @OneToMany(() => AppointmentHistory, (history) => history.appointment)
   history!: AppointmentHistory[];
 
-  @OneToMany(
-    () => AppointmentStatusLog,
-    (log) => log.appointment,
-  )
+  @OneToMany(() => AppointmentStatusLog, (log) => log.appointment)
   statusLogs!: AppointmentStatusLog[];
 
-  @OneToMany(
-    () => AppointmentNote,
-    (note) => note.appointment,
-  )
+  @OneToMany(() => AppointmentNote, (note) => note.appointment)
   appointmentNotes!: AppointmentNote[];
 
   /** Optimistic-locking guard — concurrent edits to the same appointment fail

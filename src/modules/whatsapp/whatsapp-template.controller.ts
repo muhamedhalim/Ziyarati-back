@@ -32,6 +32,10 @@ import {
 
 import { WhatsappTemplateService } from './whatsapp-template.service';
 import { WhatsappExecutionService } from './whatsapp-execution.service';
+import { WhatsappTemplateLibraryService } from './template-library/template-library.service';
+import { AdoptLibraryTemplateDto } from './dto/adopt-library-template.dto';
+import { ResubmitWhatsappTemplateDto } from './dto/resubmit-whatsapp-template.dto';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { ValidateWhatsappTemplateDto } from './dto/validate-whatsapp-template.dto';
 import { UpdateTemplateVariableMappingDto } from './dto/update-template-variable-mapping.dto';
 import { CreateWhatsappTemplateDto } from './dto/create-whatsapp-template.dto';
@@ -72,7 +76,14 @@ const S_TEMPLATE = {
     category: { type: 'string', nullable: true, example: 'UTILITY' },
     status: {
       type: 'string',
-      enum: ['draft', 'pending_review', 'approved', 'rejected', 'paused', 'disabled'],
+      enum: [
+        'draft',
+        'pending_review',
+        'approved',
+        'rejected',
+        'paused',
+        'disabled',
+      ],
       example: 'approved',
     },
     components: { type: 'object', nullable: true, additionalProperties: true },
@@ -86,13 +97,15 @@ const S_TEMPLATE = {
     rejected_reason: {
       type: 'string',
       nullable: true,
-      description: "Meta's reason, when the template was rejected/paused/disabled.",
+      description:
+        "Meta's reason, when the template was rejected/paused/disabled.",
     },
     variable_mapping: {
       type: 'object',
       nullable: true,
       additionalProperties: { type: 'string' },
-      description: 'Placeholder to trusted data source, used by the notification pipeline.',
+      description:
+        'Placeholder to trusted data source, used by the notification pipeline.',
     },
     last_synced_at: { type: 'string', format: 'date-time', nullable: true },
     needs_refresh: {
@@ -152,6 +165,7 @@ const S_SEND_RESULT = {
 export class WhatsappTemplateController {
   constructor(
     private readonly templates: WhatsappTemplateService,
+    private readonly library_: WhatsappTemplateLibraryService,
     private readonly execution: WhatsappExecutionService,
     private readonly ctx: TenantContextService,
   ) {}
@@ -249,6 +263,85 @@ rule) still decides. Density is reported as a \`warning\`, never an error.
   }
 
   @ApiOperation({
+    summary: 'Ready-made template library',
+    description: `
+**Protected, requires \`whatsapp.templates.read\`.**
+
+The platform's catalog of ready-made Arabic templates, each merged with this
+clinic's own copy when it has adopted one (\`adopted\`: the usual template view,
+including \`status\`, Meta's real \`category\` and \`readiness\`).
+
+\`proposed_category\` is only what we suggest: **Meta decides** the category on
+review, and the adopted copy's \`category\` is Meta's answer. Nothing in the
+library is pre-approved, and nothing is ever submitted to Meta by adopting one.
+    `.trim(),
+  })
+  @ApiOkResponse({
+    description: 'Library entries with the clinic’s copy attached.',
+  })
+  @Get('library')
+  @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_READ)
+  library() {
+    return this.library_.list(this.ctx.requireTenantId());
+  }
+
+  @ApiOperation({
+    summary: 'Adopt a library template as a draft',
+    description: `
+**Protected, requires \`whatsapp.templates.manage\`.**
+
+Copies the catalog entry into this clinic's templates as a **local draft**.
+**Nothing is sent to Meta** — the owner reviews it and submits it with
+\`POST :id/submit\`. Idempotent: adopting an already adopted entry returns the
+existing copy unchanged (\`created: false\`). 409 if a different template already
+uses the entry's name.
+    `.trim(),
+  })
+  @ApiParam({
+    name: 'key',
+    type: 'string',
+    example: 'appointment_reminder_24h',
+  })
+  @ApiCreatedResponse({
+    description: 'The draft, and whether it was created by this call.',
+  })
+  @ApiConflictResponse({
+    description: 'A different template already uses this name.',
+    schema: S_ERROR,
+  })
+  @Post('library/:key/adopt')
+  @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_MANAGE)
+  adoptLibrary(
+    @Param('key') key: string,
+    @Body() dto: AdoptLibraryTemplateDto,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.library_.adopt(this.ctx.requireTenantId(), key, dto, userId);
+  }
+
+  @ApiOperation({
+    summary: 'Apply a newer library revision to an adopted draft',
+    description: `
+**Protected, requires \`whatsapp.templates.manage\`.**
+
+Replaces the text of an adopted **draft** with the current catalog revision. Never
+automatic; never allowed once the template has been submitted (edit and resubmit
+instead). The clinic's phone / offer link and data-source choices are kept.
+    `.trim(),
+  })
+  @ApiParam({ name: 'key', type: 'string' })
+  @ApiOkResponse({ description: 'The updated draft.', schema: S_TEMPLATE })
+  @Post('library/:key/apply-update')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_MANAGE)
+  applyLibraryUpdate(
+    @Param('key') key: string,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.library_.applyUpdate(this.ctx.requireTenantId(), key, userId);
+  }
+
+  @ApiOperation({
     summary: 'List templates',
     description: `**Protected — requires \`whatsapp.templates.read\`. Clinic must be active.** Tenant-scoped, filter by status/category/language/search.`,
   })
@@ -297,6 +390,71 @@ rule) still decides. Density is reported as a \`warning\`, never an error.
   }
 
   @ApiOperation({
+    summary: 'Submit a draft template to Meta for review',
+    description: `
+**Protected, requires \`whatsapp.templates.manage\`.**
+
+The owner's explicit decision to send a **draft** (e.g. an adopted library
+template) to Meta. Runs the same pre-submission checks as create, calls Meta
+first, then records **Meta's** id, status and category. The result is normally
+\`pending_review\`; it is never \`approved\` until Meta says so.
+Same failure shapes as create: 409 (already on Meta), 422 with Meta's own words,
+or "outcome unknown — refresh" after a timeout. 409 if it was already submitted.
+    `.trim(),
+  })
+  @ApiParam({ name: 'id', type: 'string', format: 'uuid' })
+  @ApiOkResponse({
+    description: 'The template as Meta now reports it.',
+    schema: S_TEMPLATE,
+  })
+  @ApiConflictResponse({ description: 'Already submitted.', schema: S_ERROR })
+  @ApiUnprocessableEntityResponse({
+    description: 'Failed validation or Meta refused it.',
+    schema: S_ERROR,
+  })
+  @Post(':id/submit')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_MANAGE)
+  submit(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.templates.submit(this.ctx.requireTenantId(), id, userId);
+  }
+
+  @ApiOperation({
+    summary: 'Edit a rejected or paused template and resubmit it',
+    description: `
+**Protected, requires \`whatsapp.templates.manage\`.**
+
+Sends the corrected components to Meta (\`POST /{template_id}\`) and puts the
+template back into review. Allowed only while the template is \`rejected\` or
+\`paused\`; an approved template is live, so changing it means creating a new one.
+The status afterwards is whatever Meta reports (read back), never invented.
+    `.trim(),
+  })
+  @ApiParam({ name: 'id', type: 'string', format: 'uuid' })
+  @ApiOkResponse({
+    description: 'The resubmitted template.',
+    schema: S_TEMPLATE,
+  })
+  @ApiUnprocessableEntityResponse({
+    description:
+      'Not rejected/paused, failed validation, or Meta refused the edit.',
+    schema: S_ERROR,
+  })
+  @Post(':id/resubmit')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_MANAGE)
+  resubmit(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ResubmitWhatsappTemplateDto,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.templates.resubmit(this.ctx.requireTenantId(), id, dto, userId);
+  }
+
+  @ApiOperation({
     summary: "Refresh one template's status from Meta",
     description: `
 **Protected, requires \`whatsapp.templates.manage\`.**
@@ -309,10 +467,17 @@ template it is removed from the list (404).
     `.trim(),
   })
   @ApiParam({ name: 'id', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'The template with its freshly reconciled status.', schema: S_TEMPLATE })
-  @ApiNotFoundResponse({ description: 'Template not found, or gone from Meta.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: 'The template with its freshly reconciled status.',
+    schema: S_TEMPLATE,
+  })
+  @ApiNotFoundResponse({
+    description: 'Template not found, or gone from Meta.',
+    schema: S_ERROR,
+  })
   @ApiUnprocessableEntityResponse({
-    description: 'Never submitted to Meta, account unusable, or Meta unreachable (see `context.meta`).',
+    description:
+      'Never submitted to Meta, account unusable, or Meta unreachable (see `context.meta`).',
     schema: S_ERROR,
   })
   @Post(':id/refresh')
@@ -334,14 +499,23 @@ customer, never from the request. An empty \`mapping\` clears the binding.
     `.trim(),
   })
   @ApiParam({ name: 'id', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Template with the new binding.', schema: S_TEMPLATE })
+  @ApiOkResponse({
+    description: 'Template with the new binding.',
+    schema: S_TEMPLATE,
+  })
   @Put(':id/variable-mapping')
   @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_MANAGE)
   setVariableMapping(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateTemplateVariableMappingDto,
+    @CurrentUser('id') userId: string,
   ) {
-    return this.templates.setVariableMapping(this.ctx.requireTenantId(), id, dto.mapping);
+    return this.templates.setVariableMapping(
+      this.ctx.requireTenantId(),
+      id,
+      dto.mapping,
+      userId,
+    );
   }
 
   @ApiOperation({

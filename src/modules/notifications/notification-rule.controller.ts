@@ -32,6 +32,9 @@ import { CreateNotificationRuleDto } from './dto/create-notification-rule.dto';
 import { UpdateNotificationRuleDto } from './dto/update-notification-rule.dto';
 import { NotificationRuleFilterDto } from './dto/notification-rule-filter.dto';
 
+import { NotificationRuleLibraryService } from './rule-library/rule-library.service';
+import { ConfigureLibraryRuleDto } from './rule-library/configure-library-rule.dto';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
@@ -94,8 +97,78 @@ const S_RULE_LIST = {
 export class NotificationRuleController {
   constructor(
     private readonly rules: NotificationRuleService,
+    private readonly library: NotificationRuleLibraryService,
     private readonly ctx: TenantContextService,
   ) {}
+
+  @ApiOperation({
+    summary: 'Ready-made automation rules',
+    description: `
+**Protected, requires \`notification_rules.read\`.**
+
+The clinic's six ready-made rules (booking confirmation, 24h reminder, post-visit
+follow-up, follow-up when due, scheduled promotion, re-engagement), each with its
+template, last run, 30-day counts and \`blockers\`: what still prevents switching
+it on. The first call creates the rules — **all disabled**; nothing is sent until
+the owner chooses a template and enables one. Idempotent.
+    `.trim(),
+  })
+  @ApiOkResponse({
+    description: 'The six rules with status, stats and blockers.',
+  })
+  @Get('library')
+  @RequirePermissions(PERMISSION.NOTIFICATION_RULES_READ)
+  libraryRules() {
+    return this.library.list(this.ctx.requireTenantId());
+  }
+
+  @ApiOperation({
+    summary: 'Configure a ready-made rule',
+    description: `
+**Protected, requires \`notification_rules.manage\`.**
+
+Choose the WhatsApp template, the delay and the typed settings (send window,
+inactivity days, …). Never switches the rule on — that is \`POST :id/enable\`,
+which refuses with the list of blockers while anything is missing.
+    `.trim(),
+  })
+  @ApiParam({ name: 'id', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'The rule with its status and blockers.' })
+  @ApiUnprocessableEntityResponse({
+    description: 'Invalid settings or template not ready.',
+    schema: S_ERROR,
+  })
+  @Patch(':id/library')
+  @RequirePermissions(PERMISSION.NOTIFICATION_RULES_MANAGE)
+  configureLibraryRule(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ConfigureLibraryRuleDto,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.library.configure(this.ctx.requireTenantId(), id, dto, userId);
+  }
+
+  @ApiOperation({
+    summary: 'Recent executions of a ready-made rule',
+    description: `
+**Protected, requires \`notification_rules.read\`.** The last messages this rule
+produced: status and reason labels only — no message content and no recipient.
+    `.trim(),
+  })
+  @ApiParam({ name: 'id', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'Most recent first.' })
+  @Get(':id/executions')
+  @RequirePermissions(PERMISSION.NOTIFICATION_RULES_READ)
+  libraryExecutions(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.library.executions(
+      this.ctx.requireTenantId(),
+      id,
+      limit ? Number(limit) : 20,
+    );
+  }
 
   @ApiOperation({
     summary: 'Create a notification rule',
@@ -249,8 +322,11 @@ Returns the tenant's rules with optional filters (\`triggerEvent\`,
   @Post(':id/enable')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.NOTIFICATION_RULES_MANAGE)
-  enable(@Param('id', ParseUUIDPipe) id: string) {
-    return this.rules.setActive(this.ctx.requireTenantId(), id, true);
+  enable(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.rules.setActive(this.ctx.requireTenantId(), id, true, userId);
   }
 
   @ApiOperation({
@@ -277,8 +353,11 @@ Returns the tenant's rules with optional filters (\`triggerEvent\`,
   @Post(':id/disable')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.NOTIFICATION_RULES_MANAGE)
-  disable(@Param('id', ParseUUIDPipe) id: string) {
-    return this.rules.setActive(this.ctx.requireTenantId(), id, false);
+  disable(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.rules.setActive(this.ctx.requireTenantId(), id, false, userId);
   }
 
   @ApiOperation({

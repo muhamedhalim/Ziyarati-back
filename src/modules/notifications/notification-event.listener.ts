@@ -1,11 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
-import { PatientActionPurpose } from '../../entities/enums';
+import { AppointmentStatus, PatientActionPurpose } from '../../entities/enums';
 import { PatientActionLinkService } from '../patient-actions/patient-action-link.service';
 
 import {
@@ -43,6 +43,15 @@ import {
 import { NotificationRuleService } from './notification-rule.service';
 import { NotificationSchedulerService } from './notification-scheduler.service';
 import { RECIPIENT_TYPE } from './notification.constants';
+import { NotificationRuleLibraryService } from './rule-library/rule-library.service';
+import { findRuleDef } from './rule-library/rule-library.catalog';
+import { normalizeConditions } from './rule-library/rule-conditions';
+import { shiftIntoWindow } from './rule-library/send-window.util';
+import {
+  beforeRowsPattern,
+  buildRuleSourceRef,
+  kindOfTrigger,
+} from './rule-library/rule-source-ref';
 
 /**
  * Bridges domain events to the notification scheduling pipeline.
@@ -71,6 +80,9 @@ export class NotificationEventListener {
     private readonly appointments: Repository<Appointment>,
     private readonly patientActionLinks: PatientActionLinkService,
     private readonly config: ConfigService,
+    // Optional: lets rules record their last run and read the clinic's timezone.
+    // A listener built without it (older direct constructions) just skips both.
+    @Optional() private readonly library?: NotificationRuleLibraryService,
   ) {}
 
   /** Base URL for links embedded in outbound messages (APP_URL, else first
@@ -92,10 +104,64 @@ export class NotificationEventListener {
       customerId: event.customerId,
       appointmentId: event.appointmentId,
     });
+
+    // An appointment created already CONFIRMED (auto-confirm, or paid up front)
+    // never goes through a PENDING -> CONFIRMED transition, so no `confirmed`
+    // event is ever emitted for it. Without this, every "booking confirmed"
+    // rule, and the 24h reminder, would silently skip most bookings. The
+    // per-rule idempotency key makes this safe if a `confirmed` event also
+    // arrives later.
+    // The status travels on the event, so the common path costs no extra read
+    // straight after the booking transaction; older emitters fall back to one.
+    const confirmed =
+      event.status !== undefined
+        ? event.status === AppointmentStatus.CONFIRMED
+        : await this.isConfirmed(event.tenantId, event.appointmentId);
+    if (confirmed) {
+      await this.handleConfirmed(
+        event.tenantId,
+        event.appointmentId,
+        event.customerId,
+      );
+    }
   }
 
   @OnEvent(APPOINTMENT_EVENT.CONFIRMED)
-  async onAppointmentConfirmed(event: AppointmentConfirmedEvent): Promise<void> {
+  async onAppointmentConfirmed(
+    event: AppointmentConfirmedEvent,
+  ): Promise<void> {
+    await this.handleConfirmed(
+      event.tenantId,
+      event.appointmentId,
+      event.customerId,
+    );
+  }
+
+  private async isConfirmed(
+    tenantId: string,
+    appointmentId: string,
+  ): Promise<boolean> {
+    try {
+      const appt = await this.appointments.findOne({
+        where: { id: appointmentId, tenant: { id: tenantId } },
+        select: { id: true, status: true },
+      });
+      return appt?.status === AppointmentStatus.CONFIRMED;
+    } catch (err) {
+      this.logger.error(
+        `Could not read appointment ${appointmentId} status: ${(err as Error)?.message}`,
+      );
+      return false;
+    }
+  }
+
+  private async handleConfirmed(
+    tenantId: string,
+    appointmentId: string,
+    customerId: string,
+    opts: { onlyBefore?: boolean } = {},
+  ): Promise<void> {
+    const event = { tenantId, appointmentId, customerId };
     const [cancelVars, rescheduleVars] = await Promise.all([
       this.buildActionLinkVariables(
         event.tenantId,
@@ -115,6 +181,7 @@ export class NotificationEventListener {
       APPOINTMENT_EVENT.CONFIRMED,
       { customerId: event.customerId, appointmentId: event.appointmentId },
       { ...cancelVars, ...rescheduleVars },
+      opts,
     );
   }
 
@@ -139,8 +206,14 @@ export class NotificationEventListener {
         select: { id: true, start_at: true },
       });
       if (!appointment) return undefined;
-      const secret = await this.patientActionLinks.issue(tenantId, appointment, purpose);
-      return { [variableName]: `${this.appUrl()}/appointment-action/${secret}` };
+      const secret = await this.patientActionLinks.issue(
+        tenantId,
+        appointment,
+        purpose,
+      );
+      return {
+        [variableName]: `${this.appUrl()}/appointment-action/${secret}`,
+      };
     } catch (err) {
       this.logger.error(
         `Failed to issue a ${purpose} link for appointment ${appointmentId}: ${(err as Error)?.message}`,
@@ -150,7 +223,10 @@ export class NotificationEventListener {
   }
 
   @OnEvent(APPOINTMENT_EVENT.CANCELLED)
-  async onAppointmentCancelled(event: AppointmentCancelledEvent): Promise<void> {
+  async onAppointmentCancelled(
+    event: AppointmentCancelledEvent,
+  ): Promise<void> {
+    await this.cancelBeforeRows(event.tenantId, event.appointmentId);
     await this.dispatch(event.tenantId, APPOINTMENT_EVENT.CANCELLED, {
       customerId: event.customerId,
       appointmentId: event.appointmentId,
@@ -158,7 +234,10 @@ export class NotificationEventListener {
   }
 
   @OnEvent(APPOINTMENT_EVENT.COMPLETED)
-  async onAppointmentCompleted(event: AppointmentCompletedEvent): Promise<void> {
+  async onAppointmentCompleted(
+    event: AppointmentCompletedEvent,
+  ): Promise<void> {
+    await this.cancelBeforeRows(event.tenantId, event.appointmentId);
     await this.dispatch(event.tenantId, APPOINTMENT_EVENT.COMPLETED, {
       customerId: event.customerId,
       appointmentId: event.appointmentId,
@@ -166,15 +245,34 @@ export class NotificationEventListener {
   }
 
   @OnEvent(APPOINTMENT_EVENT.RESCHEDULED)
-  async onAppointmentRescheduled(event: AppointmentRescheduledEvent): Promise<void> {
-    await this.dispatch(event.tenantId, APPOINTMENT_EVENT.RESCHEDULED, {
-      customerId: event.customerId,
-      appointmentId: event.appointmentId,
-    });
+  async onAppointmentRescheduled(
+    event: AppointmentRescheduledEvent,
+  ): Promise<void> {
+    // Rows computed from the OLD time are cancelled, then every "N minutes
+    // before" rule is scheduled again against the NEW time.
+    await this.cancelBeforeRows(event.tenantId, event.appointmentId);
+    await this.dispatch(
+      event.tenantId,
+      APPOINTMENT_EVENT.RESCHEDULED,
+      { customerId: event.customerId, appointmentId: event.appointmentId },
+      undefined,
+      { discriminator: new Date(event.newStartAt).getTime() },
+    );
+    if (await this.isConfirmed(event.tenantId, event.appointmentId)) {
+      await this.handleConfirmed(
+        event.tenantId,
+        event.appointmentId,
+        event.customerId,
+        {
+          onlyBefore: true,
+        },
+      );
+    }
   }
 
   @OnEvent(APPOINTMENT_EVENT.NO_SHOW)
   async onAppointmentNoShow(event: AppointmentNoShowEvent): Promise<void> {
+    await this.cancelBeforeRows(event.tenantId, event.appointmentId);
     await this.dispatch(event.tenantId, APPOINTMENT_EVENT.NO_SHOW, {
       customerId: event.customerId,
       appointmentId: event.appointmentId,
@@ -182,7 +280,9 @@ export class NotificationEventListener {
   }
 
   @OnEvent(APPOINTMENT_EVENT.IN_PROGRESS)
-  async onAppointmentInProgress(event: AppointmentInProgressEvent): Promise<void> {
+  async onAppointmentInProgress(
+    event: AppointmentInProgressEvent,
+  ): Promise<void> {
     await this.dispatch(event.tenantId, APPOINTMENT_EVENT.IN_PROGRESS, {
       customerId: event.customerId,
       appointmentId: event.appointmentId,
@@ -218,35 +318,45 @@ export class NotificationEventListener {
   // ─────────────────────────── Subscription events ─────────────────────────── //
 
   @OnEvent(SUBSCRIPTION_EVENT.ACTIVATED)
-  async onSubscriptionActivated(event: SubscriptionActivatedEvent): Promise<void> {
+  async onSubscriptionActivated(
+    event: SubscriptionActivatedEvent,
+  ): Promise<void> {
     await this.dispatch(event.tenantId, SUBSCRIPTION_EVENT.ACTIVATED, {
       tenantId: event.tenantId,
     });
   }
 
   @OnEvent(SUBSCRIPTION_EVENT.TRIAL_STARTED)
-  async onSubscriptionTrialStarted(event: SubscriptionTrialStartedEvent): Promise<void> {
+  async onSubscriptionTrialStarted(
+    event: SubscriptionTrialStartedEvent,
+  ): Promise<void> {
     await this.dispatch(event.tenantId, SUBSCRIPTION_EVENT.TRIAL_STARTED, {
       tenantId: event.tenantId,
     });
   }
 
   @OnEvent(SUBSCRIPTION_EVENT.CANCELLED)
-  async onSubscriptionCancelled(event: SubscriptionCancelledEvent): Promise<void> {
+  async onSubscriptionCancelled(
+    event: SubscriptionCancelledEvent,
+  ): Promise<void> {
     await this.dispatch(event.tenantId, SUBSCRIPTION_EVENT.CANCELLED, {
       tenantId: event.tenantId,
     });
   }
 
   @OnEvent(SUBSCRIPTION_EVENT.PLAN_CHANGED)
-  async onSubscriptionPlanChanged(event: SubscriptionPlanChangedEvent): Promise<void> {
+  async onSubscriptionPlanChanged(
+    event: SubscriptionPlanChangedEvent,
+  ): Promise<void> {
     await this.dispatch(event.tenantId, SUBSCRIPTION_EVENT.PLAN_CHANGED, {
       tenantId: event.tenantId,
     });
   }
 
   @OnEvent(SUBSCRIPTION_EVENT.REACTIVATED)
-  async onSubscriptionReactivated(event: SubscriptionReactivatedEvent): Promise<void> {
+  async onSubscriptionReactivated(
+    event: SubscriptionReactivatedEvent,
+  ): Promise<void> {
     await this.dispatch(event.tenantId, SUBSCRIPTION_EVENT.REACTIVATED, {
       tenantId: event.tenantId,
     });
@@ -264,26 +374,59 @@ export class NotificationEventListener {
 
   @OnEvent(HANDOVER_EVENT.REQUESTED)
   async onHandoverRequested(event: HandoverRequestedEvent): Promise<void> {
-    await this.dispatch(event.tenantId, HANDOVER_EVENT.REQUESTED, { tenantId: event.tenantId });
+    await this.dispatch(event.tenantId, HANDOVER_EVENT.REQUESTED, {
+      tenantId: event.tenantId,
+    });
   }
 
   @OnEvent(HANDOVER_EVENT.ASSIGNED)
   async onHandoverAssigned(event: HandoverAssignedEvent): Promise<void> {
-    await this.dispatch(event.tenantId, HANDOVER_EVENT.ASSIGNED, { userId: event.assignedToUserId });
+    await this.dispatch(event.tenantId, HANDOVER_EVENT.ASSIGNED, {
+      userId: event.assignedToUserId,
+    });
   }
 
   @OnEvent(HANDOVER_EVENT.TRANSFERRED)
   async onHandoverTransferred(event: HandoverTransferredEvent): Promise<void> {
-    await this.dispatch(event.tenantId, HANDOVER_EVENT.TRANSFERRED, { userId: event.toUserId });
+    await this.dispatch(event.tenantId, HANDOVER_EVENT.TRANSFERRED, {
+      userId: event.toUserId,
+    });
   }
 
   @OnEvent(HANDOVER_EVENT.CUSTOMER_REPLIED)
-  async onHandoverCustomerReplied(event: HandoverCustomerRepliedEvent): Promise<void> {
+  async onHandoverCustomerReplied(
+    event: HandoverCustomerRepliedEvent,
+  ): Promise<void> {
     if (!event.assignedToUserId) return; // nobody to notify — still Waiting/unassigned
-    await this.dispatch(event.tenantId, HANDOVER_EVENT.CUSTOMER_REPLIED, { userId: event.assignedToUserId });
+    await this.dispatch(event.tenantId, HANDOVER_EVENT.CUSTOMER_REPLIED, {
+      userId: event.assignedToUserId,
+    });
   }
 
   // ─────────────────────────── Core dispatch ─────────────────────────────── //
+
+  /**
+   * Cancels every still-pending "N minutes before the appointment" row of an
+   * appointment: it was cancelled, completed, marked no-show, or moved. Only
+   * those rows: a message that is meant to follow the event (a post-visit
+   * follow-up scheduled when the visit completed) is left alone. Dispatch also
+   * re-checks the appointment at send time, so a row this misses is still safe.
+   */
+  private async cancelBeforeRows(
+    tenantId: string,
+    appointmentId: string,
+  ): Promise<void> {
+    try {
+      await this.scheduler.cancelRuleRows(
+        tenantId,
+        beforeRowsPattern(appointmentId),
+      );
+    } catch (err) {
+      this.logger.error(
+        `Failed to cancel pending rule messages for appointment ${appointmentId}: ${(err as Error)?.message}`,
+      );
+    }
+  }
 
   /**
    * Finds all active rules for the given trigger event and enqueues a
@@ -292,6 +435,9 @@ export class NotificationEventListener {
    * @param tenantId   - The clinic whose rules to evaluate.
    * @param trigger    - The event name string (e.g. 'appointment.created').
    * @param context    - Recipient / appointment context for the notification.
+   * @param opts       - `onlyBefore` limits to "before the appointment" rules (used
+   *                     when an appointment moves); `discriminator` tells apart
+   *                     repeats of an event that is legitimately repeatable.
    */
   private async dispatch(
     tenantId: string,
@@ -303,6 +449,7 @@ export class NotificationEventListener {
       userId?: string;
     },
     extraVariables?: Record<string, unknown>,
+    opts: { onlyBefore?: boolean; discriminator?: number } = {},
   ): Promise<void> {
     let activeRules;
     try {
@@ -316,30 +463,63 @@ export class NotificationEventListener {
 
     for (const rule of activeRules) {
       if (!rule.template) continue; // rule has no template — cannot dispatch
-
-      let scheduledAtDate: Date;
-      if (rule.anchor === 'BEFORE_APPOINTMENT_START') {
-        const anchor = await this.resolveBeforeAppointmentAnchor(
-          tenantId,
-          context.appointmentId,
-          rule.delay_minutes ?? 0,
-        );
-        if (!anchor) continue; // no appointment to anchor to, or already past
-        scheduledAtDate = anchor;
-      } else {
-        // AFTER_EVENT — byte-identical to the pre-T016 behaviour.
-        scheduledAtDate = new Date(Date.now() + (rule.delay_minutes ?? 0) * 60_000);
-      }
-      const scheduledAt = scheduledAtDate.toISOString();
-
-      const recipientType = context.userId
-        ? RECIPIENT_TYPE.USER
-        : context.customerId
-          ? RECIPIENT_TYPE.CUSTOMER
-          : RECIPIENT_TYPE.TENANT;
-      const recipientId = context.userId ?? context.customerId ?? context.tenantId ?? tenantId;
+      if (opts.onlyBefore && rule.anchor !== 'BEFORE_APPOINTMENT_START')
+        continue;
 
       try {
+        let scheduledAtDate: Date;
+        let startAt: Date | undefined;
+        if (rule.anchor === 'BEFORE_APPOINTMENT_START') {
+          const resolved = await this.resolveBeforeAppointmentAnchor(
+            tenantId,
+            context.appointmentId,
+            rule.delay_minutes ?? 0,
+          );
+          if (!resolved) continue; // no appointment to anchor to, or already past
+          scheduledAtDate = resolved.anchor;
+          startAt = resolved.startAt;
+        } else {
+          // AFTER_EVENT — byte-identical to the pre-T016 behaviour.
+          scheduledAtDate = new Date(
+            Date.now() + (rule.delay_minutes ?? 0) * 60_000,
+          );
+        }
+
+        // Quiet hours: a ready-made rule with a send window never wakes a patient.
+        const shifted = await this.applySendWindow(
+          tenantId,
+          rule,
+          scheduledAtDate,
+          startAt,
+        );
+        if (!shifted) {
+          this.logger.log(
+            `Rule ${rule.id} skipped for ${trigger}: no allowed send time before the appointment`,
+          );
+          continue;
+        }
+        scheduledAtDate = shifted;
+        const scheduledAt = scheduledAtDate.toISOString();
+
+        const recipientType = context.userId
+          ? RECIPIENT_TYPE.USER
+          : context.customerId
+            ? RECIPIENT_TYPE.CUSTOMER
+            : RECIPIENT_TYPE.TENANT;
+        const recipientId =
+          context.userId ?? context.customerId ?? context.tenantId ?? tenantId;
+
+        // Deterministic key: the same rule never schedules the same logical
+        // message twice, however often the event is delivered.
+        const sourceRef = context.appointmentId
+          ? buildRuleSourceRef({
+              ruleId: rule.id,
+              kind: startAt ? 'before' : kindOfTrigger(trigger),
+              appointmentId: context.appointmentId,
+              startEpoch: startAt ? startAt.getTime() : opts.discriminator,
+            })
+          : undefined;
+
         await this.scheduler.schedule(
           tenantId,
           {
@@ -349,21 +529,51 @@ export class NotificationEventListener {
             recipientId,
             scheduledAt,
           },
-          undefined,
+          sourceRef,
           extraVariables,
+          rule.id,
         );
+        await this.library?.recordRun(rule.id);
       } catch (err) {
         // Log but continue — a failure for one rule must not suppress others.
+        const message = (err as Error)?.message ?? 'schedule failed';
         this.logger.error(
-          `Failed to schedule notification for rule ${rule.id} (trigger: ${trigger}): ${(err as Error)?.message}`,
+          `Failed to schedule notification for rule ${rule.id} (trigger: ${trigger}): ${message}`,
         );
+        await this.library?.recordRun(rule.id, message);
       }
     }
   }
 
   /**
+   * The rule's send window applied to a planned time, in the clinic's timezone.
+   * Returns the time unchanged for a rule without a window (every hand-made rule),
+   * the shifted time otherwise, or `null` when nothing valid remains.
+   */
+  private async applySendWindow(
+    tenantId: string,
+    rule: {
+      rule_key?: string | null;
+      conditions?: Record<string, unknown> | null;
+    },
+    at: Date,
+    appointmentStart?: Date,
+  ): Promise<Date | null> {
+    const def = findRuleDef(rule.rule_key);
+    if (!def || !def.conditions.includes('sendWindow') || !this.library)
+      return at;
+    const { sendWindow } = normalizeConditions(def, rule.conditions);
+    if (!sendWindow) return at;
+    const tz = await this.library.timezoneOf(tenantId);
+    return shiftIntoWindow(at, tz, sendWindow, {
+      notAfter: appointmentStart,
+      earliest: new Date(),
+    });
+  }
+
+  /**
    * T017 (S3) — `scheduled_at` for a `BEFORE_APPOINTMENT_START` rule:
-   * `appointment.start_at − leadMinutes`. `start_at` is a `timestamptz` — an
+   * `appointment.start_at - leadMinutes`. `start_at` is a `timestamptz` — an
    * absolute instant — so subtracting a fixed duration from it is already
    * timezone-correct; there is nothing to convert. What matters is using
    * the appointment's OWN `start_at` (captured at booking time) rather than
@@ -377,7 +587,7 @@ export class NotificationEventListener {
     tenantId: string,
     appointmentId: string | undefined,
     leadMinutes: number,
-  ): Promise<Date | null> {
+  ): Promise<{ anchor: Date; startAt: Date } | null> {
     if (!appointmentId) return null;
     const appointment = await this.appointments.findOne({
       where: { id: appointmentId, tenant: { id: tenantId } },
@@ -385,7 +595,11 @@ export class NotificationEventListener {
     });
     if (!appointment) return null;
 
-    const anchor = new Date(appointment.start_at.getTime() - leadMinutes * 60_000);
-    return anchor.getTime() > Date.now() ? anchor : null;
+    const anchor = new Date(
+      appointment.start_at.getTime() - leadMinutes * 60_000,
+    );
+    return anchor.getTime() > Date.now()
+      ? { anchor, startAt: appointment.start_at }
+      : null;
   }
 }

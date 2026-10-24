@@ -811,6 +811,119 @@ describe('AppointmentsService', () => {
     });
   });
 
+  describe('setFollowUp (rule 4 date)', () => {
+    const inDays = (n: number) =>
+      new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
+
+    const load = (
+      status: AppointmentStatus,
+      over: Record<string, unknown> = {},
+    ) =>
+      repo(Appointment).findOne.mockResolvedValueOnce({
+        id: 'appt-1',
+        tenant: { id: TENANT },
+        status,
+        branch: { id: 'b1', timezone: 'UTC' },
+        staff: { id: 's1' },
+        start_at: new Date('2026-08-01T10:00:00Z'),
+        ...over,
+      });
+
+    it('stores the date, who set it and when — scoped to the request tenant', async () => {
+      load(AppointmentStatus.COMPLETED);
+      const due = inDays(30);
+      const out = await service.setFollowUp(TENANT, USER, 'appt-1', due);
+
+      expect(repo(Appointment).update).toHaveBeenCalledWith(
+        { id: 'appt-1', tenant: { id: TENANT } },
+        expect.objectContaining({
+          follow_up_due_on: due,
+          follow_up_set_by: { id: USER },
+          follow_up_set_at: expect.any(Date),
+        }),
+      );
+      expect(out).toMatchObject({ id: 'appt-1', followUpDueOn: due });
+    });
+
+    it('audits the date change with the previous value, and nothing else', async () => {
+      load(AppointmentStatus.COMPLETED, { follow_up_due_on: inDays(10) });
+      const due = inDays(40);
+      await service.setFollowUp(TENANT, USER, 'appt-1', due);
+      expect(appointmentAudit.record).toHaveBeenCalledWith(
+        'appointment.follow_up_set',
+        TENANT,
+        'appt-1',
+        expect.objectContaining({ followUpDueOn: due }),
+        expect.objectContaining({
+          actorUserId: USER,
+          before: { followUpDueOn: inDays(10) },
+        }),
+      );
+    });
+
+    it('clears the date, and who/when with it', async () => {
+      load(AppointmentStatus.COMPLETED, { follow_up_due_on: inDays(10) });
+      const out = await service.setFollowUp(TENANT, USER, 'appt-1', null);
+      expect(repo(Appointment).update).toHaveBeenCalledWith(expect.anything(), {
+        follow_up_due_on: null,
+        follow_up_set_by: null,
+        follow_up_set_at: null,
+      });
+      expect(out.followUpDueOn).toBeNull();
+    });
+
+    it.each([
+      AppointmentStatus.CONFIRMED,
+      AppointmentStatus.PENDING_PAYMENT,
+      AppointmentStatus.CANCELLED,
+      AppointmentStatus.NO_SHOW,
+    ])(
+      'refuses a %s appointment (409) — only a completed visit can carry one',
+      async (status) => {
+        load(status);
+        await expect(
+          service.setFollowUp(TENANT, USER, 'appt-1', inDays(5)),
+        ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+        expect(repo(Appointment).update).not.toHaveBeenCalled();
+        expect(appointmentAudit.record).not.toHaveBeenCalled();
+      },
+    );
+
+    it('asks the own-staff gate first, so a confined provider cannot reach another provider’s patient', async () => {
+      load(AppointmentStatus.COMPLETED);
+      staffScope.assertMayDriveAppointment.mockRejectedValueOnce(
+        Object.assign(new Error('Appointment not found'), {
+          code: ErrorCode.NOT_FOUND,
+        }),
+      );
+      await expect(
+        service.setFollowUp(TENANT, USER, 'appt-1', inDays(5)),
+      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      expect(staffScope.assertMayDriveAppointment).toHaveBeenCalledWith(
+        TENANT,
+        's1',
+      );
+      expect(repo(Appointment).update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a past, impossible or far-future date (400) before writing', async () => {
+      for (const bad of [inDays(-3), '2026-02-31', inDays(5000)]) {
+        load(AppointmentStatus.COMPLETED);
+        await expect(
+          service.setFollowUp(TENANT, USER, 'appt-1', bad),
+        ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+      }
+      expect(repo(Appointment).update).not.toHaveBeenCalled();
+    });
+
+    it('a missing appointment is a 404', async () => {
+      repo(Appointment).findOne.mockResolvedValueOnce(null);
+      await expect(
+        service.setFollowUp(TENANT, USER, 'nope', inDays(5)),
+      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    });
+  });
+
   describe('applyPaymentOutcome (verified-payment bridge)', () => {
     const booked = () => ({
       id: 'appt-1',
@@ -865,12 +978,21 @@ describe('AppointmentsService', () => {
       expect(repo(Appointment).save).not.toHaveBeenCalled();
     });
 
-    it('does NOT resurrect a CANCELLED booking on paid — payment axis only', async () => {
+    it('D-2: a late payment on a CANCELLED booking neither revives it NOR marks it paid — it reports booking_closed so a person is told', async () => {
       const appt: any = { ...booked(), status: AppointmentStatus.CANCELLED };
       repo(Appointment).findOne.mockResolvedValueOnce(appt);
-      await service.applyPaymentOutcome(TENANT, 'appt-1', 'paid');
+      const res = await service.applyPaymentOutcome(TENANT, 'appt-1', 'paid');
+      expect(res).toBe('booking_closed');
       expect(appt.status).toBe(AppointmentStatus.CANCELLED);
-      expect(appt.payment_status).toBe(AppointmentPaymentStatus.PAID);
+      expect(appt.payment_status).toBe(AppointmentPaymentStatus.UNPAID);
+      expect(repo(Appointment).save).not.toHaveBeenCalled();
+    });
+
+    it('a normal paid outcome still reports applied', async () => {
+      repo(Appointment).findOne.mockResolvedValueOnce(booked());
+      expect(await service.applyPaymentOutcome(TENANT, 'appt-1', 'paid')).toBe(
+        'applied',
+      );
     });
 
     it('reflects a refund on the payment axis without touching scheduling', async () => {
@@ -885,6 +1007,95 @@ describe('AppointmentsService', () => {
       expect(appt.payment_status).toBe(
         AppointmentPaymentStatus.PARTIALLY_REFUNDED,
       );
+    });
+  });
+
+  describe('expireUnpaidBookings (decision D-2)', () => {
+    const pending = (over: Record<string, unknown> = {}) => ({
+      id: 'appt-1',
+      status: AppointmentStatus.PENDING_PAYMENT,
+      payment_status: AppointmentPaymentStatus.UNPAID,
+      customer: { id: 'cust-1' },
+      staff: { id: 'staff-1' },
+      branch: { id: 'b1' },
+      ...over,
+    });
+    const found = () =>
+      dataSource.query.mockResolvedValueOnce([
+        { id: 'appt-1', tenant_id: TENANT },
+      ]);
+    const emitted = () => (service as any).emitter.emit as jest.Mock;
+
+    it('does nothing at all when the TTL is 0 (switched off)', async () => {
+      const res = await service.expireUnpaidBookings(0);
+      expect(res).toEqual({ scanned: 0, expired: 0, skipped: 0 });
+      expect(dataSource.query).not.toHaveBeenCalled();
+    });
+
+    it('asks only for unpaid, unconfirmed bookings older than the TTL with no captured or in-flight payment', async () => {
+      dataSource.query.mockResolvedValueOnce([]);
+      await service.expireUnpaidBookings(15);
+      const [sql, params] = dataSource.query.mock.calls[0];
+      expect(sql).toContain("a.status = 'PENDING_PAYMENT'");
+      expect(sql).toContain('NOT EXISTS');
+      expect(sql).toContain("'PAID'");
+      expect(sql).toContain("p.status = 'PENDING'");
+      expect(params[0]).toBe(15);
+    });
+
+    it('cancels a stale unpaid booking, records who/why (no actor), and tells the rest of the system', async () => {
+      found();
+      repo(Appointment).findOne.mockResolvedValueOnce(pending());
+      manager.query.mockResolvedValueOnce([]); // nothing captured under the lock
+
+      const res = await service.expireUnpaidBookings(15);
+
+      expect(res).toMatchObject({ scanned: 1, expired: 1, skipped: 0 });
+      const saved = repo(Appointment).save.mock.calls[0][0];
+      expect(saved.status).toBe(AppointmentStatus.CANCELLED);
+      expect(saved.payment_status).toBe(AppointmentPaymentStatus.UNPAID); // no refund, no payment claim
+      expect(
+        repo(AppointmentStatusLog).create.mock.calls[0][0].triggered_by ?? null,
+      ).toBeNull();
+      expect(emitted()).toHaveBeenCalledWith(
+        'appointment.cancelled',
+        expect.objectContaining({ reason: 'Not paid within 15 minutes' }),
+      );
+    });
+
+    it('leaves it alone when money was captured (or an attempt opened) between the scan and the lock', async () => {
+      found();
+      repo(Appointment).findOne.mockResolvedValueOnce(pending());
+      manager.query.mockResolvedValueOnce([{ '?column?': 1 }]);
+
+      const res = await service.expireUnpaidBookings(15);
+
+      expect(res).toMatchObject({ expired: 0, skipped: 1 });
+      expect(repo(Appointment).save).not.toHaveBeenCalled();
+      expect(emitted()).not.toHaveBeenCalled();
+    });
+
+    it('leaves it alone when it was confirmed meanwhile', async () => {
+      found();
+      repo(Appointment).findOne.mockResolvedValueOnce(
+        pending({ status: AppointmentStatus.CONFIRMED }),
+      );
+      const res = await service.expireUnpaidBookings(15);
+      expect(res).toMatchObject({ expired: 0, skipped: 1 });
+      expect(repo(Appointment).save).not.toHaveBeenCalled();
+    });
+
+    it('one booking failing does not stop the rest', async () => {
+      dataSource.query.mockResolvedValueOnce([
+        { id: 'a1', tenant_id: TENANT },
+        { id: 'a2', tenant_id: TENANT },
+      ]);
+      repo(Appointment)
+        .findOne.mockRejectedValueOnce(new Error('db blip'))
+        .mockResolvedValueOnce(pending({ id: 'a2' }));
+      manager.query.mockResolvedValueOnce([]);
+      const res = await service.expireUnpaidBookings(15);
+      expect(res).toMatchObject({ scanned: 2, expired: 1, skipped: 1 });
     });
   });
 

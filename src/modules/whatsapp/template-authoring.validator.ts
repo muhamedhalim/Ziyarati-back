@@ -83,6 +83,9 @@ export type TemplateIssueCode =
   | 'BUTTON_PHONE_REQUIRED'
   | 'BUTTON_URL_INVALID'
   | 'BUTTON_QUICK_REPLY_ORDER'
+  | 'BUTTON_URL_VARIABLE_POSITION'
+  | 'BUTTON_URL_EXAMPLE_REQUIRED'
+  | 'BUTTON_URL_MULTIPLE_DYNAMIC'
   | 'AUTHENTICATION_UNSUPPORTED';
 
 export interface TemplateAuthoringComponent {
@@ -95,6 +98,8 @@ export interface TemplateAuthoringComponent {
     text?: string;
     url?: string;
     phoneNumber?: string;
+    /** Full sample link for a URL button that ends in `{{1}}`. Required by Meta. */
+    example?: string;
   }>;
 }
 
@@ -128,6 +133,8 @@ export const TEMPLATE_LIMITS = {
  * (two variables ⇒ at least seven words), used only to raise a WARNING.
  */
 export const DENSITY_WORDS_PER_VARIABLE = 3;
+
+import { isDynamicUrl, isFillableDynamicUrl } from './template-variables.util';
 
 const TOKEN = /\{\{([^{}]*)\}\}/g;
 
@@ -229,7 +236,8 @@ export function validateTemplateAuthoring(
       validateButtons(c, push);
       continue;
     }
-    if (c.type !== 'HEADER' && c.type !== 'BODY' && c.type !== 'FOOTER') continue;
+    if (c.type !== 'HEADER' && c.type !== 'BODY' && c.type !== 'FOOTER')
+      continue;
 
     const field: TemplateIssueField =
       c.type === 'HEADER' ? 'header' : c.type === 'BODY' ? 'body' : 'footer';
@@ -272,7 +280,8 @@ export function validateTemplateAuthoring(
         field,
         message:
           'A curly brace is not part of a complete {{number}} placeholder.',
-        suggestion: 'Use {{1}}, {{2}}… with two braces on each side, or remove the stray brace.',
+        suggestion:
+          'Use {{1}}, {{2}}… with two braces on each side, or remove the stray brace.',
       });
     }
     for (const name of parsed.hasNonNumeric) {
@@ -311,7 +320,8 @@ export function validateTemplateAuthoring(
           field,
           message:
             'Placeholders in the header are not supported yet — messages could not be sent with them.',
-          suggestion: 'Keep the header as plain text and put the variable in the body.',
+          suggestion:
+            'Keep the header as plain text and put the variable in the body.',
         });
       }
       out.variables.header = parsed.distinctNumeric;
@@ -333,7 +343,10 @@ export function validateTemplateAuthoring(
           .map((v) => `{{${v}}}`)
           .join(', ')}).`,
         suggestion: `Renumber them as ${vars.map((_, i) => `{{${i + 1}}}`).join(', ')} in the order they appear.`,
-        params: { found: vars.join(','), expected: vars.map((_, i) => i + 1).join(',') },
+        params: {
+          found: vars.join(','),
+          expected: vars.map((_, i) => i + 1).join(','),
+        },
       });
     }
 
@@ -344,7 +357,8 @@ export function validateTemplateAuthoring(
           severity: 'error',
           field,
           message: 'The message cannot start with a placeholder.',
-          suggestion: 'Add a greeting or a few words before the first placeholder, e.g. "Hello {{1}}".',
+          suggestion:
+            'Add a greeting or a few words before the first placeholder, e.g. "Hello {{1}}".',
         });
       }
       if (/\{\{[^{}]*\}\}$/.test(text)) {
@@ -353,7 +367,8 @@ export function validateTemplateAuthoring(
           severity: 'error',
           field,
           message: 'The message cannot end with a placeholder.',
-          suggestion: 'Finish with a closing sentence or punctuation after the last placeholder.',
+          suggestion:
+            'Finish with a closing sentence or punctuation after the last placeholder.',
         });
       }
       if (/\}\}\s*\{\{/.test(text)) {
@@ -361,8 +376,10 @@ export function validateTemplateAuthoring(
           code: 'VARIABLES_ADJACENT',
           severity: 'error',
           field,
-          message: 'Two placeholders sit next to each other with only whitespace between them.',
-          suggestion: 'Put words between them, or merge the two values into one placeholder.',
+          message:
+            'Two placeholders sit next to each other with only whitespace between them.',
+          suggestion:
+            'Put words between them, or merge the two values into one placeholder.',
         });
       }
     }
@@ -411,7 +428,8 @@ export function validateTemplateAuthoring(
               severity: 'error',
               field: 'examples',
               message: `The sample for {{${i + 1}}} contains braces.`,
-              suggestion: 'A sample is the actual value, e.g. "Sara", not another placeholder.',
+              suggestion:
+                'A sample is the actual value, e.g. "Sara", not another placeholder.',
               params: { index: i + 1 },
             });
           }
@@ -440,6 +458,7 @@ function validateButtons(
     return;
   }
   let sawNonQuick = false;
+  let dynamicUrls = 0;
   buttons.forEach((b, i) => {
     const text = (b.text ?? '').trim();
     if (!text || text.length > TEMPLATE_LIMITS.buttonText) {
@@ -462,7 +481,7 @@ function validateButtons(
           message: `Button ${i + 1} is a link button but has no URL.`,
           params: { index: i + 1 },
         });
-      } else if (!/^https?:\/\//i.test(url)) {
+      } else if (!/^https:\/\//i.test(url)) {
         push({
           code: 'BUTTON_URL_INVALID',
           severity: 'error',
@@ -470,6 +489,39 @@ function validateButtons(
           message: `Button ${i + 1}'s URL must start with https://.`,
           params: { index: i + 1 },
         });
+      } else if (isDynamicUrl(url)) {
+        // Meta allows ONE variable per button URL, at the very end; the send
+        // path fills exactly that. Anything else could be authored but never sent.
+        dynamicUrls += 1;
+        if (!isFillableDynamicUrl(url)) {
+          push({
+            code: 'BUTTON_URL_VARIABLE_POSITION',
+            severity: 'error',
+            field: 'buttons',
+            message: `Button ${i + 1}'s link may contain only one {{1}}, at the very end.`,
+            suggestion: 'For example https://example.com/path/{{1}}.',
+            params: { index: i + 1 },
+          });
+        } else if (!/^https:\/\/[^{}\s]+$/i.test((b.example ?? '').trim())) {
+          push({
+            code: 'BUTTON_URL_EXAMPLE_REQUIRED',
+            severity: 'error',
+            field: 'buttons',
+            message: `Button ${i + 1}'s link has a variable, so Meta needs a complete sample link.`,
+            suggestion:
+              'Provide a full https:// sample, e.g. https://example.com/path/abc123.',
+            params: { index: i + 1 },
+          });
+        }
+        if (dynamicUrls > 1) {
+          push({
+            code: 'BUTTON_URL_MULTIPLE_DYNAMIC',
+            severity: 'error',
+            field: 'buttons',
+            message: 'Only one link button can carry a variable.',
+            params: { index: i + 1 },
+          });
+        }
       }
     } else if (b.type === 'PHONE_NUMBER') {
       sawNonQuick = true;

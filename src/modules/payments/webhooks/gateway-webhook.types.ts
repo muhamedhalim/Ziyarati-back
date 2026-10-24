@@ -40,6 +40,8 @@ export interface GatewayWebhookEvent {
   refundedMinorUnits?: number;
   /** Safe, short reason stored on a FAILED payment. */
   failureReason?: string;
+  /** The merchant the gateway says the charge belongs to (FIN-P4: checked against where we routed it). */
+  merchantId?: string;
   /** Adapter-parsed fee facts; when absent no gateway fee is recorded. */
   fees?: GatewayFeeInfo;
   /**

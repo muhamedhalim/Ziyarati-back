@@ -59,14 +59,37 @@ export class TransactionService {
     if (query.type) where.type = query.type;
     if (query.status) where.status = query.status;
 
-    const [data, total] = await this.transactions.findAndCount({
+    const [rows, total] = await this.transactions.findAndCount({
       where,
       relations: { payment: true },
       order: { created_at: 'DESC' },
       skip: (query.page - 1) * query.limit,
       take: query.limit,
     });
-    return { data, total, page: query.page, limit: query.limit };
+    return {
+      data: rows.map((r) => this.forClient(r)),
+      total,
+      page: query.page,
+      limit: query.limit,
+    };
+  }
+
+  /**
+   * FIN-X7 — the gateway's raw response and the full payment row stay internal
+   * (support / reconciliation read them from the database). The clinic gets the
+   * log entry and the payment's id and currency.
+   */
+  private forClient(row: Transaction): Transaction {
+    const { raw_response: _raw, ...rest } = row;
+    const p = row.payment;
+    return {
+      ...rest,
+      payment: p ? ({ id: p.id, currency: p.currency } as Payment) : p,
+    } as Transaction;
+  }
+
+  async findOneForClient(tenantId: string, id: string): Promise<Transaction> {
+    return this.forClient(await this.findOne(tenantId, id));
   }
 
   async findOne(tenantId: string, id: string): Promise<Transaction> {

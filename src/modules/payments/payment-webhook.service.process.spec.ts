@@ -183,6 +183,37 @@ describe('PaymentWebhookService.process (provider-neutral)', () => {
       expect(payments.findOne).toHaveBeenCalledTimes(1);
     });
 
+    describe('FIN-P4 — the charge must belong to the merchant it was routed to', () => {
+      const run = async (reported: string | undefined, routedTo = 'merchant_CLINIC') => {
+        payments.findOne.mockResolvedValueOnce(owner({ gateway_payment_id: 'chg_1' }));
+        const payment = locked({ gateway_payment_id: 'chg_1', sub_merchant_id: routedTo });
+        paymentRepo().findOne.mockResolvedValueOnce(payment);
+        await service.process(event({ merchantId: reported }));
+        return payment;
+      };
+
+      it('a capture echoing a DIFFERENT merchant is not booked', async () => {
+        const p = await run('merchant_OTHER');
+        expect(p.status).toBe(PaymentStatus.PENDING);
+        expect(financials.applyOnPaid).not.toHaveBeenCalled();
+      });
+
+      it('a capture that names no merchant (when strict checking reports one) is not booked either', async () => {
+        const p = await run('');
+        expect(p.status).toBe(PaymentStatus.PENDING);
+      });
+
+      it('the clinic merchant it was routed to is booked', async () => {
+        const p = await run('merchant_CLINIC');
+        expect(p.status).toBe(PaymentStatus.PAID);
+      });
+
+      it('with strict checking off (nothing reported) the capture is booked as before', async () => {
+        const p = await run(undefined);
+        expect(p.status).toBe(PaymentStatus.PAID);
+      });
+    });
+
     it('REFUSES to book PAID when the captured amount mismatches (anti-tampering)', async () => {
       payments.findOne.mockResolvedValueOnce(
         owner({ gateway_payment_id: 'chg_1' }),

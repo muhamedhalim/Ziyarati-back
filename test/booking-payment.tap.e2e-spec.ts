@@ -34,6 +34,7 @@ import {
 } from './utils/whatsapp-e2e-app';
 import { createLimitedActor } from './utils/limited-actor';
 import { TapSandbox, settle } from './utils/tap-e2e';
+import { ReconciliationExceptionService } from '../src/modules/payments/reconciliation/reconciliation-exception.service';
 import {
   TAP_E2E_APP_URL,
   TAP_E2E_PLATFORM_ID,
@@ -267,6 +268,7 @@ describe('Booking payments over Tap Platform (Phase 4) — real Postgres + Redis
       get(BillingUpgradeEntitlementListener),
       get(ResourceEntitlementListener),
       get(PaymentLinkService),
+      get(ReconciliationExceptionService),
     );
     return outcome.process({ tenantId, paymentId, outcome: 'paid' });
   }
@@ -1190,6 +1192,208 @@ describe('Booking payments over Tap Platform (Phase 4) — real Postgres + Redis
       expect(sent.amount).toBe(250);
       expect(sent.currency).toBe('SAR');
       expect(sent.merchant.id).toBe('merchant_clinicAAAA01');
+    });
+
+    describe('Phase 4 — routing record, currency, honest cancellation', () => {
+      let c: Clinic;
+      beforeAll(async () => {
+        c = await makeClinic('p4');
+        await approveClinic(c, 'merchant_clinicP4P4P4');
+        await db().query(
+          `UPDATE tenant_settings SET currency = 'USD' WHERE tenant_id = $1`,
+          [c.tenantId],
+        );
+      });
+
+      const payIt = async () => {
+        const { appt, token } = await bookWithLink(c);
+        await http()
+          .post(`${API}/public/payments/links/${token}/checkout`)
+          .send({})
+          .expect(200);
+        const charge = tap.lastCharge();
+        tap.capture(charge.id);
+        await tap.deliver(e2e.app, charge).expect(200);
+        await settle();
+        const payment = await db()
+          .getRepository(Payment)
+          .findOneOrFail({ where: { gateway_payment_id: charge.id } });
+        return { appt, payment };
+      };
+
+      it('P7. a booking is charged in the clinic currency, not a hard-coded SAR', async () => {
+        const { appt } = await bookWithLink(c);
+        expect(appt.currency).toBe('USD');
+        const { payment } = await payIt();
+        expect(payment.currency).toBe('USD');
+        expect(tap.chargeRequests.at(-1)!.currency).toBe('USD');
+      });
+
+      it('P4. the merchant the charge was routed to is recorded on the payment', async () => {
+        const { payment } = await payIt();
+        expect(payment.sub_merchant_id).toBe('merchant_clinicP4P4P4');
+      });
+
+      it('P1. a payment Tap settles straight to the clinic carries no invented platform fee', async () => {
+        const { payment } = await payIt();
+        expect(payment.settlement_mode).toBe('PROVIDER');
+        expect(Number(payment.platform_fee)).toBe(0);
+      });
+
+      it('P2. staff "cancel with refund" on an ONLINE-paid booking does not mark it REFUNDED — no money moved', async () => {
+        const { appt, payment } = await payIt();
+        await appointments().cancel(c.tenantId, c.owner.userId, appt.id, {
+          reason: 'e2e',
+          refundAmount: 250,
+        } as never);
+        await settle();
+        const after = await db().query(
+          `SELECT payment_status FROM appointments WHERE id = $1`,
+          [appt.id],
+        );
+        expect(after[0].payment_status).toBe('PAID');
+        const p = await db().getRepository(Payment).findOneOrFail({ where: { id: payment.id } });
+        expect(p.status).toBe('PAID');
+      });
+    });
+
+    describe('Decision D-2 — unpaid bookings expire; a late payment is flagged, never silently valid', () => {
+      let c: Clinic;
+      beforeAll(async () => {
+        c = await makeClinic('d2');
+        await approveClinic(c, 'merchant_clinicD2D2D2');
+      });
+
+      const age = async (apptId: string, minutes: number) =>
+        db().query(
+          `UPDATE appointments SET created_at = now() - ($2::int * interval '1 minute') WHERE id = $1`,
+          [apptId, minutes],
+        );
+      const ageAttempt = async (apptId: string, minutes: number) =>
+        db().query(
+          `UPDATE payments SET created_at = now() - ($2::int * interval '1 minute') WHERE "appointmentId" = $1`,
+          [apptId, minutes],
+        );
+      const status = async (apptId: string) =>
+        (
+          await db().query(
+            `SELECT status, payment_status FROM appointments WHERE id = $1`,
+            [apptId],
+          )
+        )[0];
+      const exceptionsFor = (chargeId: string) =>
+        db().query(
+          `SELECT kind, status, details FROM payment_reconciliation_exceptions WHERE provider_object_id = $1`,
+          [chargeId],
+        );
+
+      it('E1. a booking nobody opened a payment for is cancelled after 15 minutes — and not before', async () => {
+        const { appt, token } = await bookWithLink(c);
+        await age(appt.id, 10);
+        // (the sweep is platform-wide: leftovers of earlier runs may expire; only THIS booking is asserted)
+        await appointments().expireUnpaidBookings(15);
+        expect((await status(appt.id)).status).toBe('PENDING_PAYMENT');
+
+        await age(appt.id, 20);
+        await appointments().expireUnpaidBookings(15);
+        expect(await status(appt.id)).toEqual({
+          status: 'CANCELLED',
+          payment_status: 'UNPAID',
+        });
+        // its pay link now reads as closed
+        const view = await http().get(`${API}/public/payments/links/${token}`).expect(200);
+        expect(view.body.state).toBe('expired');
+      });
+
+      it('E2. a payer who opened the hosted page a few minutes ago is NOT cut off', async () => {
+        const { appt, token } = await bookWithLink(c);
+        await http().post(`${API}/public/payments/links/${token}/checkout`).send({}).expect(200);
+        await age(appt.id, 20); // the booking is old, the attempt is fresh
+        await appointments().expireUnpaidBookings(15);
+        expect((await status(appt.id)).status).toBe('PENDING_PAYMENT');
+      });
+
+      it('E3. a paid booking is never expired', async () => {
+        const { appt, token } = await bookWithLink(c);
+        await http().post(`${API}/public/payments/links/${token}/checkout`).send({}).expect(200);
+        const charge = tap.lastCharge();
+        tap.capture(charge.id);
+        await tap.deliver(e2e.app, charge).expect(200);
+        await settle();
+        await age(appt.id, 60);
+        await ageAttempt(appt.id, 60);
+        await appointments().expireUnpaidBookings(15);
+        expect((await status(appt.id)).status).toBe('CONFIRMED');
+      });
+
+      it('E4. a payment that arrives AFTER the cancellation is recorded as an exception: booking stays cancelled and unpaid, money is not ignored, nothing is refunded', async () => {
+        const { appt, token } = await bookWithLink(c);
+        await http().post(`${API}/public/payments/links/${token}/checkout`).send({}).expect(200);
+        const charge = tap.lastCharge();
+        await age(appt.id, 60);
+        await ageAttempt(appt.id, 60); // the attempt is stale too: nothing in flight
+        await appointments().expireUnpaidBookings(15);
+        expect((await status(appt.id)).status).toBe('CANCELLED');
+
+        // the payer completes the old hosted page anyway
+        tap.capture(charge.id);
+        await tap.deliver(e2e.app, charge).expect(200);
+        await settle();
+        const [p] = await db().query(
+          `SELECT id, status FROM payments WHERE gateway_payment_id = $1`,
+          [charge.id],
+        );
+        expect(p.status).toBe('PAID'); // the money really moved
+        await runOutcome(c.tenantId, p.id);
+        await runOutcome(c.tenantId, p.id); // redelivery: still one exception
+
+        expect(await status(appt.id)).toEqual({
+          status: 'CANCELLED',
+          payment_status: 'UNPAID',
+        });
+        const ex = await exceptionsFor(charge.id);
+        expect(ex).toHaveLength(1);
+        expect(ex[0]).toMatchObject({ kind: 'STATUS_MISMATCH', status: 'OPEN' });
+        expect(ex[0].details).toMatchObject({
+          reason: 'paid_on_cancelled_booking',
+          appointmentId: appt.id,
+        });
+        const refunds = await db().query(
+          `SELECT 1 FROM refunds WHERE "paymentId" = $1`,
+          [p.id],
+        );
+        expect(refunds).toHaveLength(0);
+      });
+
+      it('E5. expiry and payment racing: the booking ends CONFIRMED or CANCELLED+flagged — never cancelled-and-paid, never both', async () => {
+        const { appt, token } = await bookWithLink(c);
+        await http().post(`${API}/public/payments/links/${token}/checkout`).send({}).expect(200);
+        const charge = tap.lastCharge();
+        await age(appt.id, 60);
+        await ageAttempt(appt.id, 60);
+        tap.capture(charge.id);
+
+        await Promise.all([
+          appointments().expireUnpaidBookings(15),
+          tap.deliver(e2e.app, charge),
+        ]);
+        await settle();
+        const [p] = await db().query(
+          `SELECT id FROM payments WHERE gateway_payment_id = $1`,
+          [charge.id],
+        );
+        await runOutcome(c.tenantId, p.id);
+
+        const s = await status(appt.id);
+        const ex = await exceptionsFor(charge.id);
+        if (s.status === 'CONFIRMED') {
+          expect(s.payment_status).toBe('PAID');
+          expect(ex).toHaveLength(0);
+        } else {
+          expect(s).toEqual({ status: 'CANCELLED', payment_status: 'UNPAID' });
+          expect(ex).toHaveLength(1);
+        }
+      });
     });
 
     it('D2. TEST 16 — staff cannot under-charge a booking either: a differing amount or currency is a 422 and nothing reaches Tap', async () => {

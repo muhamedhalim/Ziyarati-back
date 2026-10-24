@@ -220,7 +220,9 @@ describe('WhatsappExecutionService', () => {
           opted_out_at: null,
         });
         await expect(
-          service.sendTemplateMessage(TENANT, 'tpl-1', { customerId: 'c1' } as any),
+          service.sendTemplateMessage(TENANT, 'tpl-1', {
+            customerId: 'c1',
+          } as any),
         ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
         expect(messaging.send).not.toHaveBeenCalled();
       });
@@ -231,8 +233,124 @@ describe('WhatsappExecutionService', () => {
           category: 'marketing',
         });
         await expect(
-          service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any),
+          service.sendTemplateMessage(TENANT, 'tpl-1', {
+            toWaId: '966500000000',
+          } as any),
         ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+      });
+
+      it('tags each consent refusal with a machine-readable reason, so a caller never reroutes it', async () => {
+        templates.getSendableTemplate.mockResolvedValue({
+          ...TEMPLATE,
+          category: 'MARKETING',
+        });
+        customers.findOne.mockResolvedValueOnce({
+          id: 'c1',
+          phone: '966500000000',
+          marketing_opt_in: false,
+          opted_out_at: null,
+        });
+        await expect(
+          service.sendTemplateMessage(TENANT, 'tpl-1', {
+            customerId: 'c1',
+          } as any),
+        ).rejects.toMatchObject({
+          publicContext: { reason: 'NO_MARKETING_CONSENT' },
+        });
+
+        customers.findOne.mockResolvedValueOnce({
+          id: 'c1',
+          phone: '966500000000',
+          marketing_opt_in: true,
+          opted_out_at: new Date('2026-01-01T00:00:00Z'),
+        });
+        await expect(
+          service.sendTemplateMessage(TENANT, 'tpl-1', {
+            customerId: 'c1',
+          } as any),
+        ).rejects.toMatchObject({ publicContext: { reason: 'OPTED_OUT' } });
+        expect(messaging.send).not.toHaveBeenCalled();
+      });
+
+      it('a send BY CONTACT is held to the linked patient’s opt-out', async () => {
+        contacts.findOne.mockResolvedValueOnce({
+          id: 'ct1',
+          wa_id: '966500000000',
+          customer: {
+            id: 'c1',
+            opted_out_at: new Date('2026-01-01T00:00:00Z'),
+            marketing_opt_in: true,
+          },
+        });
+        await expect(
+          service.sendTemplateMessage(TENANT, 'tpl-1', {
+            contactId: 'ct1',
+          } as any),
+        ).rejects.toMatchObject({ publicContext: { reason: 'OPTED_OUT' } });
+        expect(messaging.send).not.toHaveBeenCalled();
+      });
+
+      it('a MARKETING send by contact needs the linked patient’s consent, and a contact with no patient has none', async () => {
+        templates.getSendableTemplate.mockResolvedValue({
+          ...TEMPLATE,
+          category: 'MARKETING',
+        });
+
+        contacts.findOne.mockResolvedValueOnce({
+          id: 'ct1',
+          wa_id: '966500000000',
+          customer: { id: 'c1', opted_out_at: null, marketing_opt_in: false },
+        });
+        await expect(
+          service.sendTemplateMessage(TENANT, 'tpl-1', {
+            contactId: 'ct1',
+          } as any),
+        ).rejects.toMatchObject({
+          publicContext: { reason: 'NO_MARKETING_CONSENT' },
+        });
+
+        contacts.findOne.mockResolvedValueOnce({
+          id: 'ct2',
+          wa_id: '966500000001',
+          customer: null,
+        });
+        await expect(
+          service.sendTemplateMessage(TENANT, 'tpl-1', {
+            contactId: 'ct2',
+          } as any),
+        ).rejects.toMatchObject({
+          publicContext: { reason: 'NO_MARKETING_CONSENT' },
+        });
+        expect(messaging.send).not.toHaveBeenCalled();
+      });
+
+      it('a consenting linked patient may be messaged by contact', async () => {
+        templates.getSendableTemplate.mockResolvedValue({
+          ...TEMPLATE,
+          category: 'MARKETING',
+        });
+        contacts.findOne.mockResolvedValueOnce({
+          id: 'ct1',
+          wa_id: '966500000000',
+          customer: { id: 'c1', opted_out_at: null, marketing_opt_in: true },
+        });
+        const res = await service.sendTemplateMessage(TENANT, 'tpl-1', {
+          contactId: 'ct1',
+        } as any);
+        expect(res.status).toBe(WHATSAPP_DELIVERY_STATUS.SENT);
+      });
+
+      it('passes Meta’s numeric error code back so the caller can tell a permanent failure from a passing one', async () => {
+        messaging.send.mockResolvedValueOnce({
+          success: false,
+          error: 'not on WhatsApp',
+          errorCode: 131026,
+        });
+        const res = await service.sendTemplateMessage(TENANT, 'tpl-1', {
+          toWaId: '966500000000',
+        } as any);
+        expect(res.status).toBe(WHATSAPP_DELIVERY_STATUS.FAILED);
+        expect(res.errorCode).toBe(131026);
       });
 
       it('sends a MARKETING template to a consenting customer, and UTILITY to anyone', async () => {
@@ -242,12 +360,22 @@ describe('WhatsappExecutionService', () => {
           marketing_opt_in: true,
           opted_out_at: null,
         });
-        templates.getSendableTemplate.mockResolvedValue({ ...TEMPLATE, category: 'MARKETING' });
-        const marketing = await service.sendTemplateMessage(TENANT, 'tpl-1', { customerId: 'c1' } as any);
+        templates.getSendableTemplate.mockResolvedValue({
+          ...TEMPLATE,
+          category: 'MARKETING',
+        });
+        const marketing = await service.sendTemplateMessage(TENANT, 'tpl-1', {
+          customerId: 'c1',
+        } as any);
         expect(marketing.status).toBe(WHATSAPP_DELIVERY_STATUS.SENT);
 
-        templates.getSendableTemplate.mockResolvedValue({ ...TEMPLATE, category: 'UTILITY' });
-        const utility = await service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any);
+        templates.getSendableTemplate.mockResolvedValue({
+          ...TEMPLATE,
+          category: 'UTILITY',
+        });
+        const utility = await service.sendTemplateMessage(TENANT, 'tpl-1', {
+          toWaId: '966500000000',
+        } as any);
         expect(utility.status).toBe(WHATSAPP_DELIVERY_STATUS.SENT);
       });
     });
@@ -475,7 +603,11 @@ describe('WhatsappExecutionService', () => {
         await service.sendTemplateMessage(TENANT, 'tpl-2', {
           toWaId: '966500000000',
           // Built in the "wrong" order with an unrelated key.
-          variables: { '2': '2026-06-15 10:00', cancelUrl: 'https://x', '1': 'Sara' },
+          variables: {
+            '2': '2026-06-15 10:00',
+            cancelUrl: 'https://x',
+            '1': 'Sara',
+          },
         } as any);
 
         expect(messaging.send).toHaveBeenCalledWith(
@@ -486,13 +618,79 @@ describe('WhatsappExecutionService', () => {
         );
       });
 
-      it('asks the template service to check the template against the SENDER\'s WABA', async () => {
+      it("asks the template service to check the template against the SENDER's WABA", async () => {
         templates.getSendableTemplate.mockResolvedValueOnce(TEMPLATE_WITH_VARS);
         await service.sendTemplateMessage(TENANT, 'tpl-2', {
           toWaId: '966500000000',
           variables: { '1': 'Sara', '2': 'x' },
         } as any);
-        expect(templates.getSendableTemplate).toHaveBeenCalledWith(TENANT, 'tpl-2', 'waba-1');
+        expect(templates.getSendableTemplate).toHaveBeenCalledWith(
+          TENANT,
+          'tpl-2',
+          'waba-1',
+        );
+      });
+
+      describe('dynamic link button', () => {
+        const WITH_BUTTON = {
+          id: 'tpl-3',
+          name: 'appointment_confirmation_ar',
+          language: 'ar',
+          components: {
+            components: [
+              { type: 'BODY', text: 'Hi {{1}}, confirmed for {{2}}.' },
+              {
+                type: 'BUTTONS',
+                buttons: [
+                  { type: 'QUICK_REPLY', text: 'Stop' },
+                  {
+                    type: 'URL',
+                    text: 'Change',
+                    url: 'https://app.test/appointment-action/{{1}}',
+                  },
+                ],
+              },
+            ],
+          },
+        };
+
+        it('refuses a send that has no value for the link button — Meta is never called', async () => {
+          templates.getSendableTemplate.mockResolvedValueOnce(WITH_BUTTON);
+          await expect(
+            service.sendTemplateMessage(TENANT, 'tpl-3', {
+              toWaId: '966500000000',
+              variables: { '1': 'Sara', '2': 'Sunday' },
+            } as any),
+          ).rejects.toThrow(/button_1/);
+          expect(messaging.send).not.toHaveBeenCalled();
+        });
+
+        it('passes the link value to the provider addressed by the button real index', async () => {
+          templates.getSendableTemplate.mockResolvedValueOnce(WITH_BUTTON);
+          await service.sendTemplateMessage(TENANT, 'tpl-3', {
+            toWaId: '966500000000',
+            variables: { '1': 'Sara', '2': 'Sunday', button_1: 'tok-ABC' },
+          } as any);
+          expect(messaging.send).toHaveBeenCalledWith(
+            expect.objectContaining({
+              templateParameters: ['1', '2'],
+              buttonParameters: [{ index: 1, text: 'tok-ABC' }],
+            }),
+          );
+        });
+
+        it('does not run the identifier detector on the secret token', async () => {
+          templates.getSendableTemplate.mockResolvedValueOnce(WITH_BUTTON);
+          const res = await service.sendTemplateMessage(TENANT, 'tpl-3', {
+            toWaId: '966500000000',
+            variables: {
+              '1': 'Sara',
+              '2': 'Sunday',
+              button_1: 'aB1234567890cD',
+            },
+          } as any);
+          expect(res).toMatchObject({ status: WHATSAPP_DELIVERY_STATUS.SENT });
+        });
       });
 
       it('does not send when the template is not sendable (pending / rejected / paused)', async () => {
@@ -502,7 +700,9 @@ describe('WhatsappExecutionService', () => {
           }),
         );
         await expect(
-          service.sendTemplateMessage(TENANT, 'tpl-2', { toWaId: '966500000000' } as any),
+          service.sendTemplateMessage(TENANT, 'tpl-2', {
+            toWaId: '966500000000',
+          } as any),
         ).rejects.toThrow(/approved/);
         expect(messaging.send).not.toHaveBeenCalled();
       });
@@ -510,7 +710,11 @@ describe('WhatsappExecutionService', () => {
       it.each([132015, 132016, 132001])(
         'refreshes the template from Meta when Meta refuses with template-state error %s',
         async (errorCode) => {
-          messaging.send.mockResolvedValueOnce({ success: false, error: '400: paused', errorCode });
+          messaging.send.mockResolvedValueOnce({
+            success: false,
+            error: '400: paused',
+            errorCode,
+          });
 
           const res = await service.sendTemplateMessage(TENANT, 'tpl-1', {
             toWaId: '966500000000',
@@ -522,8 +726,14 @@ describe('WhatsappExecutionService', () => {
       );
 
       it('does NOT refresh on an unrelated provider failure (e.g. recipient not on WhatsApp)', async () => {
-        messaging.send.mockResolvedValueOnce({ success: false, error: '400: nope', errorCode: 131026 });
-        await service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any);
+        messaging.send.mockResolvedValueOnce({
+          success: false,
+          error: '400: nope',
+          errorCode: 131026,
+        });
+        await service.sendTemplateMessage(TENANT, 'tpl-1', {
+          toWaId: '966500000000',
+        } as any);
         expect(templates.refresh).not.toHaveBeenCalled();
       });
 
@@ -858,7 +1068,9 @@ describe('WhatsappExecutionService — admin free access (real UsageService + Ac
     (subscriptionRepo as unknown as { metadata: unknown }).metadata = {
       name: 'Subscription',
       findRelationWithPropertyPath: (path: string) =>
-        path === 'tenant' ? { joinColumns: [{ databaseName: 'tenantId' }] } : undefined,
+        path === 'tenant'
+          ? { joinColumns: [{ databaseName: 'tenantId' }] }
+          : undefined,
     };
     usageRepo = createMockRepository();
     usageRepo.createQueryBuilder.mockImplementation(() =>

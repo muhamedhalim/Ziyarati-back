@@ -7,6 +7,7 @@ import {
   UpdateDateColumn,
   DeleteDateColumn,
   Index,
+  Check,
 } from 'typeorm';
 
 import { Tenant } from '../SaaS-Core/Tenant';
@@ -17,6 +18,12 @@ import { PaymentStatus, SettlementStatus } from '../enums';
 import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 
 @Entity('payments')
+// Money invariants (migration FinancialIntegrityChecks).
+@Check('CHK_payments_amount_positive', '"amount" > 0')
+@Check(
+  'CHK_payments_refunded_within_amount',
+  '"refunded_amount" >= 0 AND "refunded_amount" <= "amount"',
+)
 @Index(['tenant', 'status'])
 @Index(['paid_at'])
 @Index(['appointment'])

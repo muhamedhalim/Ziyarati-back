@@ -88,6 +88,14 @@ export class Customer {
   @Column({ default: false })
   marketing_opt_in!: boolean;
 
+  /** When `marketing_opt_in` last became true. NULL = legacy row, provenance unknown. */
+  @Column({ type: 'timestamptz', nullable: true })
+  marketing_opt_in_at?: Date | null;
+
+  /** How consent was given (`staff`, `import`, …). NULL = legacy, unknown. */
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  marketing_opt_in_source?: string | null;
+
   /**
    * FND-024/M-05: when an inbound opt-out (e.g. "STOP") was detected. `NULL`
    * means never opted out — no backfill on migration. Additive to, not a

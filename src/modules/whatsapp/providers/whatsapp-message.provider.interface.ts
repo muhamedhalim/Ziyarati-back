@@ -30,6 +30,11 @@ export interface WhatsappSendPayload {
   templateParameters?: string[];
   /** `NAMED` templates are filled by parameter name; `POSITIONAL` by position. */
   parameterFormat?: 'POSITIONAL' | 'NAMED';
+  /**
+   * Values for dynamic URL buttons (`index` = the button's position among all
+   * the template's buttons). Sent as `button` components with `sub_type: url`.
+   */
+  buttonParameters?: Array<{ index: number; text: string }>;
 }
 
 export interface WhatsappSendResult {

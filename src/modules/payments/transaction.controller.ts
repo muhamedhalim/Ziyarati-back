@@ -103,6 +103,6 @@ export class TransactionController {
   @Get(':id')
   @RequirePermissions(PERMISSION.PAYMENTS_READ)
   findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.transactions.findOne(this.ctx.requireTenantId(), id);
+    return this.transactions.findOneForClient(this.ctx.requireTenantId(), id);
   }
 }

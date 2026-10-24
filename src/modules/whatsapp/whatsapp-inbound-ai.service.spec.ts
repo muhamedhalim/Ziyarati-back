@@ -2275,6 +2275,31 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     });
   });
 
+  describe('matching an inbound number to the patient already in the CRM', () => {
+    it.each(['+966500000000', '966500000000', '+966 500 000 000'])(
+      'adopts the CRM patient saved as %s instead of creating a duplicate',
+      async (saved) => {
+        contacts.findOne.mockResolvedValue(null);
+        customers.search.mockResolvedValue({
+          data: [{ id: 'cust-crm', phone: saved }],
+        });
+        contacts.save.mockImplementation(async (c: unknown) => c);
+
+        const contact = await service.findOrCreateContact(
+          TENANT,
+          '966500000000',
+        );
+
+        // The opt-out keyword acts on THIS customer: a duplicate would take the
+        // opt-out while the real patient kept receiving marketing.
+        expect(contact.customer).toEqual(
+          expect.objectContaining({ id: 'cust-crm' }),
+        );
+        expect(customers.create).not.toHaveBeenCalled();
+      },
+    );
+  });
+
   describe('a patient’s first two messages race to create their customer', () => {
     it('the loser adopts the winner’s customer instead of failing its turn', async () => {
       contacts.findOne.mockResolvedValue(null);

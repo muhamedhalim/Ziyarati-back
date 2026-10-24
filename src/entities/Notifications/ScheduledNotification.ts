@@ -5,11 +5,13 @@ import {
   ManyToOne,
   CreateDateColumn,
   Index,
+  JoinColumn,
 } from 'typeorm';
 
 import { Tenant } from '../SaaS-Core/Tenant';
 import { NotificationTemplate } from './NotificationTemplate';
 import { Appointment } from '../Calendar&Appointments/Appointment';
+import { NotificationRule } from './NotificationRule';
 
 @Entity('scheduled_notifications')
 @Index(['scheduled_at', 'status'])
@@ -109,6 +111,11 @@ export class ScheduledNotification {
    *  bounded, non-secret label — NEVER a raw provider error (see T015). */
   @Column({ type: 'varchar', length: 40, nullable: true })
   skip_reason?: string | null;
+
+  /** The rule that produced this row (NULL for manual/workflow/reminder rows). */
+  @ManyToOne(() => NotificationRule, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'notification_rule_id' })
+  notification_rule?: NotificationRule | null;
 
   @CreateDateColumn()
   created_at!: Date;

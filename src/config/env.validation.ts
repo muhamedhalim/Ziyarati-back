@@ -553,6 +553,14 @@ export const validate = (config: Record<string, unknown>) => {
       .truthy('true')
       .falsy('false')
       .empty(''),
+    // Decision D-2: minutes after which a booking still waiting for payment is cancelled
+    // to release its slot. 0 switches the sweep off.
+    UNPAID_BOOKING_TTL_MINUTES: Joi.number().integer().min(0).max(1440).default(15),
+    // FIN-P4: strict equality between the merchant Tap echoes and the clinic's merchant.
+    TAP_STRICT_MERCHANT_ECHO: Joi.boolean()
+      .truthy('true')
+      .falsy('false')
+      .empty(''),
     // [OPTIONAL] Tap documents a separate "segment" secret key for the Lead /
     // Connect (clinic onboarding) calls. Unset = the active merchant secret key.
     TAP_SEGMENT_SECRET_KEY: Joi.string().allow('', null),

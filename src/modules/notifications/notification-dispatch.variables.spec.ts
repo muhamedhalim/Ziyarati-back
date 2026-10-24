@@ -46,6 +46,7 @@ describe('NotificationDispatchService — template variable binding', () => {
       channel: NOTIFICATION_CHANNEL.WHATSAPP,
       provider_template_id: 'wa-1',
       variables: { fromTemplate: 'default' },
+      content_en: 'hello',
     },
     appointment: { id: 'appt-1' },
     recipient_type: RECIPIENT_TYPE.CUSTOMER,
@@ -70,7 +71,11 @@ describe('NotificationDispatchService — template variable binding', () => {
       findOne: jest.fn().mockResolvedValue({
         id: 'wa-1',
         status: 'approved',
-        components: { components: [{ type: 'BODY', text: 'Hello {{1}}, see you on {{2}}.' }] },
+        components: {
+          components: [
+            { type: 'BODY', text: 'Hello {{1}}, see you on {{2}}.' },
+          ],
+        },
         variable_mapping: { '1': 'patient_name', '2': 'appointment_date' },
       }),
     };
@@ -80,29 +85,47 @@ describe('NotificationDispatchService — template variable binding', () => {
         unresolved: [],
       }),
     };
-    emailProvider = { send: jest.fn().mockResolvedValue({ success: true, providerRef: 'email-1' }) };
+    emailProvider = {
+      send: jest
+        .fn()
+        .mockResolvedValue({ success: true, providerRef: 'email-1' }),
+    };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         NotificationDispatchService,
-        { provide: getRepositoryToken(ScheduledNotification), useValue: scheduled },
+        {
+          provide: getRepositoryToken(ScheduledNotification),
+          useValue: scheduled,
+        },
         { provide: getRepositoryToken(Customer), useValue: customers },
         {
           provide: NotificationLogService,
-          useValue: { record: jest.fn().mockResolvedValue(undefined), purgeOlderThan: jest.fn() },
+          useValue: {
+            record: jest.fn().mockResolvedValue(undefined),
+            purgeOlderThan: jest.fn(),
+          },
         },
-        { provide: QueueService, useValue: { enqueueNotificationDispatchBulk: jest.fn() } },
+        {
+          provide: QueueService,
+          useValue: { enqueueNotificationDispatchBulk: jest.fn() },
+        },
         {
           provide: TenantRateLimiterService,
           useValue: { consume: jest.fn().mockResolvedValue({ allowed: true }) },
         },
         { provide: WhatsappExecutionService, useValue: whatsapp },
-        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue('en') } },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue('en') },
+        },
         {
           provide: NotificationChannelFactory,
           useValue: {
             resolve: jest.fn((c: string) =>
-              c === NOTIFICATION_CHANNEL.EMAIL ? emailProvider : { name: 'meta-whatsapp-cloud' },
+              c === NOTIFICATION_CHANNEL.EMAIL
+                ? emailProvider
+                : { name: 'meta-whatsapp-cloud' },
             ),
           },
         },
@@ -125,7 +148,10 @@ describe('NotificationDispatchService — template variable binding', () => {
     claim();
     scheduled.findOne.mockResolvedValueOnce(notification());
     scheduled.update.mockResolvedValue({ affected: 1 });
-    whatsapp.sendTemplateMessage.mockResolvedValueOnce({ status: 'SENT', providerMessageId: 'wamid.1' });
+    whatsapp.sendTemplateMessage.mockResolvedValueOnce({
+      status: 'SENT',
+      providerMessageId: 'wamid.1',
+    });
 
     const res = await service.processScheduled(TENANT, ID);
 
@@ -139,7 +165,10 @@ describe('NotificationDispatchService — template variable binding', () => {
         appointmentId: 'appt-1',
         customer: expect.objectContaining({ id: 'cust-1' }),
         // defaults + per-notification values are handed over, not dropped
-        supplied: { fromTemplate: 'default', cancelUrl: 'https://app/a/SECRET' },
+        supplied: {
+          fromTemplate: 'default',
+          cancelUrl: 'https://app/a/SECRET',
+        },
       }),
     );
     expect(whatsapp.sendTemplateMessage).toHaveBeenCalledWith(TENANT, 'wa-1', {
@@ -190,7 +219,12 @@ describe('NotificationDispatchService — template variable binding', () => {
     claim();
     scheduled.findOne.mockResolvedValueOnce(notification());
     scheduled.update.mockResolvedValue({ affected: 1 });
-    customers.findOne.mockResolvedValue({ id: 'cust-1', phone: '+966500000000', email: null, opted_out_at: null });
+    customers.findOne.mockResolvedValue({
+      id: 'cust-1',
+      phone: '+966500000000',
+      email: null,
+      opted_out_at: null,
+    });
     waTemplates.findOne.mockRejectedValueOnce(
       new AppError(ErrorCode.NOT_FOUND, { message: 'Template not found' }),
     );
@@ -221,9 +255,14 @@ describe('NotificationDispatchService — template variable binding', () => {
     claim();
     scheduled.findOne.mockResolvedValueOnce(notification());
     scheduled.update.mockResolvedValue({ affected: 1 });
-    whatsapp.sendTemplateMessage.mockResolvedValueOnce({ status: 'FAILED', error: '500: down' });
+    whatsapp.sendTemplateMessage.mockResolvedValueOnce({
+      status: 'FAILED',
+      error: '500: down',
+    });
 
-    await expect(service.processScheduled(TENANT, ID)).rejects.toBeInstanceOf(TransientNotificationError);
+    await expect(service.processScheduled(TENANT, ID)).rejects.toBeInstanceOf(
+      TransientNotificationError,
+    );
     expect(whatsapp.sendTemplateMessage).toHaveBeenCalledTimes(1);
   });
 
@@ -231,11 +270,16 @@ describe('NotificationDispatchService — template variable binding', () => {
     claim();
     scheduled.findOne.mockResolvedValueOnce(notification());
     // send_attempted already true → the guard UPDATE affects nothing
-    scheduled.update.mockResolvedValueOnce({ affected: 0 }).mockResolvedValue({ affected: 1 });
+    scheduled.update
+      .mockResolvedValueOnce({ affected: 0 })
+      .mockResolvedValue({ affected: 1 });
 
     const res = await service.processScheduled(TENANT, ID);
 
-    expect(res).toMatchObject({ status: 'noop', reason: 'duplicate-send-prevented' });
+    expect(res).toMatchObject({
+      status: 'noop',
+      reason: 'duplicate-send-prevented',
+    });
     expect(whatsapp.sendTemplateMessage).not.toHaveBeenCalled();
     expect(emailProvider.send).not.toHaveBeenCalled();
   });

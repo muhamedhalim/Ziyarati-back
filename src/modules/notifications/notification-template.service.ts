@@ -8,10 +8,8 @@ import { ScheduledNotification } from '../../entities/Notifications/ScheduledNot
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 import { WhatsappTemplateService } from '../whatsapp/whatsapp-template.service';
-import {
-  orderedBodyParameters,
-  unsupportedTemplateShape,
-} from '../whatsapp/template-variables.util';
+import { unsupportedTemplateShape } from '../whatsapp/template-variables.util';
+import { unboundPlaceholders } from '../whatsapp/template-readiness';
 import { WHATSAPP_TEMPLATE_STATUS } from '../whatsapp/whatsapp.constants';
 
 import { CreateNotificationTemplateDto } from './dto/create-notification-template.dto';
@@ -45,7 +43,11 @@ export class NotificationTemplateService {
       ? await this.assertWhatsappTemplate(tenantId, dto.providerTemplateId)
       : undefined;
     const providerTemplateIdAr = dto.providerTemplateIdAr
-      ? await this.assertWhatsappTemplate(tenantId, dto.providerTemplateIdAr, 'ar')
+      ? await this.assertWhatsappTemplate(
+          tenantId,
+          dto.providerTemplateIdAr,
+          'ar',
+        )
       : undefined;
 
     const template = this.templates.create({
@@ -60,6 +62,13 @@ export class NotificationTemplateService {
       provider_template_id_ar: providerTemplateIdAr,
     });
     return this.templates.save(template);
+  }
+
+  /** Throws unless the WhatsApp template can be linked (approved, sendable, every placeholder bound). */
+  assertLinkable(
+    template: Parameters<NotificationTemplateService['assertReadyToLink']>[0],
+  ): void {
+    this.assertReadyToLink(template);
   }
 
   /**
@@ -111,7 +120,10 @@ export class NotificationTemplateService {
     if (template.status !== WHATSAPP_TEMPLATE_STATUS.APPROVED) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: `WhatsApp template "${template.name}" cannot be used yet: it is "${template.status}", not approved by Meta.`,
-        publicContext: { reason: 'TEMPLATE_NOT_APPROVED', templateStatus: template.status },
+        publicContext: {
+          reason: 'TEMPLATE_NOT_APPROVED',
+          templateStatus: template.status,
+        },
       });
     }
     const unsupported = unsupportedTemplateShape(template.components);
@@ -121,16 +133,18 @@ export class NotificationTemplateService {
         publicContext: { reason: 'UNSUPPORTED_TEMPLATE_SHAPE' },
       });
     }
-    const unbound = orderedBodyParameters(template.components).filter(
-      (name) => !template.variable_mapping?.[name],
-    );
+    // Body placeholders AND a dynamic link button's parameter (`button_<i>`).
+    const unbound = unboundPlaceholders(template);
     if (unbound.length > 0) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message:
           `WhatsApp template "${template.name}" has placeholder(s) ` +
           `${unbound.map((n) => `{{${n}}}`).join(', ')} with no data source. ` +
           'Choose what fills each one on the Templates tab first.',
-        publicContext: { reason: 'UNBOUND_PLACEHOLDERS', placeholders: unbound },
+        publicContext: {
+          reason: 'UNBOUND_PLACEHOLDERS',
+          placeholders: unbound,
+        },
       });
     }
   }
@@ -142,7 +156,8 @@ export class NotificationTemplateService {
     if (filter.search) where.name = ILike(`%${filter.search}%`);
     if (filter.type) where.type = filter.type;
     if (filter.channel) where.channel = filter.channel;
-    if (filter.isActive !== undefined) where.is_active = filter.isActive === 'true';
+    if (filter.isActive !== undefined)
+      where.is_active = filter.isActive === 'true';
 
     const [data, total] = await this.templates.findAndCount({
       where,
@@ -158,7 +173,9 @@ export class NotificationTemplateService {
       where: { id, tenant: { id: tenantId } },
     });
     if (!template) {
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Template not found' });
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Template not found',
+      });
     }
     return template;
   }

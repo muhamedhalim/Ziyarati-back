@@ -386,6 +386,32 @@ describe('Platform + clinic finance read APIs (Phase 6) — real Postgres + Redi
       expect(after.currencies).toContain('SAR');
     });
 
+    it('B1b. FIN-X3: a part-refunded clinic payment counts for what is left of it, in the total and in its currency row', async () => {
+      const before = (await get(admin, '/platform/finance/kpis')).body;
+      const sarRow = (k: Record<string, any>) =>
+        (k.revenueByCurrency as Array<Record<string, any>>).find(
+          (r) => r.currency === 'SAR',
+        ) ?? { monthlyRevenue: 0 };
+
+      const p = await seedPayment(b, {
+        amount: 100,
+        purpose: 'BOOKING',
+        settlement_mode: 'PROVIDER',
+        status: PaymentStatus.PARTIALLY_REFUNDED,
+        refunded_amount: 30,
+      });
+      try {
+        const after = (await get(admin, '/platform/finance/kpis')).body;
+        expect(after.monthlyRevenue - before.monthlyRevenue).toBeCloseTo(70, 2);
+        expect(after.todayTransactions - before.todayTransactions).toBe(1);
+        expect(
+          sarRow(after).monthlyRevenue - sarRow(before).monthlyRevenue,
+        ).toBeCloseTo(70, 2);
+      } finally {
+        await db().getRepository(Payment).delete({ id: p.id });
+      }
+    });
+
     it('B2. what the platform itself collected is reported separately, per currency', async () => {
       const sar = (k: Record<string, any>) =>
         (k.collectedRevenue as Array<Record<string, any>>).find(

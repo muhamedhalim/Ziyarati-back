@@ -23,11 +23,13 @@ import {
   WHATSAPP_DELIVERY_STATUS,
   WHATSAPP_RECIPIENT_TYPE,
   WHATSAPP_SENDING_STALE_MS,
+  SEND_REFUSAL_REASON,
 } from './whatsapp.constants';
 import {
   missingVariables,
   orderedBodyParameters,
   templateParameterFormat,
+  urlButtonParameters,
 } from './template-variables.util';
 import {
   assessTemplateContent,
@@ -135,7 +137,9 @@ export class WhatsappExecutionService {
     if (claim) {
       const claimResult = await this.claimQueuedLog(tenantId, claim.logId);
       if (!claimResult.claimed) {
-        this.logger.warn(`whatsapp send job for log ${claim.logId} was already claimed/handled — skipping duplicate delivery`);
+        this.logger.warn(
+          `whatsapp send job for log ${claim.logId} was already claimed/handled — skipping duplicate delivery`,
+        );
         return {
           status: WHATSAPP_DELIVERY_STATUS.SENDING,
           providerMessageId: undefined,
@@ -178,15 +182,25 @@ export class WhatsappExecutionService {
           `provider_ref=${priorProviderRef} — a prior attempt reached the provider before crashing. Reconciling ` +
           'to SENT WITHOUT resending, to avoid a guaranteed duplicate delivery.',
       );
-      const log = await this.updateClaimedLog(claim.logId, template.id, recipient, WHATSAPP_DELIVERY_STATUS.SENT, {
-        sentAt: new Date(),
-        providerRef: priorProviderRef,
-      });
+      const log = await this.updateClaimedLog(
+        claim.logId,
+        template.id,
+        recipient,
+        WHATSAPP_DELIVERY_STATUS.SENT,
+        {
+          sentAt: new Date(),
+          providerRef: priorProviderRef,
+        },
+      );
       return {
         status: WHATSAPP_DELIVERY_STATUS.SENT,
         providerMessageId: priorProviderRef,
         error: undefined,
-        recipient: { type: recipient.recipientType, id: recipient.recipientId, to: recipient.to },
+        recipient: {
+          type: recipient.recipientType,
+          id: recipient.recipientId,
+          to: recipient.to,
+        },
         logId: log.id,
         reconciled: true,
       };
@@ -218,6 +232,8 @@ export class WhatsappExecutionService {
     if (recipient.optedOutAt) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'This customer has opted out of WhatsApp messages',
+        // Machine-readable, so a caller can refuse to reroute (e.g. to email).
+        publicContext: { reason: SEND_REFUSAL_REASON.OPTED_OUT },
       });
     }
 
@@ -238,6 +254,7 @@ export class WhatsappExecutionService {
         template.id,
         recipient,
         'This recipient has not given marketing consent for WhatsApp',
+        { reason: SEND_REFUSAL_REASON.NO_MARKETING_CONSENT },
       );
     }
 
@@ -247,7 +264,10 @@ export class WhatsappExecutionService {
       this.config?.get('WHATSAPP_CONTENT_POLICY', 'enforce'),
     );
     if (policyMode !== 'off') {
-      const violations = assessTemplateContent(template.components, dto.variables);
+      const violations = assessTemplateContent(
+        template.components,
+        dto.variables,
+      );
       if (violations.length > 0) {
         const reason = describeViolations(violations);
         if (policyMode === 'enforce') {
@@ -259,7 +279,13 @@ export class WhatsappExecutionService {
             template.id,
             recipient,
             `Blocked by the WhatsApp content policy: ${reason}`,
-            { violations: violations.map((v) => ({ category: v.category, variable: v.variable })) },
+            {
+              reason: SEND_REFUSAL_REASON.CONTENT_POLICY,
+              violations: violations.map((v) => ({
+                category: v.category,
+                variable: v.variable,
+              })),
+            },
           );
         }
         this.logger.warn(
@@ -312,6 +338,10 @@ export class WhatsappExecutionService {
         // Meta's order — never from the caller's map iteration order.
         templateParameters: orderedBodyParameters(template.components),
         parameterFormat: templateParameterFormat(template.components),
+        buttonParameters: urlButtonParameters(template.components).map((p) => ({
+          index: p.index,
+          text: String(dto.variables?.[p.key] ?? ''),
+        })),
       });
     } catch (err) {
       // cid lets this be traced back to the originating HTTP request or queue
@@ -321,7 +351,10 @@ export class WhatsappExecutionService {
         `[cid=${this.ctx.getCorrelationId() ?? '-'}] WhatsApp provider threw during send (account=${account.id})`,
         err as Error,
       );
-      result = { success: false, error: (err as Error)?.message ?? 'provider error' };
+      result = {
+        success: false,
+        error: (err as Error)?.message ?? 'provider error',
+      };
     }
 
     const status = result.success
@@ -333,12 +366,18 @@ export class WhatsappExecutionService {
     // was late or missed. Re-read the real verdict so the next attempt (and the
     // UI) stop treating it as sendable. Best effort and read-only: it can only
     // pull our state toward Meta's, never invent one.
-    if (!result.success && result.errorCode && TEMPLATE_STATE_ERROR_CODES.has(result.errorCode)) {
-      void this.templates.refresh(tenantId, template.id).catch((err: unknown) => {
-        this.logger.warn(
-          `Template ${template.id} refresh after Meta error ${result.errorCode} failed: ${(err as Error)?.message}`,
-        );
-      });
+    if (
+      !result.success &&
+      result.errorCode &&
+      TEMPLATE_STATE_ERROR_CODES.has(result.errorCode)
+    ) {
+      void this.templates
+        .refresh(tenantId, template.id)
+        .catch((err: unknown) => {
+          this.logger.warn(
+            `Template ${template.id} refresh after Meta error ${result.errorCode} failed: ${(err as Error)?.message}`,
+          );
+        });
     }
 
     // Only successful sends actually cost quota (unchanged, pre-existing
@@ -352,11 +391,17 @@ export class WhatsappExecutionService {
     // window in which Meta has accepted the message but we have no durable
     // record of it, and is what a stale reclaim checks on its next attempt.
     const log = claim
-      ? await this.updateClaimedLog(claim.logId, template.id, recipient, status, {
-          error: result.success ? undefined : result.error,
-          sentAt: result.success ? new Date() : undefined,
-          providerRef: result.success ? result.providerMessageId : undefined,
-        })
+      ? await this.updateClaimedLog(
+          claim.logId,
+          template.id,
+          recipient,
+          status,
+          {
+            error: result.success ? undefined : result.error,
+            sentAt: result.success ? new Date() : undefined,
+            providerRef: result.success ? result.providerMessageId : undefined,
+          },
+        )
       : await this.recordLog(tenantId, template.id, recipient, status, {
           error: result.success ? undefined : result.error,
           sentAt: result.success ? new Date() : undefined,
@@ -371,7 +416,15 @@ export class WhatsappExecutionService {
       // TRANSIENT (retry) vs PERMANENT (don't). Safe to expose: provider error
       // strings carry no credentials.
       error: result.success ? undefined : result.error,
-      recipient: { type: recipient.recipientType, id: recipient.recipientId, to: recipient.to },
+      // Meta's numeric code (no text, nothing sensitive) so a caller can tell a
+      // failure that will repeat from one worth retrying — see
+      // notifications/meta-error-classification.ts.
+      errorCode: result.success ? undefined : result.errorCode,
+      recipient: {
+        type: recipient.recipientType,
+        id: recipient.recipientId,
+        to: recipient.to,
+      },
       logId: log.id,
     };
   }
@@ -395,12 +448,17 @@ export class WhatsappExecutionService {
     tenantId: string,
     logId: string,
   ): Promise<{ claimed: boolean; priorProviderRef?: string | null }> {
-    const existing = await this.logs.findOne({ where: { id: logId, tenant: { id: tenantId } } });
+    const existing = await this.logs.findOne({
+      where: { id: logId, tenant: { id: tenantId } },
+    });
     const staleCutoff = new Date(Date.now() - WHATSAPP_SENDING_STALE_MS);
     const result = await this.logs
       .createQueryBuilder()
       .update(NotificationLog)
-      .set({ status: WHATSAPP_DELIVERY_STATUS.SENDING, claimed_at: () => 'NOW()' })
+      .set({
+        status: WHATSAPP_DELIVERY_STATUS.SENDING,
+        claimed_at: () => 'NOW()',
+      })
       .where(
         'id = :logId AND "tenantId" = :tenantId AND (status = :queued OR (status = :sending AND (claimed_at IS NULL OR claimed_at < :staleCutoff)))',
         {
@@ -413,7 +471,10 @@ export class WhatsappExecutionService {
       )
       .execute();
     const claimed = (result.affected ?? 0) > 0;
-    return { claimed, priorProviderRef: claimed ? existing?.provider_ref : undefined };
+    return {
+      claimed,
+      priorProviderRef: claimed ? existing?.provider_ref : undefined,
+    };
   }
 
   /**
@@ -462,7 +523,12 @@ export class WhatsappExecutionService {
   ): Promise<void> {
     await this.logs.update(
       { id: logId },
-      { status, provider_ref: opts.providerRef, error_message: opts.error, sent_at: opts.sentAt },
+      {
+        status,
+        provider_ref: opts.providerRef,
+        error_message: opts.error,
+        sent_at: opts.sentAt,
+      },
     );
   }
 
@@ -487,7 +553,11 @@ export class WhatsappExecutionService {
       accountId: dto.accountId,
       branchId: dto.branchId,
     });
-    await this.templates.getSendableTemplate(tenantId, templateId, scheduledAccount.wabaId);
+    await this.templates.getSendableTemplate(
+      tenantId,
+      templateId,
+      scheduledAccount.wabaId,
+    );
     const recipient = await this.resolveRecipient(tenantId, dto);
 
     const log = await this.recordLog(
@@ -521,7 +591,11 @@ export class WhatsappExecutionService {
       { delay, jobId: `whatsapp-send-${log.id}` },
     );
 
-    return { status: WHATSAPP_DELIVERY_STATUS.QUEUED, scheduledAt: dto.scheduledAt, logId: log.id };
+    return {
+      status: WHATSAPP_DELIVERY_STATUS.QUEUED,
+      scheduledAt: dto.scheduledAt,
+      logId: log.id,
+    };
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
@@ -554,7 +628,10 @@ export class WhatsappExecutionService {
         { error: message },
       );
     }
-    throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message, publicContext });
+    throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+      message,
+      publicContext,
+    });
   }
 
   private async resolveRecipient(
@@ -564,16 +641,29 @@ export class WhatsappExecutionService {
     if (dto.contactId) {
       const contact = await this.contacts.findOne({
         where: { id: dto.contactId, tenant: { id: tenantId } },
+        // The patient this number belongs to carries the consent, so a send by
+        // contact is held to the same opt-out / marketing rules as a send by customer.
+        relations: { customer: true },
       });
       if (!contact) {
-        throw new AppError(ErrorCode.NOT_FOUND, { message: 'Contact not found' });
+        throw new AppError(ErrorCode.NOT_FOUND, {
+          message: 'Contact not found',
+        });
       }
       if (!contact.wa_id) {
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
           message: 'Contact has no WhatsApp id',
         });
       }
-      return { to: contact.wa_id, recipientType: WHATSAPP_RECIPIENT_TYPE.CONTACT, recipientId: contact.id };
+      return {
+        to: contact.wa_id,
+        recipientType: WHATSAPP_RECIPIENT_TYPE.CONTACT,
+        recipientId: contact.id,
+        optedOutAt: contact.customer?.opted_out_at,
+        marketingOptIn: contact.customer
+          ? contact.customer.marketing_opt_in === true
+          : undefined,
+      };
     }
 
     if (dto.customerId) {
@@ -581,7 +671,9 @@ export class WhatsappExecutionService {
         where: { id: dto.customerId, tenant: { id: tenantId } },
       });
       if (!customer) {
-        throw new AppError(ErrorCode.NOT_FOUND, { message: 'Customer not found' });
+        throw new AppError(ErrorCode.NOT_FOUND, {
+          message: 'Customer not found',
+        });
       }
       return {
         to: customer.phone,
@@ -649,7 +741,10 @@ export class WhatsappExecutionService {
       },
     );
     const updated = await this.logs.findOneBy({ id: logId });
-    if (!updated) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Claimed notification log vanished mid-send' });
+    if (!updated)
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Claimed notification log vanished mid-send',
+      });
     return updated;
   }
 }

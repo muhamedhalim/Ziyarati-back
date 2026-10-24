@@ -11,6 +11,7 @@ import { WhatsappWebhook } from '../../entities/WhatsApp/WhatsappWebhook';
 import { WhatsappContact } from '../../entities/WhatsApp/WhatsappContact';
 import { NotificationLog } from '../../entities/Notifications/NotificationLog';
 import { Branch } from '../../entities/SaaS-Core/Branch';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import { Customer } from '../../entities/CRM/Customer';
@@ -23,6 +24,10 @@ import { MessageStatusLog } from '../../entities/Conversations/MessageStatusLog'
 
 import { WhatsappAccountService } from './whatsapp-account.service';
 import { WhatsappTemplateService } from './whatsapp-template.service';
+import { WhatsappTemplateLibraryService } from './template-library/template-library.service';
+// The single clinic-wide audit INSERT path (ActivityAuditService) — template
+// adoption / submission / resubmission are recorded for the Activity page.
+import { ActivityLogModule } from '../activity-log/activity-log.module';
 import { WhatsappWebhookService } from './whatsapp-webhook.service';
 import { WhatsappDlqService } from './whatsapp-dlq.service';
 import { WhatsappContactService } from './whatsapp-contact.service';
@@ -127,6 +132,9 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
       NotificationLog,
       ScheduledNotification,
       Branch,
+      // READ-ONLY: the clinic's contact phone, to pre-fill a library template's call
+      // button (`WhatsappTemplateLibraryService`).
+      Tenant,
       Customer,
       User,
       // Inbound media attaches to the unified timeline. Read/write is confined
@@ -152,6 +160,7 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
     ]),
     // Usage-quota enforcement (UsageService) for WhatsApp message metering.
     SubscriptionBillingModule,
+    ActivityLogModule,
     ConfigModule,
     // Two-way: WhatsApp sends notifications; notification webhooks record delivery.
     forwardRef(() => NotificationsModule),
@@ -185,6 +194,7 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
   providers: [
     WhatsappAccountService,
     WhatsappTemplateService,
+    WhatsappTemplateLibraryService,
     WhatsappWebhookService,
     WhatsappDlqService,
     WhatsappContactService,

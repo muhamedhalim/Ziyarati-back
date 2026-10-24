@@ -283,7 +283,8 @@ export class PaymentWebhookService {
         // reported captured amount/currency match our payment. A mismatch is NOT
         // flipped to PAID (left for review); we still return 200 so the provider
         // does not retry-storm. No-op when the event omits the figures.
-        if (this.capturedMatches(payment, event)) {
+        const routedOk = this.routedToExpectedMerchant(payment, event);
+        if (routedOk && this.capturedMatches(payment, event)) {
           payment.status = PaymentStatus.PAID;
           payment.paid_at = new Date();
           // Freeze the fee breakdown from the gateway-reported figures.
@@ -301,6 +302,26 @@ export class PaymentWebhookService {
             customerId,
             appointmentId,
           );
+        } else if (!routedOk) {
+          // FIN-P4: Tap says this charge belongs to a different merchant than the
+          // clinic we sent it to. Not booked: an operator decides.
+          this.logger.error(
+            `ALERT: Webhook 'paid' for payment ${payment.id} rejected: charge merchant does not match the clinic it was routed to`,
+          );
+          mismatch = {
+            kind: RECONCILIATION_KIND.STATUS_MISMATCH,
+            provider: event.provider,
+            objectId: gatewayPaymentId,
+            tenantId,
+            paymentId: payment.id,
+            details: {
+              source: 'webhook',
+              reason: 'merchant_mismatch',
+              expectedMerchantId: payment.sub_merchant_id ?? null,
+              reportedMerchantId: event.merchantId ?? null,
+              paymentStatus: payment.status,
+            },
+          };
         } else {
           this.logger.error(
             `Webhook 'paid' for payment ${payment.id} rejected: captured amount/currency mismatch`,
@@ -632,6 +653,21 @@ export class PaymentWebhookService {
       .andWhere('r.status IN (:...st)', { st: statuses })
       .getRawOne<{ sum: string }>();
     return Math.round(Number(row?.sum ?? 0) * 100);
+  }
+
+  /**
+   * FIN-P4 — a payment we routed to a clinic's merchant is only booked when the
+   * gateway says the charge belongs to that same merchant. Payments with no
+   * recorded routing (platform charges, rows from before this was kept) are not
+   * affected.
+   */
+  private routedToExpectedMerchant(
+    payment: Payment,
+    event: GatewayWebhookEvent,
+  ): boolean {
+    // `merchantId` is only reported when strict checking is on.
+    if (!payment.sub_merchant_id || event.merchantId === undefined) return true;
+    return event.merchantId === payment.sub_merchant_id;
   }
 
   /**

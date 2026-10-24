@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import { Payment } from '../../entities/Payments/Payment';
-import { round2 } from './payments.constants';
+import { round2, SETTLEMENT_MODE } from './payments.constants';
 
 export interface ApplyFeesInput {
   /** Gateway fee in MAJOR units, when the provider reports it. */
@@ -46,7 +46,14 @@ export class PaymentFinancialsService {
     const gatewayFee = round2(
       input.gatewayFee != null ? input.gatewayFee : Number(payment.gateway_fee) || 0,
     );
-    const platformFee = this.platformFeeFor(gross);
+    // FIN-P1 (interim): when the gateway settles straight to the clinic, nothing in the
+    // charge takes a commission, so a fee recorded here would be an invented number —
+    // deducted from the clinic's net and counted as platform revenue that was never
+    // collected. It stays 0 until a commission model is agreed (decision D-1).
+    const platformFee =
+      payment.settlement_mode === SETTLEMENT_MODE.PROVIDER
+        ? 0
+        : this.platformFeeFor(gross);
 
     payment.gateway_fee = gatewayFee;
     payment.platform_fee = platformFee;

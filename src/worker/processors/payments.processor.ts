@@ -1,4 +1,5 @@
 import { Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job, UnrecoverableError } from 'bullmq';
@@ -16,6 +17,7 @@ import { ProviderReconciliationService } from '../../modules/payments/reconcilia
 import { PROVIDER_RECONCILIATION } from '../../modules/payments/payments.constants';
 import { MetricsService } from '../../metrics/metrics.service';
 import { PaymentOutcomeService } from '../payment-outcome.service';
+import { AppointmentsService } from '../../modules/appointment/appointment.service';
 import {
   enqueuePaymentOutcomeRedrive,
   PAYMENT_OUTCOME_MAX_REDRIVES,
@@ -77,6 +79,9 @@ export class PaymentsProcessor extends WorkerHost {
     // FIN-X1: writes the re-drive outbox row. Optional so a unit that does not
     // exercise exhaustion need not supply it.
     @Optional() private readonly dataSource?: DataSource,
+    // Decision D-2: the unpaid-booking expiry. Optional for the same reason.
+    @Optional() private readonly appointments?: AppointmentsService,
+    @Optional() private readonly appConfig?: ConfigService,
   ) {
     super();
   }
@@ -95,6 +100,21 @@ export class PaymentsProcessor extends WorkerHost {
       // No worker heartbeat here, deliberately: this job is event-driven, so a
       // quiet hour with no payments would look like a dead worker.
       return this.outcome.process(data);
+    }
+
+    if (job.name === JOB.PAYMENTS_EXPIRE_UNPAID_BOOKINGS) {
+      if (!this.appointments) return { skipped: 'not_wired' };
+      const ttl = Number(
+        this.appConfig?.get('UNPAID_BOOKING_TTL_MINUTES') ?? 15,
+      );
+      const result = await this.appointments.expireUnpaidBookings(ttl);
+      if (result.expired > 0) {
+        this.logger.log(
+          `unpaid bookings: scanned=${result.scanned} expired=${result.expired} skipped=${result.skipped}`,
+        );
+      }
+      this.metrics.setWorkerHeartbeat('payments.expireUnpaidBookings');
+      return result;
     }
 
     if (job.name === JOB.PAYMENTS_PROVIDER_RECONCILE) {

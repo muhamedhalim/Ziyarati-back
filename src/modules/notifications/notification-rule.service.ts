@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, ILike, Repository } from 'typeorm';
 
@@ -6,6 +6,7 @@ import { NotificationRule } from '../../entities/Notifications/NotificationRule'
 import { NotificationTemplate } from '../../entities/Notifications/NotificationTemplate';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
+import { NotificationRuleLibraryService } from './rule-library/rule-library.service';
 
 import { CreateNotificationRuleDto } from './dto/create-notification-rule.dto';
 import { UpdateNotificationRuleDto } from './dto/update-notification-rule.dto';
@@ -26,6 +27,9 @@ export class NotificationRuleService {
     private readonly rules: Repository<NotificationRule>,
     @InjectRepository(NotificationTemplate)
     private readonly templates: Repository<NotificationTemplate>,
+    // Optional: judges a ready-made rule before it can be switched on. A rule
+    // service built without it (older direct constructions) skips that guard.
+    @Optional() private readonly library?: NotificationRuleLibraryService,
   ) {}
 
   async create(
@@ -51,9 +55,11 @@ export class NotificationRuleService {
     const where: FindOptionsWhere<NotificationRule> = {
       tenant: { id: tenantId },
     };
-    if (filter.triggerEvent) where.trigger_event = ILike(`%${filter.triggerEvent}%`);
+    if (filter.triggerEvent)
+      where.trigger_event = ILike(`%${filter.triggerEvent}%`);
     if (filter.templateId) where.template = { id: filter.templateId };
-    if (filter.isActive !== undefined) where.is_active = filter.isActive === 'true';
+    if (filter.isActive !== undefined)
+      where.is_active = filter.isActive === 'true';
 
     const [data, total] = await this.rules.findAndCount({
       where,
@@ -83,6 +89,24 @@ export class NotificationRuleService {
   ): Promise<NotificationRule> {
     const rule = await this.findOne(tenantId, id);
 
+    // A ready-made rule's trigger and timing anchor ARE what the rule is; they
+    // are changed through its own settings (delay, conditions), never rewritten.
+    if (
+      rule.rule_key &&
+      ((dto.triggerEvent !== undefined &&
+        dto.triggerEvent !== rule.trigger_event) ||
+        (dto.anchor !== undefined && dto.anchor !== rule.anchor))
+    ) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'The trigger of a ready-made rule cannot be changed.',
+      });
+    }
+    // Switching a ready-made rule on goes through the same server-side guard
+    // however it is requested.
+    if (rule.rule_key && dto.isActive === true && !rule.is_active) {
+      await this.library?.assertCanEnable(tenantId, rule);
+    }
+
     if (dto.templateId !== undefined) {
       if (dto.templateId) {
         await this.assertTemplate(tenantId, dto.templateId);
@@ -103,8 +127,15 @@ export class NotificationRuleService {
     tenantId: string,
     id: string,
     active: boolean,
+    actorUserId?: string,
   ): Promise<NotificationRule> {
     const rule = await this.findOne(tenantId, id);
+    if (rule.rule_key && this.library) {
+      // Guarded and audited; returns the same rule entity this endpoint always has.
+      if (active) await this.library.enable(tenantId, id, actorUserId);
+      else await this.library.disable(tenantId, id, actorUserId);
+      return this.findOne(tenantId, id);
+    }
     rule.is_active = active;
     return this.rules.save(rule);
   }
@@ -132,7 +163,10 @@ export class NotificationRuleService {
     });
   }
 
-  private async assertTemplate(tenantId: string, templateId: string): Promise<void> {
+  private async assertTemplate(
+    tenantId: string,
+    templateId: string,
+  ): Promise<void> {
     const ok = await this.templates.exists({
       where: { id: templateId, tenant: { id: tenantId } },
     });

@@ -37,6 +37,14 @@ export class AppointmentCreatedEvent {
     readonly staffId: string,
     readonly branchId: string,
     readonly startAt: Date,
+    /**
+     * The status the appointment was saved with. Lets a listener tell "created
+     * already CONFIRMED" (no `confirmed` event will ever follow) from "waiting
+     * for payment" WITHOUT another database read straight after the booking
+     * transaction, when the pool is at its busiest. Optional so older emitters
+     * and tests are unaffected; a listener falls back to reading it.
+     */
+    readonly status?: string,
   ) {}
 }
 

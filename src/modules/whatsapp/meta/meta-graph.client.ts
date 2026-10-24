@@ -75,7 +75,15 @@ export interface MetaTemplateComponentInput {
     text: string;
     url?: string;
     phone_number?: string;
+    /** Sample link(s) for a URL button whose `url` ends in `{{1}}`. */
+    example?: string[];
   }>;
+}
+
+/** `POST /{template_id}` — Meta's in-place edit of a REJECTED / PAUSED / APPROVED template. */
+export interface MetaTemplateEditInput {
+  category?: string;
+  components?: MetaTemplateComponentInput[];
 }
 
 export interface MetaTemplateCreateInput {
@@ -535,7 +543,10 @@ export class MetaGraphClient {
    * call and must not be conflated with it: only a definite "gone" may change
    * what we believe about a template.
    */
-  async getTemplate(templateId: string, token: string): Promise<MetaTemplate | null> {
+  async getTemplate(
+    templateId: string,
+    token: string,
+  ): Promise<MetaTemplate | null> {
     try {
       return await this.withTemplateFields(async (fields) => {
         const json = await this.get<RawMetaTemplate>(
@@ -551,7 +562,10 @@ export class MetaGraphClient {
       });
     } catch (err) {
       const ctx = (err as AppError)?.internalContext;
-      if (ctx?.httpStatus === 404 || (ctx?.metaCode === 100 && ctx?.metaSubcode === 33)) {
+      if (
+        ctx?.httpStatus === 404 ||
+        (ctx?.metaCode === 100 && ctx?.metaSubcode === 33)
+      ) {
         return null;
       }
       throw err;
@@ -613,6 +627,31 @@ export class MetaGraphClient {
       });
     }
     return { id: json.id, status: json.status, category: json.category };
+  }
+
+  /**
+   * Edit ONE template in place (`POST /{template_id}`) — the resubmission path
+   * for a rejected or paused template. Meta puts it back into review; the
+   * response is only `{ success }`, so the caller must re-read the template for
+   * its new status instead of assuming one.
+   *
+   * Name and language cannot be changed by Meta, so they are not accepted here.
+   */
+  async editTemplate(
+    templateId: string,
+    token: string,
+    input: MetaTemplateEditInput,
+  ): Promise<void> {
+    const json = await this.postJson<{ success?: boolean }>(
+      encodeURIComponent(templateId),
+      token,
+      input,
+    );
+    if (json.success === false) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'Meta did not accept the template edit.',
+      });
+    }
   }
 
   /**
@@ -759,7 +798,8 @@ export class MetaGraphClient {
       );
 
       const rateLimited =
-        res.status === 429 || (err?.code !== undefined && RATE_LIMIT_CODES.has(err.code));
+        res.status === 429 ||
+        (err?.code !== undefined && RATE_LIMIT_CODES.has(err.code));
       const kind: MetaFailureKind = rateLimited
         ? 'rate_limited'
         : res.status >= 500

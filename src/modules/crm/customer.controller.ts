@@ -96,8 +96,10 @@ export class CustomerController {
   })
   @Post()
   @RequirePermissions(PERMISSION.CRM_CUSTOMERS_MANAGE)
-  create(@Body() dto: CreateCustomerDto) {
-    return this.customers.create(this.ctx.requireTenantId(), dto);
+  create(@Body() dto: CreateCustomerDto, @CurrentUser('id') userId: string) {
+    return this.customers.create(this.ctx.requireTenantId(), dto, {
+      actorUserId: userId,
+    });
   }
 
   @ApiOperation({
@@ -249,7 +251,7 @@ export class CustomerController {
       user.roles.includes(ROLE.SUPER_ADMIN) ||
       user.permissions.includes(PERMISSION.CRM_CUSTOMERS_MANAGE);
     return canManage
-      ? this.customers.update(tenantId, id, dto)
+      ? this.customers.update(tenantId, id, dto, { actorUserId: user.id })
       : this.customers.updateOwnPatient(tenantId, user.id, id, dto);
   }
 

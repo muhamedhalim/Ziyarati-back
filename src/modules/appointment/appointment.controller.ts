@@ -41,6 +41,7 @@ import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto';
 import { AddAppointmentNoteDto } from './dto/add-appointment-note.dto';
 import { SetAppointmentServicesDto } from './dto/set-appointment-services.dto';
 import { CreateReviewDto } from './dto/create-review.dto';
+import { SetFollowUpDto } from './dto/set-follow-up.dto';
 
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
@@ -48,7 +49,10 @@ import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { RequireAnyPermission } from '../auth/decorators/require-any-permission.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
-import { PERMISSION, canViewAppointmentFinancials } from '../../rbac/rbac.constants';
+import {
+  PERMISSION,
+  canViewAppointmentFinancials,
+} from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
@@ -627,6 +631,62 @@ target is a 403, notably a manual \`CONFIRMED\`, which would bypass payment conf
     return redactAppointmentFinancials(
       updated,
       canViewAppointmentFinancials(user.permissions),
+    );
+  }
+
+  // ───────────────────────── Follow-up due date ──────────────────────────── //
+
+  @ApiOperation({
+    summary: 'Set or clear the follow-up date of a completed appointment',
+    description: `
+**Protected — requires \`clinical.records.manage\`. Clinic must be active.**
+
+A clinician records the date the patient should come back by. Only a COMPLETED
+appointment can carry one; a provider confined to their own patients can only use
+appointments assigned to them. \`dueOn\` is a calendar date in the clinic's zone
+(\`YYYY-MM-DD\`, today or later); \`null\` removes it. The "medical follow-up when due"
+rule reads this date — it is never inferred.
+
+**Who can call this:** Owner and clinical staff (\`clinical.records.manage\`).
+    `.trim(),
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Appointment UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({ description: 'Follow-up date saved.' })
+  @ApiBadRequestResponse({
+    description: 'Not a real date, in the past, or too far ahead.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `clinical.records.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Appointment not found in this clinic (or not assigned to a confined provider).',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'The appointment is not completed.',
+    schema: S_ERROR,
+  })
+  @Put(':id/follow-up')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.CLINICAL_RECORDS_MANAGE)
+  setFollowUp(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SetFollowUpDto,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.appointments.setFollowUp(
+      this.ctx.requireTenantId(),
+      userId,
+      id,
+      dto.dueOn,
     );
   }
 

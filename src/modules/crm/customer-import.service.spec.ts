@@ -309,6 +309,8 @@ describe('CustomerImportService', () => {
       expect(customerService.create).toHaveBeenCalledWith(
         TENANT,
         expect.objectContaining({ email: 'a@example.com' }),
+        // Consent given in an import is recorded as such, not as a staff entry.
+        { source: 'import' },
       );
       expect(result).toMatchObject({ totalRows: 2, imported: 2, rejected: 0 });
     });

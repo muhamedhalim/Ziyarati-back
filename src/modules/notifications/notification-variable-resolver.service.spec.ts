@@ -4,7 +4,10 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { NotificationVariableResolver } from './notification-variable-resolver.service';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
-import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
+import {
+  createMockRepository,
+  MockRepository,
+} from '../../../test/utils/mock-factories';
 
 const TENANT = 't1';
 const CUSTOMER = { id: 'cust-1', full_name: 'Sara  Al-Harbi' };
@@ -12,7 +15,12 @@ const CUSTOMER = { id: 'cust-1', full_name: 'Sara  Al-Harbi' };
 const template = (over: Record<string, unknown> = {}) => ({
   language: 'en_US',
   components: {
-    components: [{ type: 'BODY', text: 'Hello {{1}}, your visit with {{2}} is on {{3}} at {{4}}.' }],
+    components: [
+      {
+        type: 'BODY',
+        text: 'Hello {{1}}, your visit with {{2}} is on {{3}} at {{4}}.',
+      },
+    ],
   },
   variable_mapping: {
     '1': 'patient_name',
@@ -88,18 +96,24 @@ describe('NotificationVariableResolver', () => {
 
   it('uses the Gregorian calendar and Latin digits for an Arabic template', async () => {
     appointments.findOne.mockResolvedValueOnce(appointment());
-    const res = await resolver.resolve(TENANT, template({ language: 'ar' }) as any, {
-      customer: CUSTOMER as any,
-      appointmentId: 'appt-1',
-      supplied: {},
-    });
+    const res = await resolver.resolve(
+      TENANT,
+      template({ language: 'ar' }) as any,
+      {
+        customer: CUSTOMER as any,
+        appointmentId: 'appt-1',
+        supplied: {},
+      },
+    );
     const date = String(res.variables['3']);
     expect(date).toMatch(/2026/); // Gregorian year, not 1448 (Hijri)
     expect(date).not.toMatch(/[٠-٩]/);
   });
 
   it('REFUSES to expose another patient’s appointment through this recipient', async () => {
-    appointments.findOne.mockResolvedValueOnce(appointment({ customer: { id: 'someone-else' } }));
+    appointments.findOne.mockResolvedValueOnce(
+      appointment({ customer: { id: 'someone-else' } }),
+    );
 
     const res = await resolver.resolve(TENANT, template() as any, {
       customer: CUSTOMER as any,
@@ -109,18 +123,26 @@ describe('NotificationVariableResolver', () => {
 
     // Name is still resolvable (it is the recipient's own); booking data is not.
     expect(res.variables['1']).toBe('Sara Al-Harbi');
-    expect(res.unresolved.map((u) => u.placeholder).sort()).toEqual(['2', '3', '4']);
+    expect(res.unresolved.map((u) => u.placeholder).sort()).toEqual([
+      '2',
+      '3',
+      '4',
+    ]);
     expect(JSON.stringify(res.variables)).not.toContain('Dr. Ahmed');
   });
 
   it('reports a placeholder as unresolved instead of sending a blank', async () => {
-    appointments.findOne.mockResolvedValueOnce(appointment({ staff: { user: { full_name: '  ' } } }));
+    appointments.findOne.mockResolvedValueOnce(
+      appointment({ staff: { user: { full_name: '  ' } } }),
+    );
     const res = await resolver.resolve(TENANT, template() as any, {
       customer: CUSTOMER as any,
       appointmentId: 'appt-1',
       supplied: {},
     });
-    expect(res.unresolved).toEqual([{ placeholder: '2', source: 'doctor_name' }]);
+    expect(res.unresolved).toEqual([
+      { placeholder: '2', source: 'doctor_name' },
+    ]);
   });
 
   it('with no appointment, appointment-bound placeholders are unresolved', async () => {
@@ -136,12 +158,26 @@ describe('NotificationVariableResolver', () => {
     const res = await resolver.resolve(
       TENANT,
       template({
-        components: { components: [{ type: 'BODY', text: 'From {{1}}: cancel {{2}} or move {{3}} please.' }] },
-        variable_mapping: { '1': 'clinic_name', '2': 'cancel_url', '3': 'reschedule_url' },
+        components: {
+          components: [
+            {
+              type: 'BODY',
+              text: 'From {{1}}: cancel {{2}} or move {{3}} please.',
+            },
+          ],
+        },
+        variable_mapping: {
+          '1': 'clinic_name',
+          '2': 'cancel_url',
+          '3': 'reschedule_url',
+        },
       }) as any,
       {
         customer: CUSTOMER as any,
-        supplied: { cancelUrl: 'https://app/appointment-action/AAA', rescheduleUrl: 'https://app/appointment-action/BBB' },
+        supplied: {
+          cancelUrl: 'https://app/appointment-action/AAA',
+          rescheduleUrl: 'https://app/appointment-action/BBB',
+        },
       },
     );
     expect(res.unresolved).toEqual([]);
@@ -157,7 +193,11 @@ describe('NotificationVariableResolver', () => {
     const res = await resolver.resolve(
       TENANT,
       template({
-        components: { components: [{ type: 'BODY', text: 'Code {{1}} for {{2}} at the clinic.' }] },
+        components: {
+          components: [
+            { type: 'BODY', text: 'Code {{1}} for {{2}} at the clinic.' },
+          ],
+        },
         variable_mapping: null,
       }) as any,
       { customer: CUSTOMER as any, supplied: { '1': 'ABC' } },
@@ -170,12 +210,21 @@ describe('NotificationVariableResolver', () => {
     const res = await resolver.resolve(
       TENANT,
       template({
-        components: { components: [{ type: 'BODY', text: 'ID {{1}} is on file with the clinic.' }] },
+        components: {
+          components: [
+            { type: 'BODY', text: 'ID {{1}} is on file with the clinic.' },
+          ],
+        },
         variable_mapping: { '1': 'customer.national_id' },
       }) as any,
-      { customer: { ...CUSTOMER, national_id: '1234567890' } as any, supplied: {} },
+      {
+        customer: { ...CUSTOMER, national_id: '1234567890' } as any,
+        supplied: {},
+      },
     );
-    expect(res.unresolved).toEqual([{ placeholder: '1', source: 'customer.national_id' }]);
+    expect(res.unresolved).toEqual([
+      { placeholder: '1', source: 'customer.national_id' },
+    ]);
     expect(JSON.stringify(res.variables)).not.toContain('1234567890');
   });
 
@@ -183,11 +232,127 @@ describe('NotificationVariableResolver', () => {
     const res = await resolver.resolve(
       TENANT,
       template({
-        components: { components: [{ type: 'BODY', text: 'Your appointment is confirmed.' }] },
+        components: {
+          components: [
+            { type: 'BODY', text: 'Your appointment is confirmed.' },
+          ],
+        },
         variable_mapping: null,
       }) as any,
       { customer: CUSTOMER as any, supplied: {} },
     );
     expect(res).toEqual({ variables: {}, unresolved: [] });
+  });
+
+  describe('library template sources', () => {
+    const SECRET = 'Ab3dEfGh1jKlMnOpQrStUvWxYz0123456789_-aBcD';
+    const confirmation = (over: Record<string, unknown> = {}) =>
+      ({
+        language: 'ar',
+        components: {
+          components: [
+            {
+              type: 'BODY',
+              text: 'مرحباً {{1}}، تم تأكيد موعدك في {{2}} يوم {{3}}.',
+            },
+            {
+              type: 'BUTTONS',
+              buttons: [
+                {
+                  type: 'URL',
+                  text: 'تغيير الموعد',
+                  url: 'https://app.test/appointment-action/{{1}}',
+                },
+              ],
+            },
+          ],
+        },
+        variable_mapping: {
+          '1': 'patient_first_name',
+          '2': 'clinic_name',
+          '3': 'fixed:الأحد',
+          button_0: 'reschedule_token',
+        } as Record<string, string>,
+        ...over,
+      }) as any;
+
+    it('greets by FIRST name only', async () => {
+      const res = await resolver.resolve(TENANT, confirmation(), {
+        customer: CUSTOMER as any,
+        supplied: {
+          rescheduleUrl: `https://app.test/appointment-action/${SECRET}`,
+        },
+      });
+      expect(res.variables['1']).toBe('Sara');
+      expect(res.variables['2']).toBe('Noor Clinic');
+    });
+
+    it('fills a typed constant for a placeholder bound as fixed text', async () => {
+      const res = await resolver.resolve(TENANT, confirmation(), {
+        customer: CUSTOMER as any,
+        supplied: {
+          rescheduleUrl: `https://app.test/appointment-action/${SECRET}`,
+        },
+      });
+      expect(res.variables['3']).toBe('الأحد');
+      expect(res.unresolved).toEqual([]);
+    });
+
+    it('gives the link button ONLY the secret at the end of the issued link', async () => {
+      const res = await resolver.resolve(TENANT, confirmation(), {
+        customer: CUSTOMER as any,
+        supplied: {
+          rescheduleUrl: `https://app.test/appointment-action/${SECRET}`,
+        },
+      });
+      expect(res.variables['button_0']).toBe(SECRET);
+    });
+
+    it('blocks the send when no link was issued (never a blank or a guessed token)', async () => {
+      const res = await resolver.resolve(TENANT, confirmation(), {
+        customer: CUSTOMER as any,
+        supplied: {},
+      });
+      expect(res.unresolved).toEqual([
+        { placeholder: 'button_0', source: 'reschedule_token' },
+      ]);
+    });
+
+    it.each([
+      ['a different path', 'https://evil.test/other/' + 'a'.repeat(43)],
+      ['a too-short token', 'https://app.test/appointment-action/short'],
+      [
+        'a token followed by a query',
+        `https://app.test/appointment-action/${'a'.repeat(43)}?x=1`,
+      ],
+      ['not a string', 12345],
+    ])('refuses to derive a token from %s', async (_label, bad) => {
+      const res = await resolver.resolve(TENANT, confirmation(), {
+        customer: CUSTOMER as any,
+        supplied: { rescheduleUrl: bad },
+      });
+      expect(res.unresolved.map((u) => u.placeholder)).toContain('button_0');
+    });
+
+    it('treats an empty fixed binding as unresolved', async () => {
+      const res = await resolver.resolve(
+        TENANT,
+        confirmation({
+          variable_mapping: {
+            '1': 'patient_first_name',
+            '2': 'clinic_name',
+            '3': 'fixed:  ',
+            button_0: 'reschedule_token',
+          },
+        }),
+        {
+          customer: CUSTOMER as any,
+          supplied: {
+            rescheduleUrl: `https://app.test/appointment-action/${SECRET}`,
+          },
+        },
+      );
+      expect(res.unresolved.map((u) => u.placeholder)).toEqual(['3']);
+    });
   });
 });

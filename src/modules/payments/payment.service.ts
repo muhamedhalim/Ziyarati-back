@@ -239,6 +239,9 @@ export class PaymentService {
           gateway: provider.name,
           purpose,
           settlement_mode: settlementMode,
+          // FIN-P4: where this charge was routed, kept so every later confirmation
+          // (webhook, return, sweep) can check the gateway still says the same.
+          sub_merchant_id: routing?.settlementMerchantId,
           idempotency_key: idempotencyKey,
         }),
       );

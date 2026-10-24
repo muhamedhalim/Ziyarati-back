@@ -149,6 +149,12 @@ export const JOB = {
    * re-reads Tap's whole 30-day reporting window. Read-only toward the gateway.
    */
   PAYMENTS_PROVIDER_RECONCILE: 'payments.providerReconcile',
+  /**
+   * Decision D-2 — cancels bookings left in PENDING_PAYMENT past
+   * `UNPAID_BOOKING_TTL_MINUTES` (default 15) so the slot is released. Platform-wide,
+   * on the existing `payments` queue; never refunds anything.
+   */
+  PAYMENTS_EXPIRE_UNPAID_BOOKINGS: 'payments.expireUnpaidBookings',
   PLATFORM_LOG_CLEANUP: 'platform.logCleanup',
   /**
    * AUTH-005 (see docs/AUTH_CONCURRENCY_GC_AUDIT.md) — repeatable retention
@@ -204,6 +210,16 @@ export const JOB = {
    * the workflow engine's "Birthday Greeting" template listens for.
    */
   PLATFORM_BIRTHDAY_GREETINGS: 'platform.birthdayGreetings',
+  /**
+   * Repeatable hourly sweep for the time-driven ready-made notification rules
+   * (patient re-engagement). Each clinic acts at its own local hour.
+   */
+  PLATFORM_NOTIFICATION_RULES_SWEEP: 'platform.notificationRulesSweep',
+  /**
+   * Repeatable every-minute sweep: launches SCHEDULED campaigns whose time has
+   * come, for clinics that enabled the scheduled-promotion rule.
+   */
+  PLATFORM_CAMPAIGNS_SCHEDULED_LAUNCH: 'platform.campaignsScheduledLaunch',
   /**
    * Free-access lifecycle notice delivery (in-app + email), one job per
    * override event — start or a 48h expiry warning. SYSTEM tier: the

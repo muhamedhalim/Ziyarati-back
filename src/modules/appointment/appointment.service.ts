@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
@@ -40,6 +40,7 @@ import {
   AppointmentPaymentStatus,
 } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
+import { assertFollowUpDate } from './follow-up-date.util';
 import { AvailabilityService } from '../scheduling/availability.service';
 import { UsageService } from '../subscription-billing/usage.service';
 import { USAGE_METRIC } from '../subscription-billing/usage-metric';
@@ -173,6 +174,8 @@ export interface ReminderView {
  */
 @Injectable()
 export class AppointmentsService {
+  private readonly logger = new Logger('AppointmentsService');
+
   constructor(
     @InjectRepository(Appointment)
     private readonly appointments: Repository<Appointment>,
@@ -586,7 +589,8 @@ export class AppointmentsService {
         status,
         payment_status: paymentStatus,
         total_amount: totalAmount,
-        currency: dto.currency ?? 'SAR',
+        currency:
+          dto.currency ?? (await this.clinicCurrency(manager, tenantId)),
         booked_timezone: branch.timezone,
         notes: dto.notes,
         source: dto.source ?? AppointmentSource.MANUAL,
@@ -660,6 +664,7 @@ export class AppointmentsService {
         appointment.staff!.id,
         appointment.branch!.id,
         appointment.start_at,
+        appointment.status,
       ),
     );
     return appointment;
@@ -940,6 +945,75 @@ export class AppointmentsService {
     return updated;
   }
 
+  // ───────────────────────── Follow-up due date ──────────────────────────── //
+
+  /**
+   * A clinician sets (or clears) the date the patient should come back by.
+   *
+   * Only a COMPLETED appointment can carry one, only a person sets it (the
+   * "medical follow-up" rule never infers a date), and a provider confined to their
+   * own patients can only touch appointments assigned to them (404 otherwise, like
+   * every other write here). The date is a calendar date in the BRANCH's zone, so
+   * "today" is the clinic's today, and it cannot be in the past or years away.
+   */
+  async setFollowUp(
+    tenantId: string,
+    userId: string,
+    id: string,
+    dueOn: string | null,
+  ): Promise<{
+    id: string;
+    followUpDueOn: string | null;
+    followUpSetAt: Date | null;
+  }> {
+    let before: string | null = null;
+    let setAt: Date | null = null;
+    let audited!: Appointment;
+    await this.dataSource.transaction(async (manager) => {
+      const appointment = await this.loadForWrite(manager, tenantId, id);
+      await this.staffScope.assertMayDriveAppointment(
+        tenantId,
+        appointment.staff?.id,
+      );
+      if (appointment.status !== AppointmentStatus.COMPLETED) {
+        throw new AppError(ErrorCode.CONFLICT, {
+          message:
+            'A follow-up date can only be set on a completed appointment',
+        });
+      }
+      if (dueOn !== null) {
+        assertFollowUpDate(
+          dueOn,
+          appointment.branch?.timezone ?? appointment.booked_timezone,
+        );
+      }
+      before = appointment.follow_up_due_on ?? null;
+      setAt = dueOn === null ? null : new Date();
+      await manager.getRepository(Appointment).update(
+        { id, tenant: { id: tenantId } },
+        {
+          follow_up_due_on: dueOn,
+          follow_up_set_by: dueOn === null ? null : ({ id: userId } as never),
+          follow_up_set_at: setAt,
+        },
+      );
+      audited = appointment;
+    });
+
+    await this.recordAudit(
+      APPOINTMENT_AUDIT_ACTION.FOLLOW_UP_SET,
+      tenantId,
+      audited,
+      userId,
+      {
+        // The date only — never a note or a reason.
+        after: { followUpDueOn: dueOn },
+        before: { followUpDueOn: before },
+      },
+    );
+    return { id, followUpDueOn: dueOn, followUpSetAt: setAt };
+  }
+
   // ─────────────────────────── Cancellation ──────────────────────────────── //
 
   async cancel(
@@ -962,8 +1036,18 @@ export class AppointmentsService {
       const previous = appointment.status;
       previousStatus = previous;
       appointment.status = AppointmentStatus.CANCELLED;
-      // Reflect a recorded refund on the payment axis.
-      if (dto.refundAmount && dto.refundAmount > 0) {
+      // Reflect a recorded refund on the payment axis — but only when no ONLINE payment
+      // backs this booking. If one does, "refunded" must come from a refund that really
+      // moved money (the Refunds flow updates the booking when it completes); writing it
+      // here would mark a payment REFUNDED that the clinic was never refunded (FIN-P2).
+      const onlinePaid: unknown[] =
+        dto.refundAmount && dto.refundAmount > 0
+          ? await manager.query(
+              `SELECT 1 FROM payments WHERE "appointmentId" = $1 AND status IN ('PAID', 'PARTIALLY_REFUNDED') LIMIT 1`,
+              [appointment.id],
+            )
+          : [];
+      if (dto.refundAmount && dto.refundAmount > 0 && onlinePaid.length === 0) {
         appointment.payment_status =
           appointment.total_amount &&
           dto.refundAmount < appointment.total_amount
@@ -1316,13 +1400,26 @@ export class AppointmentsService {
      * payment") carries the attribution instead.
      */
     triggeredBy: string | null = null,
-  ): Promise<void> {
+  ): Promise<'applied' | 'booking_closed'> {
+    let bookingClosed = false;
     const confirmed = await this.dataSource.transaction(async (manager) => {
       const appointment = await this.loadForWrite(
         manager,
         tenantId,
         appointmentId,
       );
+
+      // D-2: a CANCELLED booking is never revived or marked paid by a late
+      // payment. The money did move (the Payment row says so), so the caller
+      // raises a reconciliation exception for a person to decide — it is not
+      // silently "paid and valid".
+      if (
+        outcome === 'paid' &&
+        appointment.status === AppointmentStatus.CANCELLED
+      ) {
+        bookingClosed = true;
+        return false;
+      }
 
       const targetPayment =
         outcome === 'paid'
@@ -1368,6 +1465,126 @@ export class AppointmentsService {
       const updated = await this.findOne(tenantId, appointmentId);
       this.emitStatusEvent(tenantId, updated, AppointmentStatus.CONFIRMED);
     }
+    return bookingClosed ? 'booking_closed' : 'applied';
+  }
+
+  // ───────────────── Unpaid booking expiry (decision D-2) ───────────────── //
+
+  /**
+   * Cancels bookings that were never paid. A PENDING_PAYMENT booking holds a slot
+   * that nobody else can take, so it is released `ttlMinutes` after it was made
+   * (15 by default; 0 switches this off). A booking is left alone while:
+   *  - any money for it was captured (it is, or is about to be, CONFIRMED); or
+   *  - a payment attempt for it is still in flight (opened in the last 30
+   *    minutes — a payer mid-checkout is not cut off).
+   * Each cancellation re-checks all of that under the booking's row lock, so a
+   * payment confirming at the same instant either wins (booking stays) or loses
+   * cleanly (the late payment is then flagged by the outcome consumer).
+   * No refund is ever issued here.
+   */
+  async expireUnpaidBookings(
+    ttlMinutes: number,
+    limit = 200,
+  ): Promise<{ scanned: number; expired: number; skipped: number }> {
+    const result = { scanned: 0, expired: 0, skipped: 0 };
+    if (!(ttlMinutes > 0)) return result;
+
+    const rows: { id: string; tenant_id: string }[] =
+      await this.dataSource.query(
+        `SELECT a.id, a."tenantId" AS tenant_id
+           FROM appointments a
+          WHERE a.status = 'PENDING_PAYMENT'
+            AND a.deleted_at IS NULL
+            AND a.created_at <= now() - ($1::int * interval '1 minute')
+            AND NOT EXISTS (
+              SELECT 1 FROM payments p
+               WHERE p."appointmentId" = a.id
+                 AND (p.status IN ('PAID', 'PARTIALLY_REFUNDED', 'REFUNDED')
+                      OR (p.status = 'PENDING' AND p.created_at > now() - interval '30 minutes'))
+            )
+          ORDER BY a.created_at ASC
+          LIMIT $2`,
+        [Math.floor(ttlMinutes), limit],
+      );
+    result.scanned = rows.length;
+
+    for (const row of rows) {
+      try {
+        if (await this.expireUnpaid(row.tenant_id, row.id, ttlMinutes)) {
+          result.expired += 1;
+        } else {
+          result.skipped += 1;
+        }
+      } catch (err) {
+        result.skipped += 1;
+        this.logger.warn(
+          `expireUnpaidBookings: ${row.id} failed: ${(err as Error).message}`,
+        );
+      }
+    }
+    return result;
+  }
+
+  private async expireUnpaid(
+    tenantId: string,
+    id: string,
+    ttlMinutes: number,
+  ): Promise<boolean> {
+    const reason = `Not paid within ${ttlMinutes} minutes`;
+    let expired = false;
+    await this.dataSource.transaction(async (manager) => {
+      const appointment = await this.loadForWrite(manager, tenantId, id);
+      if (
+        appointment.status !== AppointmentStatus.PENDING_PAYMENT ||
+        appointment.payment_status === AppointmentPaymentStatus.PAID
+      ) {
+        return;
+      }
+      const captured: unknown[] = await manager.query(
+        `SELECT 1 FROM payments
+          WHERE "appointmentId" = $1
+            AND (status IN ('PAID', 'PARTIALLY_REFUNDED', 'REFUNDED')
+                 OR (status = 'PENDING' AND created_at > now() - interval '30 minutes'))
+          LIMIT 1`,
+        [id],
+      );
+      if (captured.length > 0) return;
+
+      const previous = appointment.status;
+      appointment.status = AppointmentStatus.CANCELLED;
+      await manager.getRepository(Appointment).save(appointment);
+      await this.writeStatusLog(
+        manager,
+        tenantId,
+        appointment,
+        AppointmentStatus.CANCELLED,
+        null,
+      );
+      await this.writeHistory(
+        manager,
+        tenantId,
+        appointment,
+        previous,
+        AppointmentStatus.CANCELLED,
+        null,
+        `Cancelled: ${reason}`,
+      );
+      expired = true;
+    });
+
+    if (expired) {
+      const cancelled = await this.findOne(tenantId, id);
+      this.emitter.emit(
+        AppointmentCancelledEvent.eventName,
+        new AppointmentCancelledEvent(
+          tenantId,
+          cancelled.id,
+          cancelled.customer!.id,
+          reason,
+        ),
+      );
+    }
+    return expired;
   }
 
   // ───────────────────────────── Delete ──────────────────────────────────── //
@@ -1806,6 +2023,21 @@ export class AppointmentsService {
     // The clinic asks for online payment — but can it actually take one?
     const capability = await this.onlinePayments.resolve(tenantId, manager);
     return capability.available;
+  }
+
+  /**
+   * FIN-P7 — the currency a booking is charged in: the clinic's own setting, not a
+   * hard-coded SAR. SAR remains the fallback for a clinic that has no settings row.
+   */
+  private async clinicCurrency(
+    manager: EntityManager,
+    tenantId: string,
+  ): Promise<string> {
+    const rows: { currency: string | null }[] = await manager.query(
+      `SELECT currency FROM tenant_settings WHERE tenant_id = $1 LIMIT 1`,
+      [tenantId],
+    );
+    return rows[0]?.currency?.trim() || 'SAR';
   }
 
   /**

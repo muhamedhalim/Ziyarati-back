@@ -11,15 +11,17 @@ export const DEFAULT_PAYMENT_CURRENCY = 'SAR';
 /**
  * FIN-007 — currencies a payment / settlement may be denominated in (ISO 4217,
  * upper-case). Free text used to reach the gateway and the settlement sums.
+ *
+ * FIN-X6: KWD, BHD, OMR and JOD are deliberately NOT here. They have three decimal
+ * places, while every money column is numeric(14,2) and amounts are compared in
+ * x100 cents: a payment in one of them would be silently rounded to two places.
+ * (Tap's own formatting helpers still understand them, so a webhook for one is read
+ * correctly.) Add them back only together with three-decimal storage.
  */
 export const SUPPORTED_PAYMENT_CURRENCIES = [
   'SAR',
   'AED',
-  'KWD',
-  'BHD',
-  'OMR',
   'QAR',
-  'JOD',
   'EGP',
   'USD',
   'EUR',

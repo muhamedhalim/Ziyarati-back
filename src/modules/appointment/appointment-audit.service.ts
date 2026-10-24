@@ -15,6 +15,7 @@ export const APPOINTMENT_AUDIT_ACTION = {
   RESCHEDULED: 'appointment.rescheduled',
   CANCELLED: 'appointment.cancelled',
   STATUS_CHANGED: 'appointment.status_changed',
+  FOLLOW_UP_SET: 'appointment.follow_up_set',
   // Patient / public paths.
   CANCELLED_BY_PATIENT: 'appointment.cancelled_by_patient',
   RESCHEDULED_BY_PATIENT: 'appointment.rescheduled_by_patient',

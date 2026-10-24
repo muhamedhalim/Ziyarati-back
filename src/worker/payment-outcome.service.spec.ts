@@ -32,7 +32,7 @@ describe('PaymentOutcomeService (REL-005)', () => {
     applyFailed: jest.Mock;
     applyRefund: jest.Mock;
   };
-  let exceptions: { checkDuplicateBookingCapture: jest.Mock };
+  let exceptions: { checkDuplicateBookingCapture: jest.Mock; raiseQuietly?: jest.Mock };
 
   const withPayment = (over: Partial<PaymentShape> = {}) => {
     payments.findOne.mockResolvedValueOnce({
@@ -125,6 +125,38 @@ describe('PaymentOutcomeService (REL-005)', () => {
       expect(res).toMatchObject({
         applied: true,
         consumers: ['appointment', 'payment-link'],
+      });
+    });
+
+    it('D-2: a payment that lands on an already-CANCELLED booking raises a reconciliation exception and does NOT spend the link or count as applied', async () => {
+      withPayment({
+        purpose: 'BOOKING',
+        gateway: 'tap',
+        gateway_payment_id: 'chg_late',
+        amount: 250,
+        currency: 'SAR',
+      } as never);
+      appointments.applyPaymentOutcome.mockResolvedValueOnce('booking_closed');
+      exceptions.raiseQuietly = jest.fn().mockResolvedValue(undefined);
+
+      const res = await service.process(job());
+
+      expect(exceptions.raiseQuietly).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'STATUS_MISMATCH',
+          provider: 'tap',
+          objectId: 'chg_late',
+          tenantId: TENANT,
+          paymentId: PAYMENT_ID,
+          details: expect.objectContaining({
+            reason: 'paid_on_cancelled_booking',
+            appointmentId: APPOINTMENT,
+          }),
+        }),
+      );
+      expect(paymentLinks.markUsedForAppointment).not.toHaveBeenCalled();
+      expect(res).toMatchObject({
+        consumers: ['reconciliation-exception'],
       });
     });
 

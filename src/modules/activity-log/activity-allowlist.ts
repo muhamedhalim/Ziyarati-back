@@ -37,6 +37,7 @@ export const ACTIVITY_VISIBLE_AUDIT_ACTIONS = [
   'appointment.rescheduled',
   'appointment.cancelled',
   'appointment.status_changed',
+  'appointment.follow_up_set',
   // Patient self-service (S1, S2) — actor-less by nature (a signed link).
   'appointment.cancelled_by_patient',
   'appointment.rescheduled_by_patient',
@@ -65,6 +66,22 @@ export const ACTIVITY_VISIBLE_AUDIT_ACTIONS = [
   // A human override of the platform's at-most-once send guarantee — exactly
   // the kind of deliberate operator action a clinic should be able to review.
   'notification.retry_override',
+  // Ready-made automation rules: who switched one on or off and when, and which
+  // of its settings changed (names only, never message text).
+  'notification.rule.enabled',
+  'notification.rule.disabled',
+  'notification.rule.configured',
+  // Marketing consent given or withdrawn: when, by whom (or which channel) — the
+  // booleans only, never the patient's contact details.
+  'customer.consent.changed',
+  // ── WhatsApp templates ──────────────────────────────────────────────────
+  // A clinic owner adopting, submitting or correcting a Meta template, and
+  // choosing what fills its placeholders. Ids / statuses only, never text.
+  'whatsapp.template.library_adopted',
+  'whatsapp.template.library_updated',
+  'whatsapp.template.submitted',
+  'whatsapp.template.resubmitted',
+  'whatsapp.template.mapping_changed',
   // ── Recurring billing (S5) ──────────────────────────────────────────────
   'subscription.renewal_attempted',
   'subscription.renewal_declined',

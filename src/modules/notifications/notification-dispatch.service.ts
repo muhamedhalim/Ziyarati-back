@@ -1,4 +1,10 @@
-import { forwardRef, Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import {
+  forwardRef,
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
@@ -26,6 +32,12 @@ import { SendTemplateMessageDto } from '../whatsapp/dto/send-template-message.dt
 import { NotificationChannelFactory } from './channels/notification-channel.factory';
 import { WhatsappTemplateService } from '../whatsapp/whatsapp-template.service';
 import { NotificationVariableResolver } from './notification-variable-resolver.service';
+import { classifyMetaFailure } from './meta-error-classification';
+import { SEND_REFUSAL_REASON } from '../whatsapp/whatsapp.constants';
+import {
+  parseRuleSourceRef,
+  staleReason,
+} from './rule-library/rule-source-ref';
 import { AppError as AppErr, ErrorCode } from '../../common/errors';
 
 export type DispatchOutcome =
@@ -75,20 +87,29 @@ export class NotificationDispatchService {
     @Optional()
     @Inject(forwardRef(() => WhatsappTemplateService))
     private readonly whatsappTemplates?: WhatsappTemplateService,
-    @Optional() private readonly variableResolver?: NotificationVariableResolver,
+    @Optional()
+    private readonly variableResolver?: NotificationVariableResolver,
   ) {}
 
-  async processScheduled(tenantId: string, id: string): Promise<DispatchOutcome> {
+  async processScheduled(
+    tenantId: string,
+    id: string,
+  ): Promise<DispatchOutcome> {
     // 1. CLAIM
     const claim = await this.scheduled
       .createQueryBuilder()
       .update(ScheduledNotification)
-      .set({ status: NOTIFICATION_STATUS.PROCESSING, attempts: () => 'attempts + 1', processing_at: () => 'now()' })
+      .set({
+        status: NOTIFICATION_STATUS.PROCESSING,
+        attempts: () => 'attempts + 1',
+        processing_at: () => 'now()',
+      })
       .where('id = :id', { id })
       .andWhere('"tenantId" = :tenantId', { tenantId })
       .andWhere('status IN (:...claimable)', { claimable: CLAIMABLE_STATUSES })
       .execute();
-    if ((claim.affected ?? 0) === 0) return { status: 'noop', reason: 'already-claimed-or-terminal' };
+    if ((claim.affected ?? 0) === 0)
+      return { status: 'noop', reason: 'already-claimed-or-terminal' };
 
     const notification = await this.scheduled.findOne({
       where: { id, tenant: { id: tenantId } },
@@ -96,30 +117,71 @@ export class NotificationDispatchService {
     });
     if (!notification) return { status: 'noop', reason: 'vanished' };
 
-    const channel = notification.template?.channel ?? NOTIFICATION_CHANNEL.IN_APP;
+    // A rule-scheduled row is re-checked against the appointment it was created
+    // for: cancelled, completed early, marked no-show or moved since scheduling
+    // means this message no longer applies. Skipped (CANCELLED), never sent.
+    const ruleRef = parseRuleSourceRef(notification.source_ref);
+    if (ruleRef) {
+      const apptNow = notification.appointment ?? null;
+      if (staleReason(ruleRef, apptNow)) {
+        await this.scheduled.update(
+          { id },
+          {
+            status: NOTIFICATION_STATUS.CANCELLED,
+            processing_at: null,
+            skip_reason: 'APPOINTMENT_CHANGED',
+          },
+        );
+        return { status: 'noop', reason: 'appointment-changed' };
+      }
+    }
+
+    const channel =
+      notification.template?.channel ?? NOTIFICATION_CHANNEL.IN_APP;
     // Existence check — replaces the old hardcoded `channel !== WHATSAPP`.
     // Anything the factory has no registered provider for (IN_APP, PUSH) is
     // still an immediate permanent failure; WHATSAPP and EMAIL both resolve.
     try {
       this.channelFactory.resolve(channel);
     } catch {
-      return this.permanent(tenantId, notification, channel, `no provider for channel "${channel}"`, {
-        skipReason: 'NO_PROVIDER',
-      });
+      return this.permanent(
+        tenantId,
+        notification,
+        channel,
+        `no provider for channel "${channel}"`,
+        {
+          skipReason: 'NO_PROVIDER',
+        },
+      );
     }
-    if (notification.recipient_type !== RECIPIENT_TYPE.CUSTOMER || !notification.recipient_id) {
-      return this.permanent(tenantId, notification, channel, 'notifications require a CUSTOMER recipient', {
-        skipReason: 'INVALID_RECIPIENT',
-      });
+    if (
+      notification.recipient_type !== RECIPIENT_TYPE.CUSTOMER ||
+      !notification.recipient_id
+    ) {
+      return this.permanent(
+        tenantId,
+        notification,
+        channel,
+        'notifications require a CUSTOMER recipient',
+        {
+          skipReason: 'INVALID_RECIPIENT',
+        },
+      );
     }
 
     const customer = await this.customers.findOne({
       where: { id: notification.recipient_id, tenant: { id: tenantId } },
     });
     if (!customer) {
-      return this.permanent(tenantId, notification, channel, 'recipient customer not found', {
-        skipReason: 'RECIPIENT_NOT_FOUND',
-      });
+      return this.permanent(
+        tenantId,
+        notification,
+        channel,
+        'recipient customer not found',
+        {
+          skipReason: 'RECIPIENT_NOT_FOUND',
+        },
+      );
     }
 
     // 2. CONSENT GATE — before channel selection (FR-G011), so a fallback can
@@ -127,21 +189,37 @@ export class NotificationDispatchService {
     // this for its own path (defense in depth); the EMAIL path has no
     // equivalent guard of its own, so this is now the ONLY gate for email.
     if (customer.opted_out_at) {
-      return this.permanent(tenantId, notification, channel, 'recipient has opted out', {
-        skipReason: 'OPTED_OUT',
-      });
+      return this.permanent(
+        tenantId,
+        notification,
+        channel,
+        'recipient has opted out',
+        {
+          skipReason: 'OPTED_OUT',
+        },
+      );
     }
 
     // 3. CHANNEL SELECTION — WhatsApp-first, email fallback (FR-G010).
     let resolvedChannel = channel;
     let providerTemplateId: string | undefined;
     if (channel === NOTIFICATION_CHANNEL.WHATSAPP) {
-      providerTemplateId = await this.resolveProviderTemplateId(notification, customer);
+      providerTemplateId = await this.resolveProviderTemplateId(
+        notification,
+        customer,
+      );
       if (!providerTemplateId || !this.hasReachableWhatsappIdentity(customer)) {
         resolvedChannel = NOTIFICATION_CHANNEL.EMAIL;
       }
     }
-    if (resolvedChannel === NOTIFICATION_CHANNEL.EMAIL && !customer.email) {
+    const fellBackToEmail =
+      channel === NOTIFICATION_CHANNEL.WHATSAPP &&
+      resolvedChannel === NOTIFICATION_CHANNEL.EMAIL;
+    if (
+      resolvedChannel === NOTIFICATION_CHANNEL.EMAIL &&
+      (!customer.email ||
+        (fellBackToEmail && !this.hasEmailContent(notification)))
+    ) {
       return this.permanent(
         tenantId,
         notification,
@@ -156,8 +234,12 @@ export class NotificationDispatchService {
       ratePerMinute: NOTIF_RATE_PER_MIN,
     });
     if (!decision.allowed) {
-      await this.scheduled.update({ id }, { status: NOTIFICATION_STATUS.SCHEDULED, processing_at: null });
-      const retryAfterMs = decision.reason === 'RATE' ? decision.retryAfterMs : 60_000;
+      await this.scheduled.update(
+        { id },
+        { status: NOTIFICATION_STATUS.SCHEDULED, processing_at: null },
+      );
+      const retryAfterMs =
+        decision.reason === 'RATE' ? decision.retryAfterMs : 60_000;
       return { status: 'rate_limited', retryAfterMs };
     }
 
@@ -174,14 +256,25 @@ export class NotificationDispatchService {
       // re-send; settle terminal and let the delivery webhook reflect reality.
       await this.scheduled.update(
         { id },
-        { status: NOTIFICATION_STATUS.FAILED, processing_at: null, failure_reason: 'duplicate-send-prevented' },
+        {
+          status: NOTIFICATION_STATUS.FAILED,
+          processing_at: null,
+          failure_reason: 'duplicate-send-prevented',
+        },
       );
       return { status: 'noop', reason: 'duplicate-send-prevented' };
     }
 
     // 6. DELEGATE + 7. CLASSIFY.
     if (resolvedChannel === NOTIFICATION_CHANNEL.WHATSAPP) {
-      return this.sendViaWhatsapp(tenantId, id, notification, customer, channel, providerTemplateId!);
+      return this.sendViaWhatsapp(
+        tenantId,
+        id,
+        notification,
+        customer,
+        channel,
+        providerTemplateId!,
+      );
     }
     return this.sendViaEmail(tenantId, id, notification, customer, channel);
   }
@@ -212,15 +305,24 @@ export class NotificationDispatchService {
         ...(notification.variables ?? {}),
       };
       if (this.whatsappTemplates && this.variableResolver) {
-        const waTemplate = await this.whatsappTemplates.findOne(tenantId, providerTemplateId);
-        const resolved = await this.variableResolver.resolve(tenantId, waTemplate, {
-          customer,
-          appointmentId: notification.appointment?.id,
-          supplied: variables,
-        });
+        const waTemplate = await this.whatsappTemplates.findOne(
+          tenantId,
+          providerTemplateId,
+        );
+        const resolved = await this.variableResolver.resolve(
+          tenantId,
+          waTemplate,
+          {
+            customer,
+            appointmentId: notification.appointment?.id,
+            supplied: variables,
+          },
+        );
         if (resolved.unresolved.length > 0) {
           const names = resolved.unresolved
-            .map((u) => `{{${u.placeholder}}}${u.source ? ` (${u.source})` : ''}`)
+            .map(
+              (u) => `{{${u.placeholder}}}${u.source ? ` (${u.source})` : ''}`,
+            )
             .join(', ');
           throw new AppErr(ErrorCode.UNPROCESSABLE_ENTITY, {
             message: `Template variable(s) could not be resolved: ${names}`,
@@ -232,12 +334,18 @@ export class NotificationDispatchService {
         customerId: notification.recipient_id,
         variables,
       };
-      res = await this.whatsapp.sendTemplateMessage(tenantId, providerTemplateId, sendDto);
+      res = await this.whatsapp.sendTemplateMessage(
+        tenantId,
+        providerTemplateId,
+        sendDto,
+      );
     } catch (err) {
       // Scrubbed once, here: `reason` is stored on the notification, written to the
       // delivery log and returned in the outcome (residency plan P7).
       const reason = scrubFailureReason(
-        err instanceof AppError ? err.message : (err as Error)?.message ?? 'send failed',
+        err instanceof AppError
+          ? err.message
+          : ((err as Error)?.message ?? 'send failed'),
       );
       // T053 (S3, FR-M009) — a quota-exhausted send is PERMANENT but must
       // NEVER fall back to email: doing so would let a clinic evade its
@@ -246,15 +354,42 @@ export class NotificationDispatchService {
       // skip_reason rather than falling through to the generic
       // attemptedChannel path below (T053's own requirement — "record
       // QUOTA_EXHAUSTED").
-      if (err instanceof AppError && err.publicContext?.metric === USAGE_METRIC.WHATSAPP_MESSAGES) {
+      if (
+        err instanceof AppError &&
+        err.publicContext?.metric === USAGE_METRIC.WHATSAPP_MESSAGES
+      ) {
         return this.permanent(tenantId, notification, originalChannel, reason, {
           skipReason: 'QUOTA_EXHAUSTED',
         });
       }
-      // Every other validation/account error is PERMANENT (no retry) — fall
-      // back to email rather than terminal-failing, if the recipient has one.
-      if (customer.email) {
-        return this.sendViaEmail(tenantId, id, notification, customer, originalChannel);
+      // The send seam refused because this person must not be messaged (opted
+      // out, no marketing consent) or the content is not allowed to leave. That
+      // is a decision about the PATIENT or the CONTENT, not about the channel:
+      // routing the same message to email would route around it.
+      const refusal =
+        err instanceof AppError
+          ? (err.publicContext?.reason as string | undefined)
+          : undefined;
+      if (
+        refusal === SEND_REFUSAL_REASON.OPTED_OUT ||
+        refusal === SEND_REFUSAL_REASON.NO_MARKETING_CONSENT ||
+        refusal === SEND_REFUSAL_REASON.CONTENT_POLICY
+      ) {
+        return this.permanent(tenantId, notification, originalChannel, reason, {
+          skipReason: refusal,
+        });
+      }
+      // Every other validation/account error is PERMANENT (no retry). Email is a
+      // fallback only when there is an email to send: a template written for
+      // WhatsApp alone has no email body, and an empty email helps nobody.
+      if (customer.email && this.hasEmailContent(notification)) {
+        return this.sendViaEmail(
+          tenantId,
+          id,
+          notification,
+          customer,
+          originalChannel,
+        );
       }
       return this.permanent(tenantId, notification, originalChannel, reason, {
         attemptedChannel: NOTIFICATION_CHANNEL.WHATSAPP,
@@ -262,16 +397,52 @@ export class NotificationDispatchService {
     }
 
     if (res?.status === 'SENT' && res.providerMessageId) {
-      return this.markSent(tenantId, notification, NOTIFICATION_CHANNEL.WHATSAPP, res.providerMessageId);
+      return this.markSent(
+        tenantId,
+        notification,
+        NOTIFICATION_CHANNEL.WHATSAPP,
+        res.providerMessageId,
+      );
     }
 
-    // Returned FAILED = provider send failure → TRANSIENT: re-schedule + retry
-    // (WhatsApp itself, not a fallback — a transient failure is expected to
-    // succeed on the next attempt).
+    // Returned FAILED = the provider refused or errored. Whether another attempt
+    // can help depends on Meta's code: an invalid number or a paused template
+    // fails identically every time (PERMANENT: stop, optionally email), while
+    // throttling or a passing fault is worth a backoff retry.
+    const metaCode =
+      typeof res?.errorCode === 'number' ? res.errorCode : undefined;
+    if (classifyMetaFailure(metaCode) === 'permanent') {
+      const permanentReason = scrubFailureReason(
+        `META_PERMANENT${metaCode !== undefined ? ` ${metaCode}` : ''}: ${res?.error ?? 'whatsapp provider refused the message'}`,
+      );
+      if (customer.email && this.hasEmailContent(notification)) {
+        return this.sendViaEmail(
+          tenantId,
+          id,
+          notification,
+          customer,
+          originalChannel,
+        );
+      }
+      return this.permanent(
+        tenantId,
+        notification,
+        originalChannel,
+        permanentReason,
+        {
+          attemptedChannel: NOTIFICATION_CHANNEL.WHATSAPP,
+        },
+      );
+    }
     const reason = 'whatsapp provider send failed';
     await this.scheduled.update(
       { id },
-      { status: NOTIFICATION_STATUS.SCHEDULED, processing_at: null, send_attempted: false, failure_reason: reason },
+      {
+        status: NOTIFICATION_STATUS.SCHEDULED,
+        processing_at: null,
+        send_attempted: false,
+        failure_reason: reason,
+      },
     );
     await this.logs.record(tenantId, {
       templateId: notification.template?.id,
@@ -294,7 +465,10 @@ export class NotificationDispatchService {
     originalChannel: string,
   ): Promise<DispatchOutcome> {
     const provider = this.channelFactory.resolve(NOTIFICATION_CHANNEL.EMAIL);
-    const content = { ar: notification.template?.content_ar, en: notification.template?.content_en };
+    const content = {
+      ar: notification.template?.content_ar,
+      en: notification.template?.content_en,
+    };
     const result = await provider.send({
       tenantId,
       channel: NOTIFICATION_CHANNEL.EMAIL,
@@ -305,19 +479,32 @@ export class NotificationDispatchService {
       appointmentId: notification.appointment?.id,
       contentAr: content.ar,
       contentEn: content.en,
-      locale: customer.preferred_locale ?? this.config.get<string>('DEFAULT_LOCALE'),
+      locale:
+        customer.preferred_locale ?? this.config.get<string>('DEFAULT_LOCALE'),
     });
 
     if (result.success && result.providerRef) {
-      return this.markSent(tenantId, notification, NOTIFICATION_CHANNEL.EMAIL, result.providerRef);
+      return this.markSent(
+        tenantId,
+        notification,
+        NOTIFICATION_CHANNEL.EMAIL,
+        result.providerRef,
+      );
     }
 
     if (result.transient) {
       // Also becomes the TransientNotificationError message, i.e. the queue's failedReason.
-      const reason = scrubFailureReason(result.error ?? 'email provider send failed');
+      const reason = scrubFailureReason(
+        result.error ?? 'email provider send failed',
+      );
       await this.scheduled.update(
         { id },
-        { status: NOTIFICATION_STATUS.SCHEDULED, processing_at: null, send_attempted: false, failure_reason: reason },
+        {
+          status: NOTIFICATION_STATUS.SCHEDULED,
+          processing_at: null,
+          send_attempted: false,
+          failure_reason: reason,
+        },
       );
       await this.logs.record(tenantId, {
         templateId: notification.template?.id,
@@ -339,6 +526,12 @@ export class NotificationDispatchService {
     );
   }
 
+  /** The notification template carries a real email body (either language). */
+  private hasEmailContent(notification: ScheduledNotification): boolean {
+    const t = notification.template;
+    return !!(t?.content_ar?.trim() || t?.content_en?.trim());
+  }
+
   /** Loose validity check mirroring `MetaWhatsAppCloudProvider.normalizeMsisdn`'s
    *  own threshold — the dispatcher decides WHETHER to attempt WhatsApp at
    *  all before calling the send seam, so it needs the same notion of
@@ -348,20 +541,34 @@ export class NotificationDispatchService {
   }
 
   /** DLQ reconcile: terminal FAILED so the sweep stops re-queuing it. */
-  async markDeadLettered(tenantId: string, id: string, rawReason: string): Promise<void> {
+  async markDeadLettered(
+    tenantId: string,
+    id: string,
+    rawReason: string,
+  ): Promise<void> {
     const reason = scrubFailureReason(rawReason);
     const res = await this.scheduled
       .createQueryBuilder()
       .update(ScheduledNotification)
-      .set({ status: NOTIFICATION_STATUS.FAILED, processing_at: null, failure_reason: reason })
+      .set({
+        status: NOTIFICATION_STATUS.FAILED,
+        processing_at: null,
+        failure_reason: reason,
+      })
       .where('id = :id', { id })
       .andWhere('"tenantId" = :tenantId', { tenantId })
       .andWhere('status IN (:...notTerminal)', {
-        notTerminal: [NOTIFICATION_STATUS.PROCESSING, NOTIFICATION_STATUS.SCHEDULED],
+        notTerminal: [
+          NOTIFICATION_STATUS.PROCESSING,
+          NOTIFICATION_STATUS.SCHEDULED,
+        ],
       })
       .execute();
     if ((res.affected ?? 0) > 0) {
-      await this.logs.record(tenantId, { status: NOTIFICATION_STATUS.FAILED, errorMessage: `dead-lettered: ${reason}` });
+      await this.logs.record(tenantId, {
+        status: NOTIFICATION_STATUS.FAILED,
+        errorMessage: `dead-lettered: ${reason}`,
+      });
     }
   }
 
@@ -380,9 +587,12 @@ export class NotificationDispatchService {
    * a distinct terminal state an operator can inspect and, if the provider
    * console confirms no send occurred, force via the audited retry() override.
    */
-  async reapAndRequeue(
-    batch = 1000,
-  ): Promise<{ reclaimed: number; strandedForReview: number; requeued: number; purgedLogs: number }> {
+  async reapAndRequeue(batch = 1000): Promise<{
+    reclaimed: number;
+    strandedForReview: number;
+    requeued: number;
+    purgedLogs: number;
+  }> {
     const staleBefore = new Date(Date.now() - PROCESSING_STALE_MS);
     const reclaim = await this.scheduled
       .createQueryBuilder()
@@ -399,7 +609,8 @@ export class NotificationDispatchService {
       .set({
         status: NOTIFICATION_STATUS.SEND_UNCERTAIN,
         processing_at: null,
-        failure_reason: 'stale-processing-after-send-attempt: verify with the provider before retrying',
+        failure_reason:
+          'stale-processing-after-send-attempt: verify with the provider before retrying',
       })
       .where('status = :proc', { proc: NOTIFICATION_STATUS.PROCESSING })
       .andWhere('processing_at < :staleBefore', { staleBefore })
@@ -417,7 +628,9 @@ export class NotificationDispatchService {
       .getRawMany<{ id: string; tenantId: string }>();
     if (due.length > 0) {
       await this.queue.enqueueNotificationDispatchBulk(
-        due.filter((r) => r.tenantId).map((r) => ({ tenantId: r.tenantId, notificationId: r.id })),
+        due
+          .filter((r) => r.tenantId)
+          .map((r) => ({ tenantId: r.tenantId, notificationId: r.id })),
       );
     }
 
@@ -451,7 +664,8 @@ export class NotificationDispatchService {
   ): Promise<string | undefined> {
     const template = notification.template;
     if (template?.provider_template_id_ar) {
-      const locale = customer.preferred_locale ?? this.config.get<string>('DEFAULT_LOCALE');
+      const locale =
+        customer.preferred_locale ?? this.config.get<string>('DEFAULT_LOCALE');
       if (locale === 'ar') return template.provider_template_id_ar;
     }
     return template?.provider_template_id;
@@ -484,7 +698,9 @@ export class NotificationDispatchService {
         },
       );
     } catch (err) {
-      this.logger.warn(`provider_ref collision for notification=${notification.id} (reconciling): ${(err as Error)?.message}`);
+      this.logger.warn(
+        `provider_ref collision for notification=${notification.id} (reconciling): ${(err as Error)?.message}`,
+      );
       await this.scheduled.update(
         { id: notification.id, status: NOTIFICATION_STATUS.PROCESSING },
         {
@@ -530,7 +746,9 @@ export class NotificationDispatchService {
         processing_at: null,
         failure_reason: reason,
         channel: opts.attemptedChannel ?? null,
-        skip_reason: opts.attemptedChannel ? null : (opts.skipReason ?? 'UNKNOWN'),
+        skip_reason: opts.attemptedChannel
+          ? null
+          : (opts.skipReason ?? 'UNKNOWN'),
       },
     );
     await this.logs.record(tenantId, {

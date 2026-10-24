@@ -14,6 +14,11 @@ import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 import { User } from '../../entities/Auth&RBAC/User';
 import { Customer } from '../../entities/CRM/Customer';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
+import { Campaign } from '../../entities/Campaigns/Campaign';
+import { ActivityLogModule } from '../activity-log/activity-log.module';
+import { NotificationRuleLibraryService } from './rule-library/rule-library.service';
+import { NotificationRulesSweepService } from './rule-library/notification-rules.sweep.service';
+import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 
 import { NotificationTemplateService } from './notification-template.service';
 import { NotificationRuleService } from './notification-rule.service';
@@ -96,7 +101,13 @@ import { EmailChannelProvider } from './channels/email-channel.provider';
       // READ-ONLY: the clinic's display name, a template variable source
       // (`NotificationVariableResolver`).
       Tenant,
+      // READ-ONLY: upcoming scheduled campaigns shown on the promotion rule's card.
+      Campaign,
     ]),
+    ActivityLogModule,
+    // AccessControlService — the time-driven rules sweep applies the same
+    // `notifications` entitlement gate the `notifications.*` jobs enforce.
+    forwardRef(() => SubscriptionBillingModule),
     forwardRef(() => WhatsappModule),
     PatientActionsModule,
   ],
@@ -110,6 +121,8 @@ import { EmailChannelProvider } from './channels/email-channel.provider';
   providers: [
     NotificationTemplateService,
     NotificationRuleService,
+    NotificationRuleLibraryService,
+    NotificationRulesSweepService,
     NotificationSchedulerService,
     NotificationLogService,
     NotificationDispatchService,
@@ -145,6 +158,8 @@ import { EmailChannelProvider } from './channels/email-channel.provider';
   exports: [
     NotificationTemplateService,
     NotificationRuleService,
+    NotificationRuleLibraryService,
+    NotificationRulesSweepService,
     NotificationSchedulerService,
     NotificationLogService,
     NotificationDispatchService,

@@ -144,6 +144,8 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
   // Platform-wide, like the sweep above: it reads the gateway's reports for every
   // merchant and records discrepancies. No tenant can trigger it.
   [JOB.PAYMENTS_PROVIDER_RECONCILE]: SYSTEM,
+  // Platform-wide sweep over every tenant's unpaid bookings; no tenant can trigger it.
+  [JOB.PAYMENTS_EXPIRE_UNPAID_BOOKINGS]: SYSTEM,
   // SYSTEM, though every row carries a tenantId — DELIBERATELY not `tenant`
   // tier. The tenant tier refuses a suspended or unapproved tenant, but this
   // job applies the consequences of money that has ALREADY moved: confirming a
@@ -221,6 +223,8 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
   // `automations` entitlement is checked INSIDE the sweep, and the runs it
   // triggers execute as tenant-tier `workflow.run` jobs (gated again there).
   [JOB.PLATFORM_BIRTHDAY_GREETINGS]: SYSTEM,
+  [JOB.PLATFORM_NOTIFICATION_RULES_SWEEP]: SYSTEM,
+  [JOB.PLATFORM_CAMPAIGNS_SCHEDULED_LAUNCH]: SYSTEM,
   // The override id is looked up fresh inside `deliver()` — the tenant it
   // belongs to is never trusted from the payload (plan §12).
   [JOB.PLATFORM_FREE_ACCESS_NOTICE]: SYSTEM,

@@ -22,7 +22,9 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
   readonly name = 'meta-whatsapp-cloud';
   private readonly logger = new Logger('MetaWhatsappProvider');
   private readonly version = process.env.WHATSAPP_API_VERSION ?? 'v21.0';
-  private readonly timeoutMs = Number(process.env.WHATSAPP_HTTP_TIMEOUT_MS ?? '10000');
+  private readonly timeoutMs = Number(
+    process.env.WHATSAPP_HTTP_TIMEOUT_MS ?? '10000',
+  );
 
   constructor(private readonly resolver: WhatsappAccountResolver) {}
 
@@ -32,21 +34,29 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
   }
 
   async send(payload: WhatsappSendPayload): Promise<WhatsappSendResult> {
-    return this.dispatch(payload.tenantId, payload.accountId, payload.phoneNumberId, {
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to: this.normalize(payload.to),
-      type: 'template',
-      template: {
-        name: payload.templateName,
-        language: { code: payload.language || 'ar' },
-        components: this.buildComponents(
-          payload.variables,
-          payload.templateParameters,
-          payload.parameterFormat,
-        ),
+    return this.dispatch(
+      payload.tenantId,
+      payload.accountId,
+      payload.phoneNumberId,
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: this.normalize(payload.to),
+        type: 'template',
+        template: {
+          name: payload.templateName,
+          language: { code: payload.language || 'ar' },
+          components: this.withButtons(
+            this.buildComponents(
+              payload.variables,
+              payload.templateParameters,
+              payload.parameterFormat,
+            ),
+            payload.buttonParameters,
+          ),
+        },
       },
-    });
+    );
   }
 
   /**
@@ -54,7 +64,9 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
    * the message type the AI uses to answer inbound WhatsApp turns. Interactive
    * buttons (≤3) render as reply buttons; a list renders as a selectable menu.
    */
-  async sendSession(payload: WhatsappSessionPayload): Promise<WhatsappSendResult> {
+  async sendSession(
+    payload: WhatsappSessionPayload,
+  ): Promise<WhatsappSendResult> {
     return this.dispatch(
       payload.tenantId,
       payload.accountId,
@@ -64,7 +76,9 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
   }
 
   /** Build the Meta message body for a text / interactive session reply. */
-  private buildSessionBody(payload: WhatsappSessionPayload): Record<string, unknown> {
+  private buildSessionBody(
+    payload: WhatsappSessionPayload,
+  ): Record<string, unknown> {
     const base = {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
@@ -80,9 +94,13 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
         type: 'interactive',
         interactive: {
           type: 'list',
-          ...(inter?.header ? { header: { type: 'text', text: inter.header.slice(0, 60) } } : {}),
+          ...(inter?.header
+            ? { header: { type: 'text', text: inter.header.slice(0, 60) } }
+            : {}),
           body: { text: payload.text.slice(0, 1024) },
-          ...(inter?.footer ? { footer: { text: inter.footer.slice(0, 60) } } : {}),
+          ...(inter?.footer
+            ? { footer: { text: inter.footer.slice(0, 60) } }
+            : {}),
           action: {
             button: (list.buttonText || 'Select').slice(0, 20),
             sections: list.sections.slice(0, 10).map((s) => ({
@@ -90,7 +108,9 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
               rows: s.rows.slice(0, 10).map((r) => ({
                 id: r.id.slice(0, 200),
                 title: r.title.slice(0, 24),
-                ...(r.description ? { description: r.description.slice(0, 72) } : {}),
+                ...(r.description
+                  ? { description: r.description.slice(0, 72) }
+                  : {}),
               })),
             })),
           },
@@ -104,9 +124,13 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
         type: 'interactive',
         interactive: {
           type: 'button',
-          ...(inter?.header ? { header: { type: 'text', text: inter.header.slice(0, 60) } } : {}),
+          ...(inter?.header
+            ? { header: { type: 'text', text: inter.header.slice(0, 60) } }
+            : {}),
           body: { text: payload.text.slice(0, 1024) },
-          ...(inter?.footer ? { footer: { text: inter.footer.slice(0, 60) } } : {}),
+          ...(inter?.footer
+            ? { footer: { text: inter.footer.slice(0, 60) } }
+            : {}),
           action: {
             buttons: buttons.map((b) => ({
               type: 'reply',
@@ -117,7 +141,11 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
       };
     }
 
-    return { ...base, type: 'text', text: { preview_url: false, body: payload.text.slice(0, 4096) } };
+    return {
+      ...base,
+      type: 'text',
+      text: { preview_url: false, body: payload.text.slice(0, 4096) },
+    };
   }
 
   /**
@@ -142,11 +170,17 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
       phoneNumberId = account.phoneNumberId ?? phoneNumberId;
       accessToken = account.accessToken;
     } catch (err) {
-      return { success: false, error: `account resolution failed: ${(err as Error)?.message}` };
+      return {
+        success: false,
+        error: `account resolution failed: ${(err as Error)?.message}`,
+      };
     }
 
     if (!phoneNumberId || !accessToken) {
-      return { success: false, error: 'WhatsApp account has no phone_number_id / access_token' };
+      return {
+        success: false,
+        error: 'WhatsApp account has no phone_number_id / access_token',
+      };
     }
 
     const url = `https://graph.facebook.com/${this.version}/${phoneNumberId}/messages`;
@@ -155,7 +189,10 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
     try {
       const res = await fetch(url, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
@@ -164,7 +201,10 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
         const id = json.messages?.[0]?.id;
         return id
           ? { success: true, providerMessageId: id }
-          : { success: false, error: 'Meta accepted but returned no message id' };
+          : {
+              success: false,
+              error: 'Meta accepted but returned no message id',
+            };
       }
       const errMsg = json.error?.message ?? `Meta API HTTP ${res.status}`;
       this.logger.warn(`Meta send failed (${res.status}): ${errMsg}`);
@@ -174,7 +214,10 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
         errorCode: json.error?.code,
       };
     } catch (err) {
-      const message = (err as Error)?.name === 'AbortError' ? 'Meta API timeout' : (err as Error)?.message;
+      const message =
+        (err as Error)?.name === 'AbortError'
+          ? 'Meta API timeout'
+          : (err as Error)?.message;
       return { success: false, error: message ?? 'network error' };
     } finally {
       clearTimeout(timer);
@@ -217,8 +260,32 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
     return [
       {
         type: 'body',
-        parameters: Object.values(variables).map((v) => ({ type: 'text', text: String(v) })),
+        parameters: Object.values(variables).map((v) => ({
+          type: 'text',
+          text: String(v),
+        })),
       },
+    ];
+  }
+
+  /**
+   * Appends one `button` component per dynamic URL button. Meta addresses them
+   * by `index` (as a STRING) and expects the single text parameter that replaces
+   * the `{{1}}` at the end of the button's link.
+   */
+  private withButtons(
+    components: Array<Record<string, unknown>> | undefined,
+    buttons: Array<{ index: number; text: string }> | undefined,
+  ): Array<Record<string, unknown>> | undefined {
+    if (!buttons || buttons.length === 0) return components;
+    return [
+      ...(components ?? []),
+      ...buttons.map((b) => ({
+        type: 'button',
+        sub_type: 'url',
+        index: String(b.index),
+        parameters: [{ type: 'text', text: b.text }],
+      })),
     ];
   }
 

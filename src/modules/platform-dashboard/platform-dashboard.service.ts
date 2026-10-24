@@ -722,14 +722,14 @@ export class PlatformDashboardService {
   private async paymentPeriodMetrics(r: ResolvedRange) {
     const [row] = await this.dataSource.query(
       `SELECT
-         COALESCE(SUM(platform_fee) FILTER (WHERE status = 'PAID' AND paid_at >= $1 AND paid_at < $2), 0) AS rev_cur,
-         COALESCE(SUM(platform_fee) FILTER (WHERE status = 'PAID' AND paid_at >= $3 AND paid_at < $4), 0) AS rev_prev,
-         COALESCE(SUM(amount)       FILTER (WHERE status = 'PAID' AND paid_at >= $1 AND paid_at < $2), 0) AS gross_cur,
-         COALESCE(SUM(amount)       FILTER (WHERE status = 'PAID' AND paid_at >= $3 AND paid_at < $4), 0) AS gross_prev,
+         COALESCE(SUM(platform_fee) FILTER (WHERE status IN ('PAID', 'PARTIALLY_REFUNDED') AND paid_at >= $1 AND paid_at < $2), 0) AS rev_cur,
+         COALESCE(SUM(platform_fee) FILTER (WHERE status IN ('PAID', 'PARTIALLY_REFUNDED') AND paid_at >= $3 AND paid_at < $4), 0) AS rev_prev,
+         COALESCE(SUM(amount)       FILTER (WHERE status IN ('PAID', 'PARTIALLY_REFUNDED') AND paid_at >= $1 AND paid_at < $2), 0) AS gross_cur,
+         COALESCE(SUM(amount)       FILTER (WHERE status IN ('PAID', 'PARTIALLY_REFUNDED') AND paid_at >= $3 AND paid_at < $4), 0) AS gross_prev,
          COUNT(*) FILTER (WHERE status = 'FAILED' AND created_at >= $1 AND created_at < $2)::int AS failed_cur,
          COUNT(*) FILTER (WHERE status = 'FAILED' AND created_at >= $3 AND created_at < $4)::int AS failed_prev,
-         COUNT(DISTINCT "tenantId") FILTER (WHERE status = 'PAID' AND paid_at >= $1 AND paid_at < $2)::int AS paying_cur,
-         COUNT(DISTINCT "tenantId") FILTER (WHERE status = 'PAID' AND paid_at >= $3 AND paid_at < $4)::int AS paying_prev
+         COUNT(DISTINCT "tenantId") FILTER (WHERE status IN ('PAID', 'PARTIALLY_REFUNDED') AND paid_at >= $1 AND paid_at < $2)::int AS paying_cur,
+         COUNT(DISTINCT "tenantId") FILTER (WHERE status IN ('PAID', 'PARTIALLY_REFUNDED') AND paid_at >= $3 AND paid_at < $4)::int AS paying_prev
        FROM payments
       WHERE purpose = ANY($5)`,
       [r.from, r.to, r.previousFrom, r.previousTo, [...CLINIC_REVENUE_PURPOSES]],

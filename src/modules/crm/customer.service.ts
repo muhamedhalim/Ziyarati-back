@@ -1,5 +1,4 @@
-
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, ILike, In, Repository } from 'typeorm';
 
@@ -13,6 +12,23 @@ import { UpdateCustomerDto } from './dto/update-customer.dto';
 import { QueryCustomersDto } from './dto/query-customers.dto';
 import { SearchCustomersDto } from './dto/search-customers.dto';
 import { UsageService } from '../subscription-billing/usage.service';
+import { ActivityAuditService } from '../activity-log/activity-audit.service';
+
+/** How a consent change reached us — recorded with the date, never inferred later. */
+export type ConsentSource =
+  | 'staff'
+  | 'import'
+  | 'integration'
+  | 'inbound_keyword'
+  | 'unsubscribe_link';
+
+/** Who/what made a write, for the consent trail. */
+export interface CustomerWriteContext {
+  actorUserId?: string;
+  source?: ConsentSource;
+}
+
+export const CUSTOMER_CONSENT_AUDIT_ACTION = 'customer.consent.changed';
 
 /** How many same-phone rows are compared by name when a public booking arrives. */
 const SAME_PHONE_LOOKUP_LIMIT = 20;
@@ -78,15 +94,21 @@ function normalizePersonName(name: string | null | undefined): string {
  */
 @Injectable()
 export class CustomerService {
-
   constructor(
     @InjectRepository(Customer)
     private readonly customers: Repository<Customer>,
     private readonly usage: UsageService,
     private readonly staffScope: StaffScopeService,
+    // Optional: records consent changes. Built without it, consent is still
+    // stamped on the row, just not written to the activity trail.
+    @Optional() private readonly audit?: ActivityAuditService,
   ) {}
 
-  async create(tenantId: string, dto: CreateCustomerDto): Promise<Customer> {
+  async create(
+    tenantId: string,
+    dto: CreateCustomerDto,
+    ctx: CustomerWriteContext = {},
+  ): Promise<Customer> {
     // `max_customers` is a real plan cap and this is the deliberate "add a
     // patient" action, so it is the right place to refuse. Deliberately NOT
     // applied to `findOrCreateForBooking` below: refusing there would abort a
@@ -123,7 +145,23 @@ export class CustomerService {
       has_health_insurance: dto.has_health_insurance,
     });
     this.applyChronicDiseasesRule(customer);
-    return this.customers.save(customer);
+    // Consent given at creation is stamped with when and how, like any later change.
+    if (customer.marketing_opt_in) {
+      customer.marketing_opt_in_at = new Date();
+      customer.marketing_opt_in_source = ctx.source ?? 'staff';
+    }
+    const saved = await this.customers.save(customer);
+    if (saved.marketing_opt_in) {
+      await this.auditConsent(
+        tenantId,
+        saved.id,
+        false,
+        true,
+        ctx.source ?? 'staff',
+        ctx.actorUserId,
+      );
+    }
+    return saved;
   }
 
   /**
@@ -206,9 +244,10 @@ export class CustomerService {
     tenantId: string,
     id: string,
     dto: UpdateCustomerDto,
+    ctx: CustomerWriteContext = {},
   ): Promise<Customer> {
     const customer = await this.findOneOrThrow(tenantId, id);
-    return this.applyUpdate(tenantId, id, customer, dto);
+    return this.applyUpdate(tenantId, id, customer, dto, ctx);
   }
 
   /**
@@ -246,7 +285,9 @@ export class CustomerService {
       });
     }
 
-    return this.applyUpdate(tenantId, id, customer, dto);
+    return this.applyUpdate(tenantId, id, customer, dto, {
+      actorUserId: userId,
+    });
   }
 
   /**
@@ -285,11 +326,13 @@ export class CustomerService {
     id: string,
     customer: Customer,
     dto: UpdateCustomerDto,
+    ctx: CustomerWriteContext = {},
   ): Promise<Customer> {
     if (dto.national_id && dto.national_id !== customer.national_id) {
       await this.assertNationalIdUnique(tenantId, dto.national_id, id);
     }
 
+    const wasOptedIn = customer.marketing_opt_in === true;
     const { date_of_birth, ...rest } = dto;
     for (const [key, value] of Object.entries(rest)) {
       if (value !== undefined) (customer as any)[key] = value;
@@ -301,7 +344,49 @@ export class CustomerService {
     }
     this.applyChronicDiseasesRule(customer);
 
-    return this.customers.save(customer);
+    // A consent change is recorded with when, how and by whom. Withdrawing keeps
+    // the last grant's date (the record of what was given) — revocation itself is
+    // `marketing_opt_in = false` plus the audit row.
+    const source = ctx.source ?? 'staff';
+    const isOptedIn = customer.marketing_opt_in === true;
+    const consentChanged = isOptedIn !== wasOptedIn;
+    if (consentChanged && isOptedIn) {
+      customer.marketing_opt_in_at = new Date();
+      customer.marketing_opt_in_source = source;
+    }
+
+    const saved = await this.customers.save(customer);
+    if (consentChanged) {
+      await this.auditConsent(
+        tenantId,
+        id,
+        wasOptedIn,
+        isOptedIn,
+        source,
+        ctx.actorUserId,
+      );
+    }
+    return saved;
+  }
+
+  /** Who changed whose consent, and how. Ids and booleans only — no contact details. */
+  private async auditConsent(
+    tenantId: string,
+    customerId: string,
+    before: boolean,
+    after: boolean,
+    source: ConsentSource,
+    actorUserId?: string,
+  ): Promise<void> {
+    await this.audit?.record({
+      tenantId,
+      action: CUSTOMER_CONSENT_AUDIT_ACTION,
+      entityType: 'customer',
+      entityId: customerId,
+      actorUserId,
+      before: { marketingOptIn: before },
+      after: { marketingOptIn: after, source },
+    });
   }
 
   /**
@@ -459,10 +544,30 @@ export class CustomerService {
     customerId: string,
     source: string,
   ): Promise<void> {
+    // An opt-out is also a withdrawal of marketing consent: leaving
+    // `marketing_opt_in` true would keep the patient in every marketing audience
+    // that only checks that flag. Read first so the audit row says what changed.
+    const before = await this.customers.findOne({
+      where: { id: customerId, tenant: { id: tenantId } },
+      select: { id: true, marketing_opt_in: true },
+    });
     await this.customers.update(
       { id: customerId, tenant: { id: tenantId } },
-      { opted_out_at: new Date(), opt_out_source: source },
+      {
+        opted_out_at: new Date(),
+        opt_out_source: source,
+        marketing_opt_in: false,
+      },
     );
+    if (before?.marketing_opt_in) {
+      await this.auditConsent(
+        tenantId,
+        customerId,
+        true,
+        false,
+        source === 'inbound_keyword' ? 'inbound_keyword' : 'staff',
+      );
+    }
   }
 
   /**

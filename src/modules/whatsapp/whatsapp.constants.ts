@@ -46,13 +46,67 @@ export const WHATSAPP_TEMPLATE_VARIABLE_SOURCE = {
   APPOINTMENT_TIME: 'appointment_time',
   CANCEL_URL: 'cancel_url',
   RESCHEDULE_URL: 'reschedule_url',
+  /** First word of the patient's name only — the library templates greet by first name. */
+  PATIENT_FIRST_NAME: 'patient_first_name',
+  /**
+   * The opaque single-use secret (last path segment) of the reschedule link, for
+   * a dynamic URL button `https://…/appointment-action/{{1}}`. Never a full URL,
+   * never a name: Meta appends exactly this to the button's fixed base.
+   */
+  RESCHEDULE_TOKEN: 'reschedule_token',
 } as const;
+
+/**
+ * A clinic-typed constant bound to a placeholder (e.g. the offer text of a
+ * promotion), stored in the same `variable_mapping` string slot as
+ * `fixed:<value>`. It keeps the jsonb shape (`Record<string,string>`) unchanged
+ * so no migration or reader needs to learn a second form.
+ */
+export const WHATSAPP_FIXED_SOURCE_PREFIX = 'fixed:';
+export const WHATSAPP_FIXED_VALUE_MAX = 100;
+
+export function isFixedSource(source: unknown): source is string {
+  return (
+    typeof source === 'string' &&
+    source.startsWith(WHATSAPP_FIXED_SOURCE_PREFIX)
+  );
+}
+
+/** The constant behind a `fixed:` source, or `undefined` when it is not one / is blank. */
+export function fixedSourceValue(source: unknown): string | undefined {
+  if (!isFixedSource(source)) return undefined;
+  const value = source.slice(WHATSAPP_FIXED_SOURCE_PREFIX.length).trim();
+  return value.length > 0 ? value : undefined;
+}
+
+/**
+ * Mapping key for the Nth URL button's parameter (`button_0`). Body
+ * placeholders are `1…n`, so the two namespaces can never collide.
+ */
+export const WHATSAPP_BUTTON_PARAM_PREFIX = 'button_';
 
 export type WhatsappTemplateVariableSource =
   (typeof WHATSAPP_TEMPLATE_VARIABLE_SOURCE)[keyof typeof WHATSAPP_TEMPLATE_VARIABLE_SOURCE];
 
 export const WHATSAPP_TEMPLATE_VARIABLE_SOURCES: WhatsappTemplateVariableSource[] =
   Object.values(WHATSAPP_TEMPLATE_VARIABLE_SOURCE);
+
+/** Template-library bookkeeping (see `template-library/`). */
+export const WHATSAPP_LIBRARY_KEY_MAX = 64;
+
+/**
+ * Audit trail (`audit_logs.action`) for template changes a clinic owner makes.
+ * Written by `WhatsappTemplateService` / `WhatsappTemplateLibraryService` and
+ * surfaced on the clinic Activity page via `activity-allowlist.ts`. Values are
+ * ids, statuses and categories only — never component text or phone numbers.
+ */
+export const WHATSAPP_TEMPLATE_AUDIT_ACTION = {
+  LIBRARY_ADOPTED: 'whatsapp.template.library_adopted',
+  LIBRARY_UPDATED: 'whatsapp.template.library_updated',
+  SUBMITTED: 'whatsapp.template.submitted',
+  RESUBMITTED: 'whatsapp.template.resubmitted',
+  MAPPING_CHANGED: 'whatsapp.template.mapping_changed',
+} as const;
 
 /**
  * Message delivery lifecycle. There is no WhatsApp *message* table in the
@@ -246,3 +300,17 @@ export const WHATSAPP_RECIPIENT_TYPE = {
   CUSTOMER: 'CUSTOMER',
   RAW: 'WA_ID',
 } as const;
+
+/**
+ * Why the send seam refused BEFORE any provider call. Carried in the error's
+ * `publicContext.reason` so a caller can tell "this person must not be messaged"
+ * (never retried, never rerouted to another channel) from an ordinary failure.
+ */
+export const SEND_REFUSAL_REASON = {
+  OPTED_OUT: 'OPTED_OUT',
+  NO_MARKETING_CONSENT: 'NO_MARKETING_CONSENT',
+  CONTENT_POLICY: 'CONTENT_POLICY',
+} as const;
+
+export type SendRefusalReason =
+  (typeof SEND_REFUSAL_REASON)[keyof typeof SEND_REFUSAL_REASON];
