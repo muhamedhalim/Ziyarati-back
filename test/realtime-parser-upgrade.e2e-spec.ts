@@ -31,8 +31,7 @@ describe('ZT-004a — realtime packet-parser upgrade (socket.io-parser >= 4.2.7)
   let baseUrl: string;
 
   beforeAll(async () => {
-    e2e = await createE2eApp();
-    await e2e.app.listen(0);
+    e2e = await createE2eApp(); // already listening on an ephemeral port
     const address = e2e.app.getHttpServer().address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${address.port}`;
   }, 60_000);

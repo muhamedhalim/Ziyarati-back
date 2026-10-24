@@ -361,11 +361,13 @@ describe('Public plan catalogue follows /platform/subscriptions — real Postgre
       `DELETE FROM subscription_usage WHERE tenant_id = $1`,
       [owner.tenantId],
     );
-    await e2e.dataSource
-      .query(`DELETE FROM subscription_invoices WHERE "tenantId" = $1`, [
-        owner.tenantId,
-      ])
-      .catch(() => undefined);
+    // `subscription_invoices` keys on a plain varchar `tenant_id` (baseline migration) — it has NO
+    // "tenantId" column. This used to name the wrong column AND swallow the resulting error, so the
+    // invoice was never deleted here and every run logged `column "tenantId" does not exist`.
+    await e2e.dataSource.query(
+      `DELETE FROM subscription_invoices WHERE tenant_id = $1`,
+      [owner.tenantId],
+    );
     await e2e.dataSource.query(
       `DELETE FROM subscriptions WHERE "tenantId" = $1`,
       [owner.tenantId],

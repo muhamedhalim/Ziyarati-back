@@ -150,7 +150,10 @@ describe('JourneyAggregationService — conformance against raw tables', () => {
       }),
     );
     customerId = customer.id;
-  });
+    // A real-Postgres seed (data source + ~20 sequential inserts): Jest's 5 s default hook timeout is
+    // not enough once ~650 suites share the runner's CPU, and it failed all 9 tests with "Exceeded
+    // timeout of 5000 ms for a hook" — the sibling DB-backed analytics specs already allow 60 s.
+  }, 60_000);
 
   afterAll(async () => {
     const q = (sql: string, tid = tenantId) => ds.query(sql, [tid]);
@@ -169,7 +172,7 @@ describe('JourneyAggregationService — conformance against raw tables', () => {
       await q(`DELETE FROM tenants WHERE id = $1`, tid);
     }
     await ds.destroy();
-  });
+  }, 60_000);
 
   async function makeAppointment(
     overrides: Partial<Appointment>,

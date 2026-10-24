@@ -1310,6 +1310,46 @@ export const validate = (config: Record<string, unknown>) => {
     }
   }
 
+  // FIN-S12 — NODE_ENV defaults to "development", and outside production an
+  // unconfigured subscription gateway binds the stub that marks invoices PAID with
+  // no money moved. A deployment that forgot NODE_ENV=production would do that
+  // silently. A public https APP_URL on a non-production boot with no usable Tap is the
+  // signature of that mistake; running it on purpose needs the same explicit
+  // acknowledgement production already uses for a simulator.
+  const tapKey =
+    value.TAP_ENV === 'live'
+      ? value.TAP_LIVE_SECRET_KEY
+      : value.TAP_TEST_SECRET_KEY;
+  const tapUsable =
+    value.PAYMENT_PROVIDER === 'tap' &&
+    !!String(tapKey ?? '').trim() &&
+    !!String(value.TAP_MERCHANT_ID ?? '').trim();
+  if (value.NODE_ENV === 'development' && !tapUsable) {
+    const appUrl = String(value.APP_URL ?? '');
+    let isPublicHttps = false;
+    try {
+      const u = new URL(appUrl);
+      const host = u.hostname;
+      isPublicHttps =
+        u.protocol === 'https:' &&
+        host !== 'localhost' &&
+        host !== '127.0.0.1' &&
+        host !== '[::1]' &&
+        !host.endsWith('.localhost') &&
+        !host.endsWith('.test');
+    } catch {
+      /* unset or not a URL: nothing to infer from */
+    }
+    if (
+      isPublicHttps &&
+      value.ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION !== 'true'
+    ) {
+      throw new Error(
+        `❌ Env validation error: APP_URL (${appUrl}) is a public https address but NODE_ENV is "development" and no real payment provider is selected — the simulated gateway would mark invoices PAID without charging. Set NODE_ENV=production (and PAYMENT_PROVIDER=tap), or ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION=true if this is a deliberate demo.`,
+      );
+    }
+  }
+
   // ── Tap checks ───────────────────────────────────────────────────────────
   // (a) Key PREFIXES, in every environment, whenever a key is present: a live key
   //     pasted into the test slot (or the reverse) is how real money gets charged

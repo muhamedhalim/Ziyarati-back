@@ -228,25 +228,35 @@ export class SubscriptionService {
 
     // Issue the first invoice for paid (non-trial) subscriptions.
     if (status !== SubscriptionStatus.TRIAL) {
-      const currency = await this.platformSettings.getTyped<string>(
-        SettingKey.DEFAULT_CURRENCY,
-      );
-      await this.billing.generateInvoice(
-        tenantId,
-        subscription.id,
-        Number(plan.price),
-        startsAt,
-        endsAt,
-        currency,
-        InvoiceStatus.OPEN,
-        awaitsPayment
-          ? {
-              kind: SubscriptionInvoiceKind.INITIAL,
-              targetPlanId: plan.id,
-              provider: this.billing.providerName,
-            }
-          : {},
-      );
+      try {
+        const currency = await this.platformSettings.getTyped<string>(
+          SettingKey.DEFAULT_CURRENCY,
+        );
+        await this.billing.generateInvoice(
+          tenantId,
+          subscription.id,
+          Number(plan.price),
+          startsAt,
+          endsAt,
+          currency,
+          InvoiceStatus.OPEN,
+          awaitsPayment
+            ? {
+                kind: SubscriptionInvoiceKind.INITIAL,
+                targetPlanId: plan.id,
+                provider: this.billing.providerName,
+              }
+            : {},
+        );
+      } catch (err) {
+        // FIN-S8: never leave a subscription without its invoice — a PENDING one
+        // would have nothing to pay for a week. The row was created a moment ago
+        // and nothing else references it yet.
+        await this.subscriptions
+          .delete({ id: subscription.id })
+          .catch(() => undefined);
+        throw err;
+      }
     }
 
     // The tenant just moved from "no subscription" to a subscription — every
@@ -354,6 +364,9 @@ export class SubscriptionService {
     const current = await this.getActiveSubscription(tenantId);
 
     const neverPaid = current.status === SubscriptionStatus.PENDING_PAYMENT;
+    // FIN-S1: a clinic that is paying right now must not have its invoice voided
+    // under the hosted page — the money would be captured and then not booked.
+    if (neverPaid) await this.assertNoLivePaymentOnOpenInvoice(current.id);
     const immediate = neverPaid || !dto.cancelAtPeriodEnd;
     if (!immediate && !current.auto_renew) {
       // Already set to end at period end: nothing to change, nothing to announce.
@@ -388,9 +401,12 @@ export class SubscriptionService {
     if (neverPaid) {
       // Nothing to collect any more; a payment that still arrives for the voided
       // invoice is not booked and raises an ALERT in the settle path.
-      await this.billing.voidOpenInvoices(
+      // Conditional void: a checkout opened since the check above keeps its
+      // invoice (a capture on it is then flagged for review, never lost).
+      await this.billing.voidSupersededOpenInvoices(
         current.id,
         'Subscription cancelled before payment',
+        'all',
       );
     }
     if (!neverPaid && current.status === SubscriptionStatus.CANCELLED) {
@@ -731,7 +747,7 @@ export class SubscriptionService {
       open?.kind === SubscriptionInvoiceKind.REACTIVATION
         ? SubscriptionInvoiceKind.REACTIVATION
         : SubscriptionInvoiceKind.INITIAL;
-    await this.billing.voidOpenInvoices(
+    await this.voidIdleOpenInvoices(
       current.id,
       'Superseded by a new plan quote',
     );
@@ -945,7 +961,7 @@ export class SubscriptionService {
           message: 'A payment for this subscription is already in progress',
         });
       }
-      await this.billing.voidOpenInvoices(
+      await this.voidIdleOpenInvoices(
         subscription.id,
         'Superseded by a reactivation',
       );
@@ -1029,6 +1045,48 @@ export class SubscriptionService {
     }
     const res = await qb.execute();
     return !!res.affected;
+  }
+
+  /**
+   * FIN-S1. Refuses (409) while the subscription's OPEN invoice has a live or
+   * unresolved payment. A hosted checkout is first asked about at the provider:
+   * a captured one is booked (so the caller sees the subscription changed), a
+   * dead one is cleared and no longer blocks.
+   */
+  private async assertNoLivePaymentOnOpenInvoice(
+    subscriptionId: string,
+  ): Promise<void> {
+    const open = await this.billing.findOpenInvoice(subscriptionId);
+    if (!open || !this.billing.isPaymentInFlight(open)) return;
+
+    const hosted = await this.billing.reconcileHostedCheckout(open);
+    if (hosted === 'paid') throw this.changedMeanwhile();
+    if (hosted === 'cleared' && !this.billing.isPaymentInFlight(open)) return;
+    throw new AppError(ErrorCode.CONFLICT, {
+      message: 'A payment for this subscription is already in progress',
+    });
+  }
+
+  /**
+   * Voids the subscription's unpaid OPEN invoices, but only the ones nobody is
+   * paying: the void is a single conditional UPDATE, so a checkout or charge that
+   * started after the caller's in-flight check keeps its invoice. When an invoice
+   * survived because of that, the change is refused rather than done around it.
+   */
+  private async voidIdleOpenInvoices(
+    subscriptionId: string,
+    reason: string,
+  ): Promise<void> {
+    await this.billing.voidSupersededOpenInvoices(
+      subscriptionId,
+      reason,
+      'all',
+    );
+    if (await this.billing.findOpenInvoice(subscriptionId)) {
+      throw new AppError(ErrorCode.CONFLICT, {
+        message: 'A payment for this subscription is already in progress',
+      });
+    }
   }
 
   private changedMeanwhile(): AppError {

@@ -44,6 +44,11 @@ export interface PaymentsOutcomeJob extends BaseJobData {
   outcome: 'paid' | 'failed' | 'refunded' | 'refund_recorded';
   /** `refund_recorded` only: the refund that triggered the reversal. */
   refundId?: string;
+  /**
+   * FIN-X1: which automatic re-drive this job is (absent = the original). Set by
+   * `PaymentsProcessor` when an earlier copy used its whole retry budget.
+   */
+  redrive?: number;
 }
 
 // ── Email (transactional send) ─────────────────────────────────────────────

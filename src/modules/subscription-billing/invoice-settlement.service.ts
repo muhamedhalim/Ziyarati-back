@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
@@ -13,6 +13,11 @@ import {
   SubscriptionStatus,
 } from '../../entities/enums';
 import { EmailService } from '../email/email.service';
+import { RECONCILIATION_KIND } from '../payments/payments.constants';
+import {
+  RaiseExceptionInput,
+  ReconciliationExceptionService,
+} from '../payments/reconciliation/reconciliation-exception.service';
 import {
   PLATFORM_ADMIN_AUDIT_ACTION,
   PlatformAdminAuditService,
@@ -129,15 +134,37 @@ export class InvoiceSettlementService {
     private readonly emitter: EventEmitter2,
     private readonly audit: PlatformAdminAuditService,
     private readonly email: EmailService,
+    // FIN-S2: optional so a unit that does not care need not supply it; recording
+    // a discrepancy is bookkeeping and never a reason for a settle to fail.
+    @Optional()
+    private readonly exceptions?: ReconciliationExceptionService,
   ) {}
 
   async settleInvoicePaid(
     invoiceId: string,
     evidence: SettleEvidence,
   ): Promise<SettleResult> {
+    // Captured money that was NOT booked as it arrived. Collected inside the
+    // transaction, written after it (the queue uses its own connection).
+    const flags: RaiseExceptionInput[] = [];
     const { result, applied } = await this.dataSource.transaction((manager) =>
-      this.settleInTransaction(manager, invoiceId, evidence),
+      this.settleInTransaction(manager, invoiceId, evidence, flags),
     );
+
+    if (result.outcome === 'settled_unapplied' && result.invoice) {
+      flags.push(
+        this.flag(
+          result.invoice,
+          evidence,
+          RECONCILIATION_KIND.STATUS_MISMATCH,
+          {
+            reason: result.reason ?? 'unapplied',
+            note: 'Invoice marked PAID but the subscription could not take the payment',
+          },
+        ),
+      );
+    }
+    for (const f of flags) await this.exceptions?.raiseQuietly(f);
 
     if (
       result.outcome === 'settled' ||
@@ -154,6 +181,7 @@ export class InvoiceSettlementService {
     manager: EntityManager,
     invoiceId: string,
     evidence: SettleEvidence,
+    flags: RaiseExceptionInput[],
   ): Promise<{ result: SettleResult; applied: Applied | null }> {
     const invRepo = manager.getRepository(SubscriptionInvoice);
     const inv = await invRepo.findOne({
@@ -192,6 +220,11 @@ export class InvoiceSettlementService {
         this.logger.error(
           `ALERT: duplicate capture — invoice ${inv.id} is already PAID by ${inv.provider_reference} but ${evidence.provider} charge ${evidence.reference} was also captured; refund the duplicate`,
         );
+        flags.push(
+          this.flag(inv, evidence, RECONCILIATION_KIND.DUPLICATE_CAPTURE, {
+            firstChargeId: inv.provider_reference,
+          }),
+        );
       }
       await this.rememberDelivery(invRepo, inv, evidence);
       return {
@@ -203,6 +236,12 @@ export class InvoiceSettlementService {
     if (!PAYABLE_STATUSES.includes(inv.status)) {
       this.logger.error(
         `ALERT: ${evidence.provider} charge ${evidence.reference} was captured for invoice ${inv.id} which is ${inv.status} — not booked; refund it`,
+      );
+      flags.push(
+        this.flag(inv, evidence, RECONCILIATION_KIND.STATUS_MISMATCH, {
+          reason: `invoice_${inv.status.toLowerCase()}`,
+          note: 'Charge captured for an invoice that can no longer be paid',
+        }),
       );
       await this.rememberDelivery(invRepo, inv, evidence);
       return {
@@ -219,6 +258,15 @@ export class InvoiceSettlementService {
     if (mismatch) {
       this.logger.error(
         `ALERT: invoice ${inv.id}: ${evidence.provider} captured ${mismatch} — NOT booked, left for manual review`,
+      );
+      flags.push(
+        this.flag(inv, evidence, RECONCILIATION_KIND.AMOUNT_MISMATCH, {
+          mismatch,
+          expectedAmount: inv.amount,
+          expectedCurrency: inv.currency,
+          capturedMinorUnits: evidence.capturedMinorUnits ?? null,
+          capturedCurrency: evidence.capturedCurrency ?? null,
+        }),
       );
       return {
         result: {
@@ -264,6 +312,32 @@ export class InvoiceSettlementService {
         invoice: persisted,
       },
       applied: lifecycle.applied,
+    };
+  }
+
+  /**
+   * One queue row per captured charge that was not booked normally (FIN-S2). Keyed
+   * by the provider's charge id, so every door that sees the same charge — the
+   * webhook, its retry, the 10-minute sweep — lands on the same row.
+   */
+  private flag(
+    inv: SubscriptionInvoice,
+    evidence: SettleEvidence,
+    kind: RaiseExceptionInput['kind'],
+    facts: Record<string, unknown>,
+  ): RaiseExceptionInput {
+    return {
+      kind,
+      provider: evidence.provider,
+      objectId: evidence.reference,
+      tenantId: inv.tenant_id,
+      details: {
+        subscriptionInvoiceId: inv.id,
+        invoiceStatus: inv.status,
+        invoiceKind: inv.kind ?? null,
+        source: evidence.source,
+        ...facts,
+      },
     };
   }
 
@@ -403,7 +477,18 @@ export class InvoiceSettlementService {
         sub.plan = plan;
         if (sub.pending_plan?.id === plan.id) sub.pending_plan = null;
         sub.status = SubscriptionStatus.ACTIVE;
-        sub.starts_at = sub.ends_at;
+        // FIN-S5 (decision D-4): if the period this invoice bills is already over
+        // by the time it is paid, counting from the old `ends_at` would hand the
+        // clinic a period that has expired — it would pay and land straight back
+        // in PAST_DUE. Count from the payment instead (the invoice follows).
+        if (
+          computeNextPeriodEnd(sub.ends_at, plan).getTime() <= paidAt.getTime()
+        ) {
+          sub.starts_at = paidAt;
+          inv.period_start = paidAt;
+        } else {
+          sub.starts_at = sub.ends_at;
+        }
         sub.ends_at = computeNextPeriodEnd(sub.starts_at, plan);
         sub.grace_started_at = null;
         sub.grace_expired_at = null;

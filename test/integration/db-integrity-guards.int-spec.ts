@@ -23,10 +23,12 @@
  */
 import 'dotenv/config';
 import { randomUUID } from 'node:crypto';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Client } from 'pg';
 import { DataSource } from 'typeorm';
 
+import { FreeAccessOverrideService } from '../../src/modules/subscription-billing/free-access-override.service';
 import { runSeeders } from '../../src/seed/index.seed';
 import { infraUnavailable } from '../utils/require-infra';
 import { PgFactory, type World } from './support/pg-factory';
@@ -346,5 +348,139 @@ describe('seeding', () => {
     await expect(runSeeders(ds)).resolves.toBeUndefined();
     await expect(runSeeders(ds)).resolves.toBeUndefined();
     expect(await snapshot()).toEqual(first);
+  });
+});
+
+/**
+ * `DELETE FROM subscription_invoices WHERE "tenantId" = $1` sat in a spec for days, wrapped in
+ * `.catch(() => undefined)`: the table's column is `tenant_id`, so Postgres rejected it with
+ * `column "tenantId" does not exist`, the swallowed error left the invoice behind, and every green run
+ * printed the error into the service log — where it read as a CI failure. A swallowed query cannot fail a
+ * test, so the only place to catch this class of mistake is against the real, migrated schema.
+ */
+describe('raw SQL names real columns', () => {
+  const DELETE_BY_COLUMN =
+    /DELETE\s+FROM\s+"?([a-z_][a-z0-9_]*)"?\s+WHERE\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\s*(?:=|<>|!=|<|>|\bIN\b|\bIS\b|::)/g;
+
+  const SYSTEM_COLUMNS = new Set(['ctid', 'xmin', 'xmax', 'cmin', 'cmax', 'tableoid']);
+
+  const sourceFiles = (dir: string, out: string[] = []): string[] => {
+    for (const name of readdirSync(dir)) {
+      if (name === 'node_modules' || name === 'dist' || name === 'migrations') continue;
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) sourceFiles(full, out);
+      else if (full.endsWith('.ts')) out.push(full);
+    }
+    return out;
+  };
+
+  const findDeletes = (text: string) =>
+    [...text.matchAll(DELETE_BY_COLUMN)].map((m) => ({ table: m[1], column: m[2] }));
+
+  it('the scanner flags the exact historical mistake (positive control)', () => {
+    const bad = 'await q(`DELETE FROM subscription_invoices WHERE "tenantId" = $1`, [id])';
+    const good = 'await q(`DELETE FROM subscription_invoices WHERE tenant_id = $1`, [id])';
+    expect(findDeletes(bad)).toEqual([{ table: 'subscription_invoices', column: 'tenantId' }]);
+    expect(findDeletes(good)).toEqual([{ table: 'subscription_invoices', column: 'tenant_id' }]);
+  });
+
+  runIf('subscription_invoices is keyed by tenant_id and has no "tenantId" column', async () => {
+    const cols: { column_name: string }[] = await ds.query(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'subscription_invoices'`,
+    );
+    const names = cols.map((c) => c.column_name);
+    expect(names).toEqual(expect.arrayContaining(['tenant_id', 'subscription_id']));
+    expect(names).not.toContain('tenantId');
+  });
+
+  runIf('every `DELETE FROM <table> WHERE <column>` in src/ and test/ targets a column that exists', async () => {
+    const rows: { table_name: string; column_name: string }[] = await ds.query(
+      `SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = current_schema()`,
+    );
+    const columns = new Map<string, Set<string>>();
+    for (const r of rows) {
+      if (!columns.has(r.table_name)) columns.set(r.table_name, new Set());
+      columns.get(r.table_name)!.add(r.column_name);
+    }
+
+    const missing: string[] = [];
+    let checked = 0;
+    for (const root of ['src', 'test']) {
+      for (const file of sourceFiles(join(process.cwd(), root))) {
+        if (file.endsWith('db-integrity-guards.int-spec.ts')) continue; // quotes the bad statement on purpose
+        for (const { table, column } of findDeletes(readFileSync(file, 'utf8'))) {
+          const known = columns.get(table);
+          if (!known) continue; // a table this migration chain does not own (fixture/temp table)
+          if (SYSTEM_COLUMNS.has(column)) continue; // `DELETE ... WHERE ctid = ...` — a Postgres system column
+          checked++;
+          if (!known.has(column)) missing.push(`${file.slice(process.cwd().length + 1)}: ${table}.${column}`);
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(10); // the scan really ran
+    expect(missing).toEqual([]);
+  });
+});
+
+/**
+ * `FreeAccessOverrideService.grant` admits ONE override per tenant: it takes a per-tenant advisory lock inside a
+ * transaction, checks `getActive`, then inserts. `getActive` filtered on `starts_at <= now()` — and `now()` is the
+ * START of the surrounding transaction, so a grant that began BEFORE the winner's transaction but waited on the lock
+ * could not see the winner's committed row and inserted a second ACTIVE override. On a developer machine the
+ * transactions rarely start out of order; on a 2-CPU Linux runner they do ("admits exactly one of five simultaneous
+ * grants": 2 accepted).
+ */
+describe('free-access grant under concurrency', () => {
+  const service = () =>
+    new FreeAccessOverrideService(
+      ds,
+      { record: async () => undefined } as never, // audit
+      { getUser: () => undefined } as never, // tenant context
+      { invalidate: () => undefined } as never, // access cache
+      { get: () => undefined } as never, // config
+    );
+
+  const activeRows = async (tenantId: string) =>
+    count(`SELECT count(*) n FROM free_access_overrides WHERE tenant_id = $1 AND status = 'ACTIVE'`, [tenantId]);
+
+  runIf('a waiting grant whose transaction began BEFORE the winner committed still sees the winner (deterministic)', async () => {
+    const w = factory.world();
+    const tenantId = await w.make('tenants');
+    const svc = service();
+
+    // The loser: a transaction that has already started (so its `now()` is fixed) but has not taken the lock yet.
+    const runner = ds.createQueryRunner();
+    await runner.connect();
+    await runner.startTransaction();
+    try {
+      await runner.query('SELECT 1');
+      await new Promise((r) => setTimeout(r, 50)); // guarantee the winner's transaction starts strictly later
+
+      await svc.grant(tenantId, { durationDays: 10 }); // the winner commits first
+
+      // The loser now takes the lock and runs the duplicate check — it MUST find the winner's row.
+      expect(await svc.getActive(tenantId, runner.manager)).not.toBeNull();
+      expect(await svc.hasActive(tenantId, runner.manager)).toBe(true);
+    } finally {
+      await runner.rollbackTransaction();
+      await runner.release();
+    }
+    expect(await activeRows(tenantId)).toBe(1);
+  });
+
+  runIf('admits exactly one of five simultaneous grants, every round (separate pooled connections)', async () => {
+    const svc = service();
+    for (let round = 0; round < 12; round++) {
+      const w = factory.world();
+      const tenantId = await w.make('tenants');
+      const results = await Promise.allSettled(Array.from({ length: 5 }, () => svc.grant(tenantId, { durationDays: 10 })));
+      const accepted = results.filter((r) => r.status === 'fulfilled');
+      const refused = results.filter((r) => r.status === 'rejected');
+      expect([round, accepted.length]).toEqual([round, 1]);
+      expect(refused).toHaveLength(4);
+      for (const r of refused) expect((r as PromiseRejectedResult).reason).toMatchObject({ code: 'CONFLICT' });
+      expect([round, await activeRows(tenantId)]).toEqual([round, 1]);
+    }
   });
 });

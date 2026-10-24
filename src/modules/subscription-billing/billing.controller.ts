@@ -270,6 +270,7 @@ is marked PAID; on a decline it stays unpaid and returns 422.
     description: 'Invoice not payable, or payment declined.',
     schema: S_ERROR,
   })
+  @Throttle(BILLING_CHECKOUT_THROTTLE) // FIN-S6: each call is a provider charge attempt
   @Post('invoices/:id/pay')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.BILLING_MANAGE)

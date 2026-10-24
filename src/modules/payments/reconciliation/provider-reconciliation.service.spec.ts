@@ -233,4 +233,84 @@ describe('ProviderReconciliationService', () => {
       );
     });
   });
+  describe('FIN-S10 — a captured charge we hold no id for is tied to its invoice by the reference we sent', () => {
+    const INV = '3f1b7c52-9d4e-4b8a-8f6e-2a1c5d7e9b03';
+    const run = async (invoiceRow: Record<string, unknown> | null, row = {}) => {
+      dataSource.query
+        .mockResolvedValueOnce([]) // payments by charge id
+        .mockResolvedValueOnce([]) // invoices by charge id
+        .mockResolvedValueOnce(invoiceRow ? [invoiceRow] : []); // invoices by reference.transaction
+      const summary: any = { rows: 0, skippedRows: 0, matched: 0, exceptions: 0 };
+      await (build() as any).applyReport(
+        { scope: 'platform', merchantId: 'merchant_PLATFORM' },
+        [
+          {
+            chargeId: 'chg_FIRSTATTEMPT',
+            status: 'CAPTURED',
+            amount: 100,
+            currency: 'SAR',
+            merchantId: 'merchant_PLATFORM',
+            chargeDate: new Date(Date.now() - 5 * 3_600_000),
+            referenceTransaction: INV,
+            ...row,
+          },
+        ],
+        0,
+        { complete: false },
+        summary,
+      );
+    };
+    const invoice = (status: string) => ({
+      id: INV,
+      tenant_id: 'tenant-1',
+      amount: '100.00',
+      currency: 'SAR',
+      status,
+      provider_reference: status === 'PAID' ? 'chg_OTHER' : null,
+      checkout_charge_id: 'chg_SECONDATTEMPT',
+    });
+
+    it('raises DUPLICATE_CAPTURE against the invoice when it is already paid by another charge', async () => {
+      await run(invoice('PAID'));
+      expect(exceptions.raise).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'DUPLICATE_CAPTURE',
+          objectId: 'chg_FIRSTATTEMPT',
+          tenantId: 'tenant-1',
+          details: expect.objectContaining({
+            subscriptionInvoiceId: INV,
+            firstChargeId: 'chg_OTHER',
+          }),
+        }),
+      );
+    });
+
+    it('raises STATUS_MISMATCH against the invoice when it is still unpaid (money taken on an attempt it no longer points at)', async () => {
+      await run(invoice('OPEN'));
+      expect(exceptions.raise).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'STATUS_MISMATCH',
+          tenantId: 'tenant-1',
+          details: expect.objectContaining({
+            reason: 'captured_on_earlier_checkout_attempt',
+            currentCheckoutChargeId: 'chg_SECONDATTEMPT',
+          }),
+        }),
+      );
+    });
+
+    it('stays UNKNOWN_CHARGE when no invoice of ours carries that reference', async () => {
+      await run(null);
+      expect(exceptions.raise).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'UNKNOWN_CHARGE' }),
+      );
+    });
+
+    it('does not even look up a reference that is not an id (the column is free text)', async () => {
+      dataSource.query.mockClear();
+      await run(null, { referenceTransaction: "x'; DROP TABLE y;--" });
+      // payments + invoices-by-charge only; no third (by-reference) query
+      expect(dataSource.query.mock.calls.length).toBeLessThan(3);
+    });
+  });
 });

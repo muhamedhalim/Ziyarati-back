@@ -103,6 +103,29 @@ describe('PaymentReconciliationService (webhook-loss recovery)', () => {
 
   afterEach(() => jest.clearAllMocks());
 
+  it('FIN-X2: a stuck head of the queue does not hide the rows behind it — the next page excludes what was already taken', async () => {
+    const page = (prefix: string, n: number) =>
+      Array.from({ length: n }, (_v, i) => ({
+        ...stalePending(),
+        id: `${prefix}${i}`,
+      }));
+    payments.find
+      .mockResolvedValueOnce(page('a', 200))
+      .mockResolvedValueOnce(page('b', 3));
+    gateway.verifyPayment.mockResolvedValue({
+      success: false,
+      status: 'pending',
+      raw: {},
+    });
+
+    const summary = await service.reconcileStalePending();
+
+    expect(summary.scanned).toBe(203);
+    // (a later find is the unattached-payment recovery, a different query)
+    expect(payments.find.mock.calls[0][0].where.id).toBeUndefined();
+    expect(payments.find.mock.calls[1][0].where.id).toBeDefined(); // Not(In([...the 200 taken]))
+  });
+
   it('recovers a missing "paid" webhook: books PAID and emits the succeeded event', async () => {
     payments.find.mockResolvedValueOnce([stalePending()]);
     gateway.verifyPayment.mockResolvedValueOnce({

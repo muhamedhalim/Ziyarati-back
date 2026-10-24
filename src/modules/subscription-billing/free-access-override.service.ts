@@ -320,12 +320,18 @@ export class FreeAccessOverrideService {
     manager?: EntityManager,
   ): Promise<FreeAccessOverride | null> {
     const runner = manager ?? this.dataSource;
+    // `clock_timestamp()`, NOT `now()`: `now()` is the START of the surrounding transaction. `grant()` takes
+    // the per-tenant advisory lock inside a transaction that began BEFORE it won the lock, so a waiting
+    // grant's `now()` predates the row the winner just committed (`starts_at = now()` of the winner's later
+    // transaction) — the winner's override was invisible to it and a second ACTIVE row was inserted
+    // ("admits exactly one of five simultaneous grants" failed on a 2-CPU Linux runner). The statement-time
+    // clock is still the database clock, which is the single time source this service promises.
     const rows = await runner.query(
       `SELECT * FROM free_access_overrides
        WHERE tenant_id = $1
          AND status = 'ACTIVE'
-         AND starts_at <= now()
-         AND (ends_at IS NULL OR ends_at > now())
+         AND starts_at <= clock_timestamp()
+         AND (ends_at IS NULL OR ends_at > clock_timestamp())
        ORDER BY created_at DESC
        LIMIT 1`,
       [tenantId],

@@ -1,4 +1,4 @@
-import { EntityManager } from 'typeorm';
+import { EntityManager, SelectQueryBuilder } from 'typeorm';
 
 import { OutboxJob } from '../../entities/Campaigns/OutboxJob';
 import { JOB, QUEUE } from '../../queue/queue.constants';
@@ -81,6 +81,62 @@ export function paymentOutcomeDedupeKey(input: PaymentOutcomeInput): string {
     case PAYMENT_OUTCOME.REFUND_RECORDED:
       return `payment-outcome-refund-${input.refundId ?? paymentId}`;
   }
+}
+
+/**
+ * FIN-X1 — an outcome job that exhausted its retry budget leaves a captured
+ * payment whose booking / add-on / upgrade was never applied, and its outbox row
+ * is already PUBLISHED, so nothing else would ever try again. The worker writes a
+ * FRESH, delayed outbox row for it instead (a re-drive), bounded so a payment the
+ * consumer can never apply (a real bug) ends in the ALERT for a human rather than
+ * looping for ever. Every consumer is idempotent on the payment's CURRENT state,
+ * so a re-drive that finds the work already done is a no-op.
+ */
+export const PAYMENT_OUTCOME_MAX_REDRIVES = 3;
+export const PAYMENT_OUTCOME_REDRIVE_DELAY_MS = 30 * 60_000;
+
+export function paymentOutcomeRedriveDedupeKey(
+  input: PaymentOutcomeInput,
+  round: number,
+): string {
+  return `payment-outcome-redrive-${input.paymentId}-${input.outcome}-${input.refundId ?? 'x'}-r${round}`;
+}
+
+/**
+ * Insert the next re-drive row. `current` is the round of the job that just
+ * failed (0 = the original). Returns the new round, or null when the bound is
+ * reached. Idempotent: the same round is one row.
+ */
+export async function enqueuePaymentOutcomeRedrive(
+  db: { createQueryBuilder: () => SelectQueryBuilder<any> },
+  input: PaymentOutcomeInput,
+  current: number,
+): Promise<number | null> {
+  const round = current + 1;
+  if (round > PAYMENT_OUTCOME_MAX_REDRIVES) return null;
+  await db
+    .createQueryBuilder()
+    .insert()
+    .into(OutboxJob)
+    .values({
+      queue: QUEUE.PAYMENTS,
+      job_name: JOB.PAYMENTS_OUTCOME,
+      dedupe_key: paymentOutcomeRedriveDedupeKey(input, round),
+      payload: {
+        tenantId: input.tenantId,
+        paymentId: input.paymentId,
+        outcome: input.outcome,
+        ...(input.refundId ? { refundId: input.refundId } : {}),
+        redrive: round,
+      },
+      opts: {
+        ...PAYMENT_OUTCOME_JOB_OPTS,
+        delay: PAYMENT_OUTCOME_REDRIVE_DELAY_MS,
+      },
+    })
+    .orIgnore()
+    .execute();
+  return round;
 }
 
 /**

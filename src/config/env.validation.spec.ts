@@ -88,6 +88,51 @@ describe('env.validation', () => {
     ).toThrow(/Env validation error/);
   });
 
+  describe('FIN-S12 — the simulated gateway must not sit behind a public https URL', () => {
+    const publicDev = {
+      ...base,
+      NODE_ENV: 'development',
+      APP_URL: 'https://app.example-clinic.com',
+    };
+
+    it('refuses a development boot on a public https APP_URL with no usable Tap', () => {
+      expect(() => validate(publicDev)).toThrow(/NODE_ENV=production/);
+    });
+
+    it('accepts it with the explicit acknowledgement', () => {
+      expect(() =>
+        validate({ ...publicDev, ALLOW_PAYMENT_SIMULATOR_IN_PRODUCTION: 'true' }),
+      ).not.toThrow();
+    });
+
+    it('accepts it when Tap is actually configured for the selected TAP_ENV', () => {
+      expect(() =>
+        validate({
+          ...publicDev,
+          PAYMENT_PROVIDER: 'tap',
+          TAP_ENV: 'sandbox',
+          TAP_TEST_SECRET_KEY: 'sk_test_x',
+          TAP_MERCHANT_ID: 'merchant_1',
+        }),
+      ).not.toThrow();
+    });
+
+    it.each([
+      'http://localhost:3000',
+      'https://localhost:3000',
+      'https://clinic.localhost',
+      'https://app.test',
+    ])('never trips on a local address (%s)', (APP_URL) => {
+      expect(() => validate({ ...base, NODE_ENV: 'development', APP_URL })).not.toThrow();
+    });
+
+    it('does not apply to the test environment', () => {
+      expect(() =>
+        validate({ ...base, NODE_ENV: 'test', APP_URL: 'https://app.example-clinic.com' }),
+      ).not.toThrow();
+    });
+  });
+
   it('rejects an invalid NODE_ENV enum', () => {
     expect(() => validate({ ...base, NODE_ENV: 'staging' })).toThrow(
       /Env validation error/,

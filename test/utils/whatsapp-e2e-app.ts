@@ -198,6 +198,12 @@ export async function createE2eApp(
   );
 
   await app.init();
+  // Listen BEFORE any spec fires requests. `supertest(server)` on a server that is not listening opens its own
+  // listener for the first request and CLOSES it when that request finishes — under a concurrent burst
+  // (`Promise.all` of N requests) the first finisher tears the listener down under the others, which then fail
+  // with `read ECONNRESET`. That is timing-dependent: 0/1000 on a fast desktop, 3/1000 on a 2-CPU Linux box
+  // (public-discovery-throttle, public-booking-context). A listening server is shared and never closed per request.
+  await app.listen(0, '127.0.0.1');
 
   return {
     app,

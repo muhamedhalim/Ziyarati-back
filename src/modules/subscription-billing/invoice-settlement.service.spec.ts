@@ -11,6 +11,8 @@ import { PaymentMethodService } from './payment-method.service';
 import { AccessControlService } from './access-control.service';
 import { computeNextPeriodEnd } from './subscription-period.util';
 import { EmailService } from '../email/email.service';
+import { RECONCILIATION_KIND } from '../payments/payments.constants';
+import { ReconciliationExceptionService } from '../payments/reconciliation/reconciliation-exception.service';
 import {
   PLATFORM_ADMIN_AUDIT_ACTION,
   PlatformAdminAuditService,
@@ -83,6 +85,7 @@ describe('InvoiceSettlementService', () => {
   let emitter: { emit: jest.Mock };
   let audit: { record: jest.Mock };
   let email: { sendInvoice: jest.Mock };
+  let exceptions: { raiseQuietly: jest.Mock };
 
   const invoice = (over: Record<string, unknown> = {}) => ({
     id: 'inv-1',
@@ -153,6 +156,7 @@ describe('InvoiceSettlementService', () => {
     emitter = { emit: jest.fn() };
     audit = { record: jest.fn().mockResolvedValue(undefined) };
     email = { sendInvoice: jest.fn() };
+    exceptions = { raiseQuietly: jest.fn().mockResolvedValue(undefined) };
     tenants.findOne.mockResolvedValue({
       id: TENANT,
       contact_email: 'owner@clinic.test',
@@ -170,6 +174,7 @@ describe('InvoiceSettlementService', () => {
         { provide: EventEmitter2, useValue: emitter },
         { provide: PlatformAdminAuditService, useValue: audit },
         { provide: EmailService, useValue: email },
+        { provide: ReconciliationExceptionService, useValue: exceptions },
       ],
     }).compile();
     service = moduleRef.get(InvoiceSettlementService);
@@ -425,6 +430,105 @@ describe('InvoiceSettlementService', () => {
   });
 
   // ───────────────────────────── the invoice itself ───────────────────────── //
+
+  // FIN-S2 — captured money that is NOT booked as it arrives is a durable
+  // reconciliation exception, not just a log line.
+  describe('captured-but-not-booked money is recorded in the reconciliation queue', () => {
+    beforeEach(() => {
+      jest.spyOn((service as any).logger, 'error').mockImplementation();
+    });
+
+    it.each([InvoiceStatus.VOID, InvoiceStatus.REFUNDED])(
+      'a capture on a %s invoice raises STATUS_MISMATCH keyed by the charge id',
+      async (status) => {
+        arrange(invoice({ status }), subscription());
+        await service.settleInvoicePaid('inv-1', evidence());
+        expect(exceptions.raiseQuietly).toHaveBeenCalledTimes(1);
+        expect(exceptions.raiseQuietly).toHaveBeenCalledWith(
+          expect.objectContaining({
+            kind: RECONCILIATION_KIND.STATUS_MISMATCH,
+            provider: 'tap',
+            objectId: 'chg_1',
+            tenantId: TENANT,
+            details: expect.objectContaining({
+              subscriptionInvoiceId: 'inv-1',
+              invoiceStatus: status,
+              reason: `invoice_${status.toLowerCase()}`,
+            }),
+          }),
+        );
+      },
+    );
+
+    it('an amount/currency mismatch raises AMOUNT_MISMATCH with expected and captured figures', async () => {
+      arrange(invoice(), subscription());
+      await service.settleInvoicePaid(
+        'inv-1',
+        evidence({ capturedMinorUnits: 1 }),
+      );
+      expect(exceptions.raiseQuietly).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: RECONCILIATION_KIND.AMOUNT_MISMATCH,
+          objectId: 'chg_1',
+          details: expect.objectContaining({
+            expectedAmount: '100.00',
+            expectedCurrency: 'SAR',
+            capturedMinorUnits: 1,
+          }),
+        }),
+      );
+    });
+
+    it('a SECOND charge on an already-paid invoice raises DUPLICATE_CAPTURE on the second charge id', async () => {
+      arrange(
+        invoice({ status: InvoiceStatus.PAID, provider_reference: 'chg_FIRST' }),
+        subscription(),
+      );
+      await service.settleInvoicePaid(
+        'inv-1',
+        evidence({ reference: 'chg_SECOND' }),
+      );
+      expect(exceptions.raiseQuietly).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: RECONCILIATION_KIND.DUPLICATE_CAPTURE,
+          objectId: 'chg_SECOND',
+          details: expect.objectContaining({ firstChargeId: 'chg_FIRST' }),
+        }),
+      );
+    });
+
+    it('a PAID invoice whose subscription could not take the payment raises STATUS_MISMATCH (unapplied)', async () => {
+      arrange(
+        invoice(),
+        subscription({ status: SubscriptionStatus.CANCELLED }),
+      );
+      const res = await service.settleInvoicePaid('inv-1', evidence());
+      expect(res.outcome).toBe('settled_unapplied');
+      expect(exceptions.raiseQuietly).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: RECONCILIATION_KIND.STATUS_MISMATCH,
+          objectId: 'chg_1',
+          details: expect.objectContaining({ reason: 'subscription_cancelled' }),
+        }),
+      );
+    });
+
+    it('records nothing for a normal settlement, an idempotent replay, or the same charge seen twice', async () => {
+      arrange(invoice(), subscription());
+      expect((await service.settleInvoicePaid('inv-1', evidence())).outcome).toBe(
+        'settled',
+      );
+      arrange(
+        invoice({ status: InvoiceStatus.PAID, provider_reference: 'chg_1' }),
+        subscription(),
+      );
+      await service.settleInvoicePaid(
+        'inv-1',
+        evidence({ webhookEventId: null }),
+      );
+      expect(exceptions.raiseQuietly).not.toHaveBeenCalled();
+    });
+  });
 
   describe('marking the invoice PAID', () => {
     it('sets the paid facts, clears every in-flight marker, and stores the dedupe key', async () => {
@@ -722,6 +826,24 @@ describe('InvoiceSettlementService', () => {
   });
 
   describe('RENEWAL — the next period, plan = what the invoice billed', () => {
+    // Only the clock is pinned: these periods are dated October 2026 and the
+    // late-payment rule (FIN-S5) compares them with "now".
+    beforeEach(() => {
+      jest.useFakeTimers({
+        now: new Date('2026-10-15T00:00:00.000Z'),
+        doNotFake: [
+          'nextTick',
+          'setImmediate',
+          'setTimeout',
+          'setInterval',
+          'clearTimeout',
+          'clearInterval',
+          'queueMicrotask',
+        ],
+      });
+    });
+    afterEach(() => jest.useRealTimers());
+
     const renewal = (over: Record<string, unknown> = {}) =>
       invoice({
         kind: SubscriptionInvoiceKind.RENEWAL,
@@ -806,6 +928,43 @@ describe('InvoiceSettlementService', () => {
       expect(sub.ends_at).toEqual(
         computeNextPeriodEnd(oldEnd, PLAN_YEARLY as never),
       );
+    });
+
+    it('FIN-S5 (D-4): a renewal paid AFTER the period it bills has already ended counts the new period from the payment, and the invoice follows', async () => {
+      const oldEnd = new Date('2026-08-01T00:00:00.000Z'); // a month and a half ago
+      const sub = subscription({
+        status: SubscriptionStatus.GRACE_EXPIRED,
+        ends_at: oldEnd,
+      });
+      const inv = renewal({
+        period_start: oldEnd,
+        period_end: new Date('2026-09-01T00:00:00.000Z'),
+      });
+      arrange(inv, sub);
+
+      const res = await service.settleInvoicePaid('inv-1', evidence());
+      const paidAt = new Date('2026-10-15T00:00:00.000Z');
+
+      expect(res.outcome).toBe('settled');
+      expect(sub.status).toBe(SubscriptionStatus.ACTIVE);
+      expect(sub.starts_at).toEqual(paidAt);
+      expect(sub.ends_at).toEqual(
+        computeNextPeriodEnd(paidAt, PLAN_A as never),
+      );
+      expect(sub.ends_at.getTime()).toBeGreaterThan(paidAt.getTime());
+      expect(inv.period_start).toEqual(paidAt);
+      expect(inv.period_end).toEqual(sub.ends_at);
+    });
+
+    it('FIN-S5: a renewal paid within the period it bills still counts from the OLD end (continuity unchanged)', async () => {
+      const oldEnd = new Date('2026-10-01T00:00:00.000Z');
+      const sub = subscription({
+        status: SubscriptionStatus.PAST_DUE,
+        ends_at: oldEnd,
+      });
+      arrange(renewal(), sub);
+      await service.settleInvoicePaid('inv-1', evidence());
+      expect(sub.starts_at).toEqual(oldEnd);
     });
 
     it('a STALE renewal invoice (the subscription already moved past its period) is recorded but NOT applied — it would advance the clinic twice', async () => {

@@ -353,11 +353,20 @@ export class PlanAdminService {
   /** How many non-cancelled subscriptions reference this plan (compat check). */
   async isInUse(planId: string): Promise<boolean> {
     const count = await this.subscriptions.count({
-      where: {
-        plan: { id: planId },
-        status: Not(SubscriptionStatus.CANCELLED),
-        deleted_at: IsNull(),
-      },
+      where: [
+        {
+          plan: { id: planId },
+          status: Not(SubscriptionStatus.CANCELLED),
+          deleted_at: IsNull(),
+        },
+        // FIN-S7: a scheduled downgrade is a promise made at this plan's current
+        // terms; editing them would silently change what that clinic gets billed.
+        {
+          pending_plan: { id: planId },
+          status: Not(SubscriptionStatus.CANCELLED),
+          deleted_at: IsNull(),
+        },
+      ],
     });
     return count > 0;
   }

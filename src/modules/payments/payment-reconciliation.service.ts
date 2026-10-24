@@ -4,6 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import {
   Between,
   DataSource,
+  In,
   IsNull,
   LessThanOrEqual,
   Not,
@@ -41,6 +42,13 @@ import {
  * provider about every abandoned checkout forever.
  */
 const CHECKOUT_RECONCILE_WINDOW_MS = 48 * 60 * 60_000;
+/**
+ * FIN-X2 — a sweep reads its candidates oldest-first with a page size. A row that
+ * STAYS a candidate (still claimed, provider unreachable) kept the head of the
+ * line every run, so with enough of them the rows behind were never looked at.
+ * Each run now walks up to this many pages, excluding the ids it already took.
+ */
+const SWEEP_MAX_PAGES = 5;
 /** Tap honours one idempotency key for 24h: an unresolved charge older than that needs a person. */
 const UNRESOLVED_ALERT_MS = 24 * 60 * 60_000;
 
@@ -121,21 +129,48 @@ export class PaymentReconciliationService {
     private readonly invoiceRefunds?: SubscriptionInvoiceRefundService,
   ) {}
 
+  /**
+   * FIN-X2 — gather a sweep's candidates page by page (see `SWEEP_MAX_PAGES`).
+   * `fetch` receives the ids already taken so a stuck head cannot be read twice.
+   */
+  private async collectCandidates<T extends { id: string }>(
+    label: string,
+    pageSize: number,
+    fetch: (exclude: string[]) => Promise<T[]>,
+  ): Promise<T[]> {
+    const out: T[] = [];
+    for (let page = 0; page < SWEEP_MAX_PAGES; page++) {
+      const rows = await fetch(out.map((r) => r.id));
+      out.push(...rows);
+      if (rows.length < pageSize) return out;
+    }
+    this.logger.warn(
+      `recon(${label}): backlog exceeds ${SWEEP_MAX_PAGES * pageSize} candidates — the rest wait for the next run`,
+    );
+    return out;
+  }
+
   /** Sweep stale PENDING payments and reconcile each against the gateway. */
   async reconcileStalePending(): Promise<ReconcileSummary> {
     const cutoff = new Date(
       Date.now() - this.config.reconStaleMinutes * 60_000,
     );
-    const candidates = await this.payments.find({
-      where: {
-        status: PaymentStatus.PENDING,
-        gateway_payment_id: Not(IsNull()),
-        created_at: LessThanOrEqual(cutoff),
-      },
-      relations: { tenant: true, customer: true, appointment: true },
-      order: { created_at: 'ASC' },
-      take: 200,
-    });
+    const candidates = await this.collectCandidates(
+      'payments',
+      200,
+      (exclude) =>
+        this.payments.find({
+          where: {
+            status: PaymentStatus.PENDING,
+            gateway_payment_id: Not(IsNull()),
+            created_at: LessThanOrEqual(cutoff),
+            ...(exclude.length ? { id: Not(In(exclude)) } : {}),
+          },
+          relations: { tenant: true, customer: true, appointment: true },
+          order: { created_at: 'ASC' },
+          take: 200,
+        }),
+    );
 
     const summary: ReconcileSummary = {
       scanned: candidates.length,
@@ -236,17 +271,20 @@ export class PaymentReconciliationService {
     const cutoff = new Date(
       Date.now() - this.config.reconStaleMinutes * 60_000,
     );
-    const stuck = await this.payments.find({
-      where: {
-        status: PaymentStatus.PENDING,
-        gateway_payment_id: IsNull(),
-        gateway: Not(IsNull()),
-        created_at: LessThanOrEqual(cutoff),
-      },
-      relations: { tenant: true, customer: true, appointment: true },
-      order: { created_at: 'ASC' },
-      take: 100,
-    });
+    const stuck = await this.collectCandidates('unattached', 100, (exclude) =>
+      this.payments.find({
+        where: {
+          status: PaymentStatus.PENDING,
+          gateway_payment_id: IsNull(),
+          gateway: Not(IsNull()),
+          created_at: LessThanOrEqual(cutoff),
+          ...(exclude.length ? { id: Not(In(exclude)) } : {}),
+        },
+        relations: { tenant: true, customer: true, appointment: true },
+        order: { created_at: 'ASC' },
+        take: 100,
+      }),
+    );
 
     const attached: Payment[] = [];
     for (const payment of stuck) {
@@ -363,10 +401,7 @@ export class PaymentReconciliationService {
       if (verify.status === 'paid') {
         locked.status = PaymentStatus.PAID;
         locked.paid_at = new Date();
-        this.financials.applyOnPaid(
-          locked,
-          verify.fees,
-        );
+        this.financials.applyOnPaid(locked, verify.fees);
         await repo.save(locked);
         // REL-005: THIS is the path that recovers a lost webhook — and it runs in
         // the WORKER process, where the in-process event below reaches only the
@@ -438,21 +473,30 @@ export class PaymentReconciliationService {
       Date.now() - this.config.reconStaleMinutes * 60_000,
     );
     const checkoutFloor = new Date(Date.now() - CHECKOUT_RECONCILE_WINDOW_MS);
-    const candidates = await this.invoices.find({
-      where: [
-        {
-          charge_started_at: LessThanOrEqual(cutoff),
-          status: Not(InvoiceStatus.VOID),
-        },
-        {
-          status: InvoiceStatus.OPEN,
-          checkout_charge_id: Not(IsNull()),
-          checkout_started_at: Between(checkoutFloor, cutoff),
-        },
-      ],
-      order: { charge_started_at: 'ASC' },
-      take: 200,
-    });
+    const candidates = await this.collectCandidates(
+      'subscriptions',
+      200,
+      (exclude) => {
+        const notTaken = exclude.length ? { id: Not(In(exclude)) } : {};
+        return this.invoices.find({
+          where: [
+            {
+              charge_started_at: LessThanOrEqual(cutoff),
+              status: Not(InvoiceStatus.VOID),
+              ...notTaken,
+            },
+            {
+              status: InvoiceStatus.OPEN,
+              checkout_charge_id: Not(IsNull()),
+              checkout_started_at: Between(checkoutFloor, cutoff),
+              ...notTaken,
+            },
+          ],
+          order: { charge_started_at: 'ASC' },
+          take: 200,
+        });
+      },
+    );
 
     const summary: SubscriptionReconcileSummary = {
       scanned: candidates.length,

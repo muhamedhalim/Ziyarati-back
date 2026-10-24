@@ -384,6 +384,76 @@ describe('RenewalService (T080/T081/T085/T086, US5)', () => {
     });
   });
 
+  describe('FIN-S4 — a plan that costs nothing is extended, never invoiced', () => {
+    const FREE_PLAN = { ...PLAN, id: 'plan-free', price: '0.00' };
+    let savedSubs: any[];
+    let manager: any;
+
+    beforeEach(() => {
+      savedSubs = [];
+      const repo = {
+        findOne: jest.fn(),
+        save: jest.fn(async (s: any) => {
+          savedSubs.push(s);
+          return s;
+        }),
+      };
+      manager = { getRepository: jest.fn(() => repo), repo };
+      (subscriptions as any).manager = {
+        transaction: jest.fn(async (cb: any) => cb(manager)),
+      };
+    });
+
+    it('rolls a zero-price subscription into the next period without creating an invoice or charging', async () => {
+      const sub = baseSubscription({ plan: FREE_PLAN } as never);
+      pageOf(sub);
+      manager.repo.findOne.mockResolvedValueOnce({ ...sub });
+
+      const res = await service.processDueBills();
+
+      expect(billing.generateInvoice).not.toHaveBeenCalled();
+      expect(billing.payInvoice).not.toHaveBeenCalled();
+      expect(res).toMatchObject({ due: 1, settled: 1, declined: 0 });
+      expect(savedSubs).toHaveLength(1);
+      expect(savedSubs[0]).toMatchObject({
+        status: SubscriptionStatus.ACTIVE,
+        starts_at: sub.ends_at,
+        grace_started_at: null,
+      });
+      expect(savedSubs[0].ends_at.getTime()).toBeGreaterThan(
+        sub.ends_at.getTime(),
+      );
+    });
+
+    it('does nothing when the locked row is no longer PAST_DUE on the same period (a concurrent sweep got there first)', async () => {
+      const sub = baseSubscription({ plan: FREE_PLAN } as never);
+      pageOf(sub);
+      manager.repo.findOne.mockResolvedValueOnce({
+        ...sub,
+        status: SubscriptionStatus.ACTIVE,
+      });
+
+      const res = await service.processDueBills();
+
+      expect(savedSubs).toHaveLength(0);
+      expect(res.skipped).toBe(1);
+    });
+
+    it('a PAID plan is untouched by this path', async () => {
+      pageOf(baseSubscription());
+      billing.generateInvoice.mockResolvedValueOnce({
+        id: 'inv-9',
+        status: InvoiceStatus.OPEN,
+        retry_count: 0,
+        next_retry_at: null,
+      });
+      invoices.findOne.mockResolvedValue(null);
+      billing.payInvoice.mockResolvedValueOnce({ status: InvoiceStatus.PAID });
+      await service.processDueBills();
+      expect((subscriptions as any).manager.transaction).not.toHaveBeenCalled();
+    });
+  });
+
   describe('retry due-ness', () => {
     it('skips an invoice whose next_retry_at is still in the future', async () => {
       pageOf(baseSubscription());
@@ -510,7 +580,20 @@ describe('RenewalService (T080/T081/T085/T086, US5)', () => {
   });
 
   describe('onDeclined — retry bookkeeping only, never touches Subscription.status', () => {
+    /** FIN-S3: the bump is ONE guarded UPDATE (never load-then-save of the row). */
+    const mockBump = (affected = 1) => {
+      const qb: any = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected }),
+      };
+      invoices.createQueryBuilder = jest.fn(() => qb);
+      return qb;
+    };
+
     it('bumps retry_count and schedules a +1 day retry on the first decline', async () => {
+      const bump = mockBump();
       const sub = baseSubscription({
         grace_started_at: new Date(
           Date.now() + 10 * 86_400_000,
@@ -530,6 +613,7 @@ describe('RenewalService (T080/T081/T085/T086, US5)', () => {
         .mockResolvedValueOnce(null) // create path check
         .mockResolvedValueOnce({
           ...invoice,
+          status: InvoiceStatus.OPEN,
           failure_reason: 'Card declined',
           failure_class: null,
         }); // re-fetch in onDeclined
@@ -543,11 +627,17 @@ describe('RenewalService (T080/T081/T085/T086, US5)', () => {
       const result = await service.processDueBills();
 
       expect(subscriptions.save).not.toHaveBeenCalled();
-      expect(invoices.save).toHaveBeenCalledWith(
+      expect(invoices.save).not.toHaveBeenCalled();
+      expect(bump.set).toHaveBeenCalledWith(
         expect.objectContaining({
           retry_count: 1,
           next_retry_at: expect.any(Date),
         }),
+      );
+      // Guarded: only an invoice still OPEN at the retry count that was read.
+      expect(bump.where).toHaveBeenCalledWith(
+        expect.stringContaining('status = :open'),
+        expect.objectContaining({ open: InvoiceStatus.OPEN, seen: 0 }),
       );
       expect(audit.record).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -564,6 +654,7 @@ describe('RenewalService (T080/T081/T085/T086, US5)', () => {
     });
 
     it('stops scheduling retries once the next slot would fall at or past grace expiry', async () => {
+      const bump = mockBump();
       const graceStarted = new Date(
         Date.now() - (GRACE_DAYS - 0.5) * 86_400_000,
       ); // half a day of grace left
@@ -577,7 +668,7 @@ describe('RenewalService (T080/T081/T085/T086, US5)', () => {
       invoices.findOne = jest
         .fn()
         .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce({ ...invoice });
+        .mockResolvedValueOnce({ ...invoice, status: InvoiceStatus.OPEN });
       billing.generateInvoice.mockResolvedValueOnce(invoice);
       billing.payInvoice.mockRejectedValueOnce(
         new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'declined' }),
@@ -586,12 +677,55 @@ describe('RenewalService (T080/T081/T085/T086, US5)', () => {
       await service.processDueBills();
 
       // The +1 day retry would land AFTER grace expiry (0.5 days away) — no retry scheduled.
-      expect(invoices.save).toHaveBeenCalledWith(
+      expect(bump.set).toHaveBeenCalledWith(
         expect.objectContaining({ retry_count: 1, next_retry_at: null }),
       );
     });
 
+    it('FIN-S3: an invoice settled while the decline was being handled is NOT written back OPEN', async () => {
+      const bump = mockBump();
+      pageOf(baseSubscription());
+      const invoice = { id: 'inv-1', retry_count: 0, next_retry_at: null, amount: '100.00' };
+      invoices.findOne = jest
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ ...invoice, status: InvoiceStatus.PAID });
+      billing.generateInvoice.mockResolvedValueOnce(invoice);
+      billing.payInvoice.mockRejectedValueOnce(
+        new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'declined' }),
+      );
+
+      await service.processDueBills();
+
+      expect(invoices.save).not.toHaveBeenCalled();
+      expect(bump.execute).not.toHaveBeenCalled();
+    });
+
+    it('FIN-S3: a lost race on the guarded UPDATE (0 rows) records no second decline', async () => {
+      mockBump(0);
+      pageOf(baseSubscription());
+      const invoice = { id: 'inv-1', retry_count: 0, next_retry_at: null, amount: '100.00' };
+      invoices.findOne = jest
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ ...invoice, status: InvoiceStatus.OPEN });
+      billing.generateInvoice.mockResolvedValueOnce(invoice);
+      billing.payInvoice.mockRejectedValueOnce(
+        new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'declined' }),
+      );
+
+      await service.processDueBills();
+
+      expect(invoices.save).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: PLATFORM_ADMIN_AUDIT_ACTION.SUBSCRIPTION_RENEWAL_DECLINED,
+        }),
+      );
+    });
+
     it('stops after the third retry (schedule exhausted) regardless of remaining grace', async () => {
+      const bump = mockBump();
       pageOf(
         baseSubscription({
           grace_started_at: new Date(Date.now() + 30 * 86_400_000),
@@ -614,7 +748,7 @@ describe('RenewalService (T080/T081/T085/T086, US5)', () => {
 
       await service.processDueBills();
 
-      expect(invoices.save).toHaveBeenCalledWith(
+      expect(bump.set).toHaveBeenCalledWith(
         expect.objectContaining({ retry_count: 4, next_retry_at: null }),
       );
     });

@@ -1,4 +1,5 @@
-import { Logger } from '@nestjs/common';
+import { Logger, Optional } from '@nestjs/common';
+import { DataSource } from 'typeorm';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job, UnrecoverableError } from 'bullmq';
 
@@ -15,6 +16,10 @@ import { ProviderReconciliationService } from '../../modules/payments/reconcilia
 import { PROVIDER_RECONCILIATION } from '../../modules/payments/payments.constants';
 import { MetricsService } from '../../metrics/metrics.service';
 import { PaymentOutcomeService } from '../payment-outcome.service';
+import {
+  enqueuePaymentOutcomeRedrive,
+  PAYMENT_OUTCOME_MAX_REDRIVES,
+} from '../../modules/payments/payment-outcome.outbox';
 
 const LOCK_KEY = 'lock:payments-reconcile';
 const PROVIDER_LOCK_KEY = 'lock:payments-provider-reconcile';
@@ -69,6 +74,9 @@ export class PaymentsProcessor extends WorkerHost {
     private readonly outcome: PaymentOutcomeService,
     private readonly lock: DistributedLockService,
     private readonly metrics: MetricsService,
+    // FIN-X1: writes the re-drive outbox row. Optional so a unit that does not
+    // exercise exhaustion need not supply it.
+    @Optional() private readonly dataSource?: DataSource,
   ) {
     super();
   }
@@ -163,6 +171,41 @@ export class PaymentsProcessor extends WorkerHost {
     ) {
       this.logger.error(
         `ALERT: payments.outcome job=${job.id} is EXHAUSTED — payment ${(job.data as PaymentsOutcomeJob)?.paymentId} may have an unapplied booking/entitlement; re-drive manually`,
+      );
+      // An unrecoverable job is rejected on purpose (a malformed payload): trying
+      // it again cannot help. Anything else gets a bounded automatic re-drive.
+      if (!(err instanceof UnrecoverableError)) {
+        void this.scheduleRedrive(job.data as PaymentsOutcomeJob);
+      }
+    }
+  }
+
+  /** FIN-X1: queue a delayed copy of an exhausted outcome job (bounded). */
+  async scheduleRedrive(data: PaymentsOutcomeJob): Promise<void> {
+    if (!this.dataSource || !data?.paymentId) return;
+    try {
+      const round = await enqueuePaymentOutcomeRedrive(
+        this.dataSource,
+        {
+          tenantId: data.tenantId,
+          paymentId: data.paymentId,
+          outcome: data.outcome,
+          refundId: data.refundId,
+        },
+        data.redrive ?? 0,
+      );
+      if (round === null) {
+        this.logger.error(
+          `ALERT: payments.outcome for payment ${data.paymentId} still failing after ${PAYMENT_OUTCOME_MAX_REDRIVES} automatic re-drives — apply it manually`,
+        );
+      } else {
+        this.logger.warn(
+          `payments.outcome for payment ${data.paymentId} re-drive ${round}/${PAYMENT_OUTCOME_MAX_REDRIVES} queued`,
+        );
+      }
+    } catch (err) {
+      this.logger.error(
+        `Could not queue the payments.outcome re-drive for payment ${data.paymentId}: ${(err as Error)?.message}`,
       );
     }
   }

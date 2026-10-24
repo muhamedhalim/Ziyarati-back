@@ -221,7 +221,20 @@ describe('PlanAdminService', () => {
       await service.isInUse('plan-1');
       expect(subscriptions.count).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: expect.objectContaining({ plan: { id: 'plan-1' } }),
+          where: expect.arrayContaining([
+            expect.objectContaining({ plan: { id: 'plan-1' } }),
+          ]),
+        }),
+      );
+    });
+
+    it('FIN-S7: a plan that is only a scheduled downgrade target is also in use', async () => {
+      await service.isInUse('plan-1');
+      expect(subscriptions.count).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.arrayContaining([
+            expect.objectContaining({ pending_plan: { id: 'plan-1' } }),
+          ]),
         }),
       );
     });

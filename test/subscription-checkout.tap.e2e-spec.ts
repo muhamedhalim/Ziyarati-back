@@ -640,11 +640,44 @@ describe('Subscriptions over Tap (Phase 3) — real Postgres + Redis', () => {
       expect(s.plan.id).toBe(planPro.id);
     });
 
-    it('cancelling a PENDING_PAYMENT subscription voids its invoice; a payment that still arrives is NOT booked and raises an ALERT', async () => {
+    it('FIN-S1: cancelling is REFUSED (409) while the clinic has a live checkout — nothing is voided, and paying it still activates the subscription', async () => {
+      const clinic = await newClinic('b6live');
+      const created = await subscribe(clinic, planBasic);
+      await openCheckout(clinic, created.openInvoice.id);
+      const chargeId = tap.lastCharge().id;
+
+      const refused = await api.post(clinic.token, '/subscriptions/cancel', {
+        cancelAtPeriodEnd: false,
+      });
+      expect(refused.status).toBe(409);
+      expect((await inv(created.openInvoice.id)).status).toBe(
+        InvoiceStatus.OPEN,
+      );
+      expect((await sub(created.subscription.id)).status).toBe(
+        SubscriptionStatus.PENDING_PAYMENT,
+      );
+
+      // the clinic that was mid-payment is not charged for nothing
+      expect((await payByWebhook(chargeId)).status).toBe(200);
+      expect((await inv(created.openInvoice.id)).status).toBe(
+        InvoiceStatus.PAID,
+      );
+      expect((await sub(created.subscription.id)).status).toBe(
+        SubscriptionStatus.ACTIVE,
+      );
+    });
+
+    it('cancelling a PENDING_PAYMENT subscription voids its invoice; a payment that still arrives is NOT booked, raises an ALERT AND a durable reconciliation exception (FIN-S2)', async () => {
       const clinic = await newClinic('b6');
       const created = await subscribe(clinic, planBasic);
       await openCheckout(clinic, created.openInvoice.id);
       const chargeId = tap.lastCharge().id;
+      // The hosted page's payable window has passed: nobody can complete it any
+      // more, so Tap's answer ("still INITIATED") no longer counts as a live payment.
+      await invoices().update(
+        { id: created.openInvoice.id },
+        { checkout_started_at: new Date(Date.now() - 3 * 3_600_000) },
+      );
 
       const cancelled = await api.post(clinic.token, '/subscriptions/cancel', {
         cancelAtPeriodEnd: true,
@@ -676,6 +709,21 @@ describe('Subscriptions over Tap (Phase 3) — real Postgres + Redis', () => {
         SubscriptionStatus.CANCELLED,
       ); // never resurrected
       expect(await accessAllowed(clinic.tenantId)).toBe(false);
+
+      // FIN-S2: the captured-but-unbooked charge is a row an operator can see,
+      // not just a log line that scrolled away.
+      const rows = await db().query(
+        `SELECT kind, status, tenant_id, details->>'subscriptionInvoiceId' AS inv
+           FROM payment_reconciliation_exceptions WHERE provider_object_id = $1`,
+        [chargeId],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        kind: 'STATUS_MISMATCH',
+        status: 'OPEN',
+        tenant_id: clinic.tenantId,
+        inv: created.openInvoice.id,
+      });
     });
 
     it('a cancelled subscription cannot open a checkout at all', async () => {
@@ -1707,6 +1755,19 @@ describe('Subscriptions over Tap (Phase 3) — real Postgres + Redis', () => {
       const after = await sub(subscriptionId);
       expect(after.ends_at).toEqual(before.ends_at);
       expect((await inv(invoiceId)).provider_reference).toBe(firstCharge);
+
+      // FIN-S2: and it is in the reconciliation queue, keyed by the SECOND charge.
+      const rows = await db().query(
+        `SELECT kind, status, details->>'firstChargeId' AS first
+           FROM payment_reconciliation_exceptions WHERE provider_object_id = $1`,
+        [dup.id],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        kind: 'DUPLICATE_CAPTURE',
+        status: 'OPEN',
+        first: firstCharge,
+      });
     });
 
     it("IDOR: another clinic cannot open a checkout for, nor verify a charge of, this clinic's invoice", async () => {

@@ -18,6 +18,8 @@ import { TenantUsageLimitOverride } from '../../entities/SaaS-Core/TenantUsageLi
 import { SystemSetting } from '../../entities/System&Lookup/SystemSetting';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
+import { PaymentReconciliationException } from '../../entities/Payments/PaymentReconciliationException';
+import { ReconciliationExceptionService } from '../payments/reconciliation/reconciliation-exception.service';
 
 import { SubscriptionService } from './subscription.service';
 import { BillingService } from './billing.service';
@@ -115,6 +117,7 @@ export function resolveSubscriptionPaymentProvider(
       SystemSetting,
       Tenant,
       AuditLog,
+      PaymentReconciliationException,
     ]),
     // Provides SystemSettingService for typed setting reads (trial duration,
     // etc.). `forwardRef` because PlatformModule now imports THIS module back:
@@ -138,6 +141,10 @@ export function resolveSubscriptionPaymentProvider(
     SubscriptionService,
     BillingService,
     InvoiceSettlementService,
+    // FIN-S2: settling records captured-but-unbooked money in the reconciliation
+    // queue. PaymentsModule imports THIS module, so the service cannot be reached
+    // from there; it is stateless, a second instance is harmless.
+    ReconciliationExceptionService,
     SubscriptionInvoiceRefundService,
     SubscriptionCheckoutService,
     PaymentMethodService,

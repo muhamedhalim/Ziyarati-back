@@ -416,6 +416,19 @@ export class ProviderReconciliationService {
     const ids = [...new Set(rows.map((r) => r.chargeId))];
     const payments = await this.loadPayments(ids);
     const invoices = await this.loadInvoices(ids);
+    // FIN-S10: a charge we hold no id for may still be one of OUR invoice's earlier
+    // checkout attempts — the report carries the invoice id we sent as
+    // `reference.transaction`. Only looked up for rows nothing else claims.
+    const orphanRefs = rows
+      .filter(
+        (r) =>
+          r.status === 'CAPTURED' &&
+          r.referenceTransaction &&
+          !payments.has(r.chargeId) &&
+          !invoices.has(r.chargeId),
+      )
+      .map((r) => r.referenceTransaction as string);
+    const invoicesByRef = await this.loadInvoicesById(orphanRefs);
 
     for (const row of rows) {
       const payment = payments.get(row.chargeId);
@@ -428,14 +441,41 @@ export class ProviderReconciliationService {
         await this.checkInvoiceRow(ctx, row, invoice, now, summary);
         continue;
       }
-      if (
-        row.status === 'CAPTURED' &&
-        !(
-          row.chargeDate &&
-          now - row.chargeDate.getTime() <
-            PROVIDER_RECONCILIATION.SETTLE_GRACE_MS
-        )
-      ) {
+      const settleGraceOver = !(
+        row.chargeDate &&
+        now - row.chargeDate.getTime() < PROVIDER_RECONCILIATION.SETTLE_GRACE_MS
+      );
+      const owner =
+        row.status === 'CAPTURED' && row.referenceTransaction
+          ? invoicesByRef.get(row.referenceTransaction)
+          : undefined;
+      if (owner && settleGraceOver) {
+        // Money taken on an attempt the invoice no longer points at. Raised AGAINST
+        // the invoice (its tenant, its id) instead of as an anonymous unknown charge.
+        const paid = INVOICE_PAID_LIKE.has(owner.status);
+        await this.raise(summary, {
+          kind: paid
+            ? RECONCILIATION_KIND.DUPLICATE_CAPTURE
+            : RECONCILIATION_KIND.STATUS_MISMATCH,
+          provider: PROVIDER,
+          objectId: row.chargeId,
+          tenantId: owner.tenant_id,
+          merchantId: ctx.merchantId ?? row.merchantId,
+          details: {
+            subscriptionInvoiceId: owner.id,
+            invoiceStatus: owner.status,
+            reason: paid
+              ? 'second_charge_on_paid_invoice'
+              : 'captured_on_earlier_checkout_attempt',
+            firstChargeId: owner.provider_reference ?? null,
+            currentCheckoutChargeId: owner.checkout_charge_id ?? null,
+            amount: row.amount,
+            currency: row.currency,
+          },
+        });
+        continue;
+      }
+      if (row.status === 'CAPTURED' && settleGraceOver) {
         await this.raise(summary, {
           kind: RECONCILIATION_KIND.UNKNOWN_CHARGE,
           provider: PROVIDER,
@@ -491,6 +531,24 @@ export class ProviderReconciliationService {
           out.set(r.checkout_charge_id, r);
         }
       }
+    }
+    return out;
+  }
+
+  private async loadInvoicesById(ids: string[]): Promise<Map<string, InvoiceRow>> {
+    const out = new Map<string, InvoiceRow>();
+    // The report column is free text: only well-formed ids can be an invoice's.
+    const uuids = [...new Set(ids)].filter((id) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
+    );
+    for (const part of chunk(uuids, 500)) {
+      const rows: InvoiceRow[] = await this.dataSource.query(
+        `SELECT id, tenant_id, amount, currency, status, provider_reference, checkout_charge_id
+           FROM subscription_invoices
+          WHERE id = ANY($1)`,
+        [part],
+      );
+      for (const r of rows) out.set(r.id, r);
     }
     return out;
   }

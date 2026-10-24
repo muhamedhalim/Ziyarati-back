@@ -133,7 +133,7 @@ export const SETTINGS_REGISTRY: Readonly<Record<SettingKey, SettingDefinition>> 
     // pinned model runs on — which is what makes this page the platform's
     // central model configuration rather than a value applied once at creation.
     description:
-      'The AI model the platform runs on. Seeds new agents, and is the model used by any agent — including the public booking widget, which has no agent row — that has no model of its own.',
+      'The AI model used by any agent that has no model of its own — including the public booking widget, which has no agent row. Agents pinned to a specific model are not affected.',
     // Tier-preserving migration of the previous 'gpt-4o': that model was the
     // registry's POWERFUL entry, and GPT-5.6 Terra is the POWERFUL entry of the
     // permitted set. Picking the cheaper Luna here would have been a silent

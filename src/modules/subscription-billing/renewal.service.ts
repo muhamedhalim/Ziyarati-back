@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Not, Repository } from 'typeorm';
@@ -19,6 +19,7 @@ import {
   PLATFORM_ADMIN_AUDIT_ACTION,
 } from '../platform/platform-admin-audit.service';
 
+import { AccessControlService } from './access-control.service';
 import { BillingService } from './billing.service';
 import { computeNextPeriodEnd } from './subscription-period.util';
 
@@ -93,6 +94,9 @@ export class RenewalService {
     private readonly audit: PlatformAdminAuditService,
     private readonly email: EmailService,
     private readonly config: ConfigService,
+    // FIN-S4: a free-plan extension changes the subscription row, so the access
+    // cache must drop. Optional so a unit that never extends one need not supply it.
+    @Optional() private readonly access?: AccessControlService,
   ) {}
 
   private graceDurationDays(): number {
@@ -164,6 +168,15 @@ export class RenewalService {
   private async processOne(
     subscription: Subscription,
   ): Promise<'settled' | 'declined' | 'pending' | 'skipped'> {
+    // FIN-S4: a plan that costs nothing has nothing to charge. Issuing a 0.00
+    // invoice only produced failed-payment mail and a slide into GRACE_EXPIRED.
+    const billedPlan = subscription.pending_plan ?? subscription.plan;
+    if (billedPlan && !(Number(billedPlan.price) > 0)) {
+      return (await this.extendFreePeriod(subscription, billedPlan))
+        ? 'settled'
+        : 'skipped';
+    }
+
     const invoice = await this.findOrCreatePeriodInvoice(subscription);
     if (!invoice) return 'skipped'; // terminal invoice already exists for this period
 
@@ -204,6 +217,46 @@ export class RenewalService {
       await this.onDeclined(subscription, invoice);
       return 'declined';
     }
+  }
+
+  /**
+   * FIN-S4 — roll a zero-price subscription into its next period without an
+   * invoice. Locked and re-checked (still PAST_DUE, same `ends_at`) so a
+   * concurrent sweep or a manual change never advances it twice.
+   */
+  private async extendFreePeriod(
+    seen: Subscription,
+    plan: NonNullable<Subscription['plan']>,
+  ): Promise<boolean> {
+    const extended = await this.subscriptions.manager.transaction(
+      async (manager) => {
+        const repo = manager.getRepository(Subscription);
+        const sub = await repo.findOne({
+          where: { id: seen.id },
+          relations: { plan: true, pending_plan: true },
+          lock: { mode: 'pessimistic_write', tables: ['subscriptions'] },
+        });
+        if (
+          !sub ||
+          sub.status !== SubscriptionStatus.PAST_DUE ||
+          !sub.auto_renew ||
+          sub.ends_at.getTime() !== seen.ends_at.getTime()
+        ) {
+          return false;
+        }
+        sub.plan = plan;
+        if (sub.pending_plan?.id === plan.id) sub.pending_plan = null;
+        sub.status = SubscriptionStatus.ACTIVE;
+        sub.starts_at = sub.ends_at;
+        sub.ends_at = computeNextPeriodEnd(sub.starts_at, plan);
+        sub.grace_started_at = null;
+        sub.grace_expired_at = null;
+        await repo.save(sub);
+        return true;
+      },
+    );
+    if (extended && seen.tenant?.id) this.access?.invalidate(seen.tenant.id);
+    return extended;
   }
 
   /**
@@ -299,6 +352,7 @@ export class RenewalService {
   ): Promise<void> {
     const fresh = await this.invoices.findOne({ where: { id: invoice.id } });
     if (!fresh) return; // invoice vanished under us — nothing left to bump
+    if (fresh.status !== InvoiceStatus.OPEN) return; // paid / voided since: nothing to retry
 
     const nextRetryCount = fresh.retry_count + 1;
     const delayDays =
@@ -317,9 +371,25 @@ export class RenewalService {
       nextRetryCount <= RETRY_SCHEDULE_DAYS.length &&
       (!graceEndsAt || candidateRetryAt < graceEndsAt);
 
-    fresh.retry_count = nextRetryCount;
-    fresh.next_retry_at = withinGrace ? candidateRetryAt : null;
-    await this.invoices.save(fresh);
+    // FIN-S3: a guarded UPDATE, never a load-then-save of the whole row. A
+    // webhook or the sweep may have settled this invoice since it was read, and
+    // writing the stale row back would turn a PAID invoice OPEN again (and charge
+    // the clinic a second time). Only an invoice still OPEN and still at the retry
+    // count we read is touched; anything else means someone else moved it first.
+    const bumped = await this.invoices
+      .createQueryBuilder()
+      .update(SubscriptionInvoice)
+      .set({
+        retry_count: nextRetryCount,
+        next_retry_at: withinGrace ? candidateRetryAt : null,
+      })
+      .where('id = :id AND status = :open AND retry_count = :seen', {
+        id: fresh.id,
+        open: InvoiceStatus.OPEN,
+        seen: fresh.retry_count,
+      })
+      .execute();
+    if (!bumped.affected) return; // settled / voided / bumped by someone else
 
     await this.audit.record({
       action: PLATFORM_ADMIN_AUDIT_ACTION.SUBSCRIPTION_RENEWAL_DECLINED,

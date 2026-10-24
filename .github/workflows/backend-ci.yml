@@ -280,10 +280,23 @@ jobs:
       # integration-platform has its own config (next step). Everything else gates: the 15 suites that were
       # red at the Phase 0 baseline (stale fixtures after deliberate product changes) were repaired in Phase 3,
       # so there is no longer an informational split.
-      - name: e2e suite (all suites except database-tls and integration-platform)
-        run: >-
-          npx jest --config ./test/jest-e2e.json --runInBand --ci --forceExit
-          --testPathIgnorePatterns "database-tls\.e2e-spec\.ts$|integration-platform\.e2e-spec\.ts$"
+      # One Jest process per shard, run back to back (still --runInBand: the suites share one database and the
+      # Redis-outage specs stop the shared Redis container, so they must not overlap). 106 suites in ONE process
+      # grow the heap ~40 MB per suite (Jest keeps each suite's module graph alive in a long --runInBand run):
+      # 3.98 GB of a 4 GB limit by the last suite, an out-of-memory abort (exit 134) at the 2 GB default of a
+      # 7 GB machine, and late suites starved into `timeout exceeded when trying to connect`. A separate process
+      # per shard returns that memory. EVERY shard must pass: the loop runs them all (so one red shard still
+      # shows the others) and exits non-zero if any failed.
+      - name: e2e suite (all suites except database-tls and integration-platform; sequential shards)
+        run: |
+          rc=0
+          for shard in 1 2 3 4; do
+            echo "::group::e2e shard ${shard}/4"
+            npx jest --config ./test/jest-e2e.json --runInBand --ci --forceExit --shard="${shard}/4" \
+              --testPathIgnorePatterns "database-tls\.e2e-spec\.ts$|integration-platform\.e2e-spec\.ts$" || rc=$?
+            echo "::endgroup::"
+          done
+          exit "$rc"
 
       - name: Integration-platform e2e suite
         run: npx jest --config ./test/jest-e2e-integration-platform.json --ci
