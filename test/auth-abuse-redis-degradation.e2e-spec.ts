@@ -283,8 +283,24 @@ describe('Redis degradation and recovery — HTTP e2e (009, ZT-002)', () => {
         safely(dockerStart);
       }
 
-      // Give ioredis's retryStrategy a moment to reconnect (no app restart).
-      await sleep(1_500);
+      // Wait for ioredis's retryStrategy to reconnect the APP's own client (no app restart). A fixed sleep
+      // raced the reconnect backoff on a slower runner (the first decision after `docker start` was still
+      // served by the degraded fallback -> 429). The assertion below is unchanged: it still proves that the
+      // decision is made by Redis once the client is healthy again, with no leftover local lockout.
+      const reconnectDeadline = Date.now() + 12_000;
+      for (;;) {
+        if (redis.status === 'ready') {
+          try {
+            if ((await redis.ping()) === 'PONG') break;
+          } catch {
+            /* not usable yet */
+          }
+        }
+        if (Date.now() > reconnectDeadline) {
+          throw new Error(`the app's Redis client did not reconnect within 12 s (status=${redis.status})`);
+        }
+        await sleep(200);
+      }
 
       // Redis's OWN counter for this identity was never touched while it was
       // down (nothing was written there), so the very next decision — made
