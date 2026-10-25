@@ -198,6 +198,6 @@ describe('W3 — financial safety: server-derived amounts, zero AI-path payment 
     expect(source).not.toMatch(/\bPaymentService\b/);
     // `AiToolConfirmationGate.verify` checks the patient's "yes" to a cancel/move proposal; it is a
     // conversation gate, not a payment verification, so it is the one `.verify(` allowed.
-    expect(source.replace(/this\.gate\.verify\(/g, '')).not.toMatch(/\.verify\(|\.capture\(|\.refund\(|\.markPaid\(/);
+    expect(source.replace(/this\.gate\.verify\(/g, '')).not.toMatch(/\.verify\(|\.capture\(|\.refund\(|\.markPaid\(/);
   });
 });
