@@ -8,7 +8,7 @@
  *   (controls) booking refuses past / closed-day / double-booked slots; settings DO change behaviour
  */
 import { execSync } from 'node:child_process';
-import { bootAudit, GuestSession, whatsappTurn, whatsappToolCtx, saveEvidence, type AuditRuntime } from './fixtures/audit-runtime';
+import { bootAudit, firstFullDay, GuestSession, whatsappTurn, whatsappToolCtx, saveEvidence, type AuditRuntime } from './fixtures/audit-runtime';
 import { ReactiveProvider, scriptedToolCall, lastToolResult } from './fixtures/reactive-provider';
 import { scriptedToolCall as call } from '../security/fixtures/scripted-ai-provider';
 import { CustomerService } from '../../src/modules/crm/customer.service';
@@ -254,7 +254,7 @@ describe('booking integrity and settings', () => {
       const ctx = await whatsappToolCtx(rt, full, full.patientIds.x);
       const avail = await rt.dispatch.execute(ctx, call('check_availability', { branchId: full.branchId, staffId: full.doctorStaffIds.layla, daysAhead: 4, slotMinutes: 45 }));
       const book = (i: number) => rt.dispatch.execute(ctx, call('book_appointment', {
-        branchId: full.branchId, staffId: full.doctorStaffIds.layla, startAt: (avail.days as Array<{ slots: Array<{ startAt: string }> }>)[0].slots[i].startAt,
+        branchId: full.branchId, staffId: full.doctorStaffIds.layla, startAt: firstFullDay(avail.days as Array<{ date: string; slots: Array<{ startAt: string }> }>).slots[i].startAt,
         serviceIds: [full.serviceIds.cleaning], hasInsurance: false,
       }));
       await setSetting('payment_required', false); // the column DEFAULTS to true — set it explicitly
@@ -277,7 +277,7 @@ describe('booking integrity and settings', () => {
       observed.settings_unread_by_ai = hits;
       expect(hits.default_language).toBe('');
       // F-05 (fixed in Phase 2): the AI cancel/reschedule path now applies the clinic's change window.
-      expect(hits.cancellation_hours).toContain('ai-tool-dispatch.service.ts');
+      expect(hits.cancellation_hours).toContain('ai-tool-appointment-change.handler.ts');
     });
   });
 });

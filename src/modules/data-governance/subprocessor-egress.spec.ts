@@ -115,7 +115,6 @@ describe('subprocessor register ↔ code', () => {
     // The Tap API seam (charges, refunds, payouts, tokens, connect). It reaches
     // `fetch` through `globalThis`, which the plain `fetch(` pattern cannot see.
     'modules/payments/providers/tap/tap-api.client.ts': 'tap',
-    'modules/platform-usage/usage-report.service.ts': 'internal',
     'modules/platform/webhook-http-client.ts': 'tenant-configured',
     'modules/storage/storage.service.ts': 'aws',
     'modules/whatsapp/meta/meta-graph.client.ts': 'meta-whatsapp',

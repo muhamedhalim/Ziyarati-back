@@ -18,6 +18,7 @@
 import { scriptedToolCall as call } from '../security/fixtures/scripted-ai-provider';
 import {
   bootAudit,
+  firstFullDay,
   GuestSession,
   gatewayTurn,
   ownerPrincipal,
@@ -209,7 +210,7 @@ describe('Phase 1 — WhatsApp booking state, tool loop and price honesty', () =
           };
         }
         if (!resultOf(req, 'book_appointment')) {
-          const slot = (avail.days as any[])[0].slots[2].startAt;
+          const slot = firstFullDay(avail.days as any[]).slots[2].startAt;
           return {
             toolCalls: [
               call('book_appointment', {
@@ -480,7 +481,7 @@ describe('Phase 1 — WhatsApp booking state, tool loop and price honesty', () =
           };
         }
         if (!resultOf(req, 'book_appointment')) {
-          const slot = (avail.days as any[])[0].slots[3].startAt;
+          const slot = firstFullDay(avail.days as any[]).slots[3].startAt;
           return {
             toolCalls: [
               call('book_appointment', {

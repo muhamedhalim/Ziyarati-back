@@ -93,12 +93,15 @@ describe('Appointment writes serialise on the row lock (CR-39)', () => {
     await other.commitTransaction();
     await other.release();
 
-    await outcome;
+    // D-2: a payment that lands on a booking that was cancelled meanwhile never revives it and never
+    // marks it paid. The service reports `booking_closed` so the caller raises a reconciliation
+    // exception for a person (the Payment row is what records that money moved).
+    await expect(outcome).resolves.toBe('booking_closed');
 
     const row = await ds.getRepository(Appointment).findOneByOrFail({ id: appointmentId });
-    // The payment is recorded, but the booking is NOT resurrected: a stale PENDING_PAYMENT read
-    // would have saved CONFIRMED over the committed cancellation.
+    // Acting on the COMMITTED state: a stale PENDING_PAYMENT read would have saved CONFIRMED + PAID
+    // over the committed cancellation.
     expect(row.status).toBe(AppointmentStatus.CANCELLED);
-    expect(row.payment_status).toBe(AppointmentPaymentStatus.PAID);
+    expect(row.payment_status).toBe(AppointmentPaymentStatus.UNPAID);
   }, 60_000);
 });
