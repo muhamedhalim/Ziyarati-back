@@ -24,6 +24,8 @@ import { ReconciliationExceptionService } from '../payments/reconciliation/recon
 import { SubscriptionService } from './subscription.service';
 import { BillingService } from './billing.service';
 import { RenewalService } from './renewal.service';
+import { SubscriptionLifecycleService } from './subscription-lifecycle.service';
+import { User } from '../../entities/Auth&RBAC/User';
 import { PendingPaymentExpiryService } from './pending-payment-expiry.service';
 import { ScheduledPlanChangeService } from './scheduled-plan-change.service';
 import { InvoiceSettlementService } from './invoice-settlement.service';
@@ -118,6 +120,7 @@ export function resolveSubscriptionPaymentProvider(
       Tenant,
       AuditLog,
       PaymentReconciliationException,
+      User,
     ]),
     // Provides SystemSettingService for typed setting reads (trial duration,
     // etc.). `forwardRef` because PlatformModule now imports THIS module back:
@@ -150,6 +153,7 @@ export function resolveSubscriptionPaymentProvider(
     PaymentMethodService,
     TapSubscriptionProvider,
     RenewalService,
+    SubscriptionLifecycleService,
     PendingPaymentExpiryService,
     ScheduledPlanChangeService,
     UsageService,
@@ -203,6 +207,8 @@ export function resolveSubscriptionPaymentProvider(
     // T082 (spec 014, US5) — SubscriptionsProcessor (worker.module.ts)
     // invokes the renewal cycle from the `subscriptions.renewalBill` job.
     RenewalService,
+    // The grace state machine the same worker sweep (`subscriptions.renewalCheck`) runs.
+    SubscriptionLifecycleService,
     // The daily sweep that cancels never-paid subscriptions (worker's subscriptions queue).
     PendingPaymentExpiryService,
     ScheduledPlanChangeService,

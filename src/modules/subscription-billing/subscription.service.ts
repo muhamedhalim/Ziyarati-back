@@ -19,6 +19,10 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { BillingService } from './billing.service';
 import { BillingModeService } from './billing-mode.service';
 import { computeNextPeriodEnd } from './subscription-period.util';
+import {
+  effectiveSubscriptionStatus,
+  resolveGraceDays,
+} from './subscription-status';
 import { AccessControlService } from './access-control.service';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
 import { ChangePlanDto } from './dto/change-plan.dto';
@@ -471,33 +475,9 @@ export class SubscriptionService {
    */
   getEffectiveStatus(
     subscription: Subscription,
-    graceDurationDays: number = this.config.get<number>(
-      'SUBSCRIPTION_GRACE_DAYS',
-      14,
-    ),
+    graceDurationDays: number = resolveGraceDays(this.config),
   ): EffectiveStatus {
-    const now = new Date();
-    if (
-      subscription.status === SubscriptionStatus.CANCELLED ||
-      subscription.status === SubscriptionStatus.SUSPENDED ||
-      subscription.status === SubscriptionStatus.GRACE_EXPIRED ||
-      subscription.status === SubscriptionStatus.PENDING_PAYMENT
-    ) {
-      return subscription.status;
-    }
-    if (subscription.status === SubscriptionStatus.PAST_DUE) {
-      if (subscription.grace_started_at) {
-        const graceEndsAt = new Date(
-          subscription.grace_started_at.getTime() +
-            graceDurationDays * 86_400_000,
-        );
-        if (graceEndsAt < now) return SubscriptionStatus.GRACE_EXPIRED;
-      }
-      return SubscriptionStatus.PAST_DUE;
-    }
-    // ACTIVE / TRIAL
-    if (subscription.ends_at < now) return SubscriptionStatus.PAST_DUE;
-    return subscription.status;
+    return effectiveSubscriptionStatus(subscription, graceDurationDays);
   }
 
   /**
@@ -1131,10 +1111,7 @@ export class SubscriptionService {
   }
 
   private view(subscription: Subscription): SubscriptionView {
-    const graceDurationDays = this.config.get<number>(
-      'SUBSCRIPTION_GRACE_DAYS',
-      14,
-    );
+    const graceDurationDays = resolveGraceDays(this.config);
     const effectiveStatus = this.getEffectiveStatus(
       subscription,
       graceDurationDays,

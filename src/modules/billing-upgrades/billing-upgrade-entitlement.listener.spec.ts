@@ -23,7 +23,7 @@ describe('BillingUpgradeEntitlementListener', () => {
   let listener: BillingUpgradeEntitlementListener;
   let requests: MockRepository;
   let dataSource: MockDataSource;
-  let featureFlags: { set: jest.Mock };
+  let featureFlags: { set: jest.Mock; invalidateCache: jest.Mock };
   let limitOverrides: { grantOrExtend: jest.Mock };
   let history: { record: jest.Mock };
   const repoMap = new Map();
@@ -33,7 +33,10 @@ describe('BillingUpgradeEntitlementListener', () => {
     repoMap.set(BillingUpgradeRequest, requests);
     dataSource = createMockDataSource(createMockEntityManager(repoMap));
     dataSource.manager.getRepository = jest.fn(() => requests) as any;
-    featureFlags = { set: jest.fn().mockResolvedValue(undefined) };
+    featureFlags = {
+      set: jest.fn().mockResolvedValue(undefined),
+      invalidateCache: jest.fn(),
+    };
     limitOverrides = { grantOrExtend: jest.fn().mockResolvedValue(undefined) };
     history = { record: jest.fn().mockResolvedValue(undefined) };
 
@@ -92,6 +95,30 @@ describe('BillingUpgradeEntitlementListener', () => {
         expect.objectContaining({ toValue: BILLING_UPGRADE_STATUS.COMPLETED }),
         expect.anything(),
       );
+    });
+
+    it('busts the access cache AFTER the transaction commits, so a reader cannot re-cache pre-grant flags (X-01)', async () => {
+      foundByPayment({
+        id: 'req-x',
+        status: BILLING_UPGRADE_STATUS.PAYMENT_PROCESSING,
+        type: BILLING_UPGRADE_TYPE.FEATURE,
+        feature_key: FeatureKey.AI_ASSISTANT,
+        tenant: { id: 't1' },
+      });
+      requests.save.mockImplementationOnce(async (r: any) => r);
+      let committed = false;
+      dataSource.transaction.mockImplementationOnce(async (cb: any) => {
+        const out = await cb(dataSource.manager);
+        committed = true;
+        return out;
+      });
+      featureFlags.invalidateCache.mockImplementation(() => {
+        expect(committed).toBe(true);
+      });
+
+      await listener.applyPaid('pay-1');
+
+      expect(featureFlags.invalidateCache).toHaveBeenCalledWith('t1');
     });
 
     it('applies a usage-limit override with the admin-approved quantity', async () => {
@@ -389,6 +416,15 @@ describe('BillingUpgradeEntitlementListener', () => {
       feature_key: FeatureKey.AI_ASSISTANT,
       tenant: { id: 't1' },
     };
+
+    it('busts the access cache after commit when it revokes a flag (X-01)', async () => {
+      const { l } = build({
+        request: completedFeature,
+        flag: { is_enabled: true, source: FeatureFlagSource.BILLING_UPGRADE },
+      });
+      await l.applyRefund('pay-1');
+      expect(featureFlags.invalidateCache).toHaveBeenCalledWith('t1');
+    });
 
     it('switches off the flag this upgrade granted', async () => {
       const { l } = build({

@@ -22,6 +22,7 @@ import {
 import { AccessControlService } from './access-control.service';
 import { BillingService } from './billing.service';
 import { computeNextPeriodEnd } from './subscription-period.util';
+import { resolveGraceDays } from './subscription-status';
 
 /** Bounds the DB round-trip and resident set per page — same reasoning as
  *  `SubscriptionsProcessor`'s own `RENEWAL_CHECK_PAGE_SIZE`. */
@@ -100,7 +101,7 @@ export class RenewalService {
   ) {}
 
   private graceDurationDays(): number {
-    return this.config.get<number>('SUBSCRIPTION_GRACE_DAYS', 14);
+    return resolveGraceDays(this.config);
   }
 
   /**

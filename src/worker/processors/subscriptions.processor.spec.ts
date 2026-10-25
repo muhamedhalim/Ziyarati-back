@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { SubscriptionsProcessor } from './subscriptions.processor';
+import { SubscriptionLifecycleService } from '../../modules/subscription-billing/subscription-lifecycle.service';
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { User } from '../../entities/Auth&RBAC/User';
 import { SubscriptionStatus } from '../../entities/enums';
@@ -73,6 +74,8 @@ describe('SubscriptionsProcessor', () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         SubscriptionsProcessor,
+        // The real service: these cases pin the grace state machine end to end.
+        SubscriptionLifecycleService,
         { provide: getRepositoryToken(Subscription), useValue: subscriptions },
         { provide: getRepositoryToken(User), useValue: users },
         { provide: EmailService, useValue: email },

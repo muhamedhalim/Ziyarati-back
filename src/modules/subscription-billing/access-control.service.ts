@@ -27,6 +27,7 @@ import {
   deniedDecision,
 } from './tenant-access-decision';
 import { AccessCacheService } from './access-cache.service';
+import { effectiveSubscriptionStatus, resolveGraceDays } from './subscription-status';
 import {
   AccessPolicyModeService,
   DenialSite,
@@ -590,30 +591,9 @@ export class AccessControlService {
    * (`subscriptions.processor.ts`).
    */
   private effective(subscription: Subscription): SubscriptionStatus {
-    const now = new Date();
-    if (
-      subscription.status === SubscriptionStatus.CANCELLED ||
-      subscription.status === SubscriptionStatus.SUSPENDED ||
-      subscription.status === SubscriptionStatus.GRACE_EXPIRED ||
-      // Its dates are provisional until it is paid — never live-derived into PAST_DUE.
-      subscription.status === SubscriptionStatus.PENDING_PAYMENT
-    ) {
-      return subscription.status;
-    }
-    if (subscription.status === SubscriptionStatus.PAST_DUE) {
-      if (subscription.grace_started_at) {
-        const graceDays = this.config.get<number>(
-          'SUBSCRIPTION_GRACE_DAYS',
-          14,
-        );
-        const graceEndsAt = new Date(
-          subscription.grace_started_at.getTime() + graceDays * 86_400_000,
-        );
-        if (graceEndsAt < now) return SubscriptionStatus.GRACE_EXPIRED;
-      }
-      return SubscriptionStatus.PAST_DUE;
-    }
-    if (subscription.ends_at < now) return SubscriptionStatus.PAST_DUE;
-    return subscription.status;
+    return effectiveSubscriptionStatus(
+      subscription,
+      resolveGraceDays(this.config),
+    );
   }
 }

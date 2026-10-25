@@ -10,6 +10,7 @@ import {
 import { QueueService } from '../../queue/queue.service';
 import { MonitoringService } from '../platform-monitoring/monitoring.service';
 import { SupportTicketService } from '../support-tickets/support-ticket.service';
+import { resolveGraceDays } from '../subscription-billing/subscription-status';
 import {
   DASHBOARD_SUBSCRIPTION_STATE,
   DASHBOARD_SUBSCRIPTION_STATES,
@@ -172,7 +173,7 @@ export class PlatformDashboardService {
   ) {}
 
   private graceDays(): number {
-    return this.config.get<number>('SUBSCRIPTION_GRACE_DAYS', 14);
+    return resolveGraceDays(this.config);
   }
 
   /**

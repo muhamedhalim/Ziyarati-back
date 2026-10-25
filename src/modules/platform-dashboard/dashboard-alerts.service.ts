@@ -7,6 +7,7 @@ import { round2 } from '../payments/payments.constants';
 import { MonitoringService } from '../platform-monitoring/monitoring.service';
 import { SupportTicketService } from '../support-tickets/support-ticket.service';
 import { PlatformUsageService } from '../platform-usage/platform-usage.service';
+import { resolveGraceDays } from '../subscription-billing/subscription-status';
 import {
   DASHBOARD_SUBSCRIPTION_STATE,
   EXPIRING_SOON_DAYS,
@@ -116,7 +117,7 @@ export class DashboardAlertsService {
 
   async alerts(): Promise<DashboardAlertsResponse> {
     const now = new Date();
-    const grace = this.config.get<number>('SUBSCRIPTION_GRACE_DAYS', 14);
+    const grace = resolveGraceDays(this.config);
     const degradedSources: string[] = [];
 
     const sources: { name: string; run: () => Promise<DashboardAlert[]> }[] = [

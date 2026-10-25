@@ -3,7 +3,10 @@ import { UsageReportSchedule } from '../../entities/System/UsageReportSchedule';
 import { PlatformUsageService } from './platform-usage.service';
 import { EmailService } from '../email/email.service';
 import { QueueService } from '../../queue/queue.service';
+import { deliverWebhookRequest } from '../platform/webhook-http-client';
 import { createMockRepository, createMockQueryBuilder, MockRepository, MockQueryBuilder } from '../../../test/utils/mock-factories';
+
+jest.mock('../platform/webhook-http-client', () => ({ deliverWebhookRequest: jest.fn() }));
 
 describe('UsageReportService.runSchedule — atomic claim, retry-after-failure (gap-closure pass, §0.8.6)', () => {
   let service: UsageReportService;
@@ -167,5 +170,84 @@ describe('UsageReportService.deliver — per-recipient idempotency within a run 
     expect(res.status).toMatch(/^FAILED: smtp down/);
     // The {} reset only happens on FULL success — must NOT fire here.
     expect(schedules.update).not.toHaveBeenCalledWith('s1', { last_run_recipient_status: {} });
+  });
+});
+
+describe('UsageReportService — WEBHOOK delivery goes through the SSRF guard (D-01)', () => {
+  let service: UsageReportService;
+  let schedules: MockRepository;
+  const deliver = deliverWebhookRequest as jest.Mock;
+
+  const hook = (target: string) =>
+    ({
+      id: 'w1', name: 'Hook', frequency: 'WEEKLY', delivery: 'WEBHOOK', target,
+      sections: null, last_run_recipient_status: null,
+    }) as unknown as UsageReportSchedule;
+
+  beforeEach(() => {
+    deliver.mockReset();
+    schedules = createMockRepository();
+    const qb = createMockQueryBuilder();
+    (schedules.createQueryBuilder as jest.Mock).mockReturnValue(qb);
+    (qb.execute as jest.Mock).mockResolvedValue({ affected: 1 });
+    const platformUsage = {
+      summary: jest.fn().mockResolvedValue({ periodMonth: '2026-07', totals: {}, alerts: [], insights: [] }),
+      executiveInsights: jest.fn().mockResolvedValue(null),
+    };
+    service = new UsageReportService(
+      schedules as never,
+      platformUsage as unknown as PlatformUsageService,
+      {} as unknown as EmailService,
+      {} as unknown as QueueService,
+    );
+  });
+
+  it.each([
+    'http://169.254.169.254/latest/meta-data',
+    'https://127.0.0.1/hook',
+    'https://10.0.0.5/hook',
+    'https://localhost/hook',
+    'not a url',
+  ])('rejects an unsafe webhook target on create: %s', (target) => {
+    expect(() =>
+      service.create({ name: 'x', frequency: 'WEEKLY', delivery: 'WEBHOOK', target } as never),
+    ).toThrow();
+    expect(schedules.save).not.toHaveBeenCalled();
+  });
+
+  it('does not apply the URL guard to EMAIL targets', () => {
+    schedules.save.mockResolvedValue({});
+    expect(() =>
+      service.create({ name: 'x', frequency: 'WEEKLY', delivery: 'EMAIL', target: 'a@x.com' } as never),
+    ).not.toThrow();
+  });
+
+  it('rejects an update that points an existing webhook schedule at a private address', async () => {
+    schedules.findOne.mockResolvedValue(hook('https://example.com/hook'));
+    await expect(service.update('w1', { target: 'https://192.168.1.10/x' } as never)).rejects.toThrow();
+    expect(schedules.save).not.toHaveBeenCalled();
+  });
+
+  it('delivers through the guarded client with a timeout, never a raw fetch', async () => {
+    schedules.findOne.mockResolvedValue(hook('https://example.com/hook'));
+    deliver.mockResolvedValue({ ok: true, transient: false, httpStatus: 200 });
+    const fetchSpy = jest.spyOn(globalThis, 'fetch');
+    const res = await service.runSchedule('w1');
+    expect(deliver).toHaveBeenCalledWith(
+      'https://example.com/hook',
+      expect.stringContaining('usage_report'),
+      { 'content-type': 'application/json' },
+      expect.any(Number),
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(res.status).toBe('SENT');
+    fetchSpy.mockRestore();
+  });
+
+  it('records FAILED when the guarded client blocks a stored target or times out', async () => {
+    schedules.findOne.mockResolvedValue(hook('https://10.0.0.5/hook'));
+    deliver.mockResolvedValue({ ok: false, transient: false, error: 'Delivery blocked: target address is not allowed' });
+    const res = await service.runSchedule('w1');
+    expect(res.status).toMatch(/^FAILED: Delivery blocked/);
   });
 });

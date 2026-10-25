@@ -30,17 +30,19 @@ describe('EmailCampaignDeliveryProvider', () => {
   let provider: EmailCampaignDeliveryProvider;
   let send: jest.Mock;
   let resolve: jest.Mock;
+  let isLiveDelivery: jest.Mock;
   const unsubscribeTokens = new UnsubscribeTokenService(
     makeConfig({ EMAIL_UNSUBSCRIBE_SECRET: 'unit-test-unsubscribe-secret' }),
   );
 
   beforeEach(() => {
     send = jest.fn();
+    isLiveDelivery = jest.fn().mockReturnValue(true);
     resolve = jest
       .fn()
       .mockReturnValue({ name: 'resend', send, isConfigured: () => true });
     provider = new EmailCampaignDeliveryProvider(
-      { resolve } as unknown as EmailProviderFactory,
+      { resolve, isLiveDelivery } as unknown as EmailProviderFactory,
       makeConfig({ EMAIL_ENABLED: 'true', APP_URL: 'https://app.test' }),
       unsubscribeTokens,
     );
@@ -110,6 +112,14 @@ describe('EmailCampaignDeliveryProvider', () => {
       expect(send).toHaveBeenCalledWith(
         expect.objectContaining({ replyTo: 'clinic@example.com' }),
       );
+    });
+
+    it('fails permanently without sending when email delivery is disabled (noop must not read as delivered)', async () => {
+      isLiveDelivery.mockReturnValue(false);
+      const result = await provider.send(payload());
+      expect(result).toMatchObject({ success: false, transient: false });
+      expect(resolve).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
     });
 
     it('fails permanently when the recipient has no email address', async () => {

@@ -71,6 +71,7 @@ export class BillingUpgradeEntitlementListener {
    * the error so the job is retried instead of being marked done.
    */
   async applyPaid(paymentId: string): Promise<void> {
+    let flagTenantId: string | undefined;
     await this.dataSource.transaction(async (manager) => {
       const repo = manager.getRepository(BillingUpgradeRequest);
       // Lock first, join after: FOR UPDATE + a LEFT JOINed relation (or a filter
@@ -103,6 +104,7 @@ export class BillingUpgradeEntitlementListener {
           true,
           { source: FeatureFlagSource.BILLING_UPGRADE, manager },
         );
+        flagTenantId = request.tenant.id;
       } else if (
         request.type === BILLING_UPGRADE_TYPE.USAGE_LIMIT &&
         request.usage_metric &&
@@ -137,6 +139,9 @@ export class BillingUpgradeEntitlementListener {
         manager,
       );
     });
+    // The in-transaction invalidate in `set` ran before COMMIT; bust again now that
+    // the grant is visible so no reader keeps the pre-grant decision.
+    if (flagTenantId) this.featureFlags.invalidateCache(flagTenantId);
   }
 
   /** Fast path: the in-process event. Failures are logged, never rethrown. */
@@ -190,6 +195,7 @@ export class BillingUpgradeEntitlementListener {
    * override is deactivated only when it was granted by this request.
    */
   async applyRefund(paymentId: string): Promise<void> {
+    let flagTenantId: string | undefined;
     await this.dataSource.transaction(async (manager) => {
       const request = await lockRequestByPayment(manager, paymentId, {
         tenant: true,
@@ -231,6 +237,7 @@ export class BillingUpgradeEntitlementListener {
             false,
             { source: FeatureFlagSource.BILLING_UPGRADE, manager },
           );
+          flagTenantId = request.tenant.id;
           revoked = true;
         }
       } else if (request.type === BILLING_UPGRADE_TYPE.USAGE_LIMIT) {
@@ -258,6 +265,7 @@ export class BillingUpgradeEntitlementListener {
         manager,
       );
     });
+    if (flagTenantId) this.featureFlags.invalidateCache(flagTenantId);
   }
 
   /** null (permanent) for one_time/unspecified; otherwise the billing period's end date. */

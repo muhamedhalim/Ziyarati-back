@@ -51,6 +51,16 @@ export class EmailCampaignDeliveryProvider implements CampaignDeliveryProvider {
   async send(
     payload: CampaignDeliveryPayload,
   ): Promise<CampaignDeliveryResult> {
+    // Fail closed, like EmailChannelProvider: with email switched off the factory
+    // hands back the Noop provider, whose "success" would be recorded as a real send.
+    if (!this.providers.isLiveDelivery()) {
+      return {
+        success: false,
+        error: 'Email delivery is not enabled',
+        transient: false,
+      };
+    }
+
     const to = payload.email;
     if (!to) {
       // No email to send to (customer/recipient snapshot has none) — this

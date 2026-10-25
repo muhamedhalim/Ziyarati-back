@@ -102,6 +102,16 @@ export class FeatureFlagService {
   }
 
   /**
+   * Drop the cached access decision for a tenant. `set` / `setSuspension` already
+   * do this, but when they run inside a caller's transaction that happens BEFORE
+   * the commit, so a concurrent read can re-cache the old flags. A caller that
+   * passed `manager` calls this once AFTER its transaction commits.
+   */
+  invalidateCache(tenantId: string): void {
+    this.cache.invalidate(tenantId);
+  }
+
+  /**
    * Set or clear the administrative suspension of a capability.
    *
    * Kept separate from {@link set} because the two say different things: a

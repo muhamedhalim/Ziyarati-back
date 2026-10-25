@@ -6,6 +6,8 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { UsageReportSchedule } from '../../entities/System/UsageReportSchedule';
 import { EmailService } from '../email/email.service';
 import { QueueService } from '../../queue/queue.service';
+import { assertSafeWebhookUrl } from '../platform/webhook-url-guard';
+import { deliverWebhookRequest } from '../platform/webhook-http-client';
 import { PlatformUsageService } from './platform-usage.service';
 import {
   CreateUsageReportScheduleDto,
@@ -20,6 +22,9 @@ import {
  * while staying far too short to ever delay a human-paced retry.
  */
 const USAGE_REPORT_CLAIM_WINDOW_MS = 5_000;
+
+/** Upper bound on one webhook POST, so a hung receiver cannot pin a worker slot. */
+const USAGE_REPORT_WEBHOOK_TIMEOUT_MS = 10_000;
 
 /**
  * Scheduled usage reports (PART 5). CRUD + generation + delivery. The report
@@ -49,6 +54,7 @@ export class UsageReportService {
     if (dto.frequency === 'CUSTOM' && !dto.cron) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'cron is required for CUSTOM frequency' });
     }
+    if (dto.delivery === 'WEBHOOK') assertSafeWebhookUrl(dto.target);
     return this.schedules.save(
       this.schedules.create({
         name: dto.name,
@@ -80,6 +86,7 @@ export class UsageReportService {
       ...dto,
       sections: dto.sections === undefined ? schedule.sections : dto.sections,
     });
+    if (schedule.delivery === 'WEBHOOK') assertSafeWebhookUrl(schedule.target);
     return this.schedules.save(schedule);
   }
 
@@ -221,12 +228,20 @@ export class UsageReportService {
     claimedAt: Date,
   ): Promise<void> {
     if (schedule.delivery === 'WEBHOOK') {
-      const res = await fetch(schedule.target, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ type: 'usage_report', report }),
-      });
-      if (!res.ok) throw new Error(`Webhook returned ${res.status}`);
+      // SSRF-guarded, DNS-pinned, redirect-free and time-bounded — the same path every
+      // other outbound webhook uses. The target is re-validated on every run, so a
+      // schedule saved before this guard existed is still refused.
+      const res = await deliverWebhookRequest(
+        schedule.target,
+        JSON.stringify({ type: 'usage_report', report }),
+        { 'content-type': 'application/json' },
+        USAGE_REPORT_WEBHOOK_TIMEOUT_MS,
+      );
+      if (!res.ok) {
+        throw new Error(
+          res.httpStatus ? `Webhook returned ${res.httpStatus}` : (res.error ?? 'Webhook delivery failed'),
+        );
+      }
       return;
     }
     // EMAIL — reuse the transactional EmailService (generic notification template).
