@@ -1,6 +1,4 @@
 import {
-  forwardRef,
-  Inject,
   Injectable,
   Logger,
   Optional,
@@ -108,7 +106,6 @@ export class WhatsappWebhookService {
     private readonly messages: Repository<Message>,
     private readonly verifier: WebhookSignatureVerifier,
     private readonly meta: MetaConfig,
-    @Inject(forwardRef(() => NotificationDeliveryService))
     private readonly notifDelivery: NotificationDeliveryService,
     private readonly recipientDelivery: RecipientDeliveryService,
     private readonly messageStatus: MessageStatusService,

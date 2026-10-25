@@ -11,7 +11,10 @@ import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { validateJobPayload } from '../../queue/job-payload-validator';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
-import { DistributedLockService } from '../../queue/distributed-lock.service';
+import {
+  DistributedLockService,
+  withLock,
+} from '../../queue/distributed-lock.service';
 import { MetricsService } from '../../metrics/metrics.service';
 import { PlatformMaintenanceService } from '../../modules/platform/platform-maintenance.service';
 import { AuthTokenMaintenanceService } from '../../modules/auth/auth-token-maintenance.service';
@@ -191,26 +194,26 @@ export class PlatformProcessor extends WorkerHost {
    * only mean the sweep itself stopped running.
    */
   private async processFreeAccessExpirySweep() {
-    const lockToken = await this.lock.acquire(
+    const outcome = await withLock(
+      this.lock,
       FREE_ACCESS_EXPIRY_SWEEP_LOCK_KEY,
       FREE_ACCESS_EXPIRY_SWEEP_LOCK_TTL_MS,
+      async () => {
+        const result = await this.freeAccessNotice.sweepExpiring();
+        this.logger.log(
+          `free-access expiry sweep: claimed=${result.claimed} batches=${result.batches}`,
+        );
+        this.metrics.setWorkerHeartbeat('platform.freeAccessExpirySweep');
+        return result;
+      },
     );
-    if (!lockToken) {
+    if (!outcome.ran) {
       this.logger.log(
         'free-access expiry sweep already in progress elsewhere (or the lock is unavailable) — skipping this run',
       );
       return { skipped: true };
     }
-    try {
-      const result = await this.freeAccessNotice.sweepExpiring();
-      this.logger.log(
-        `free-access expiry sweep: claimed=${result.claimed} batches=${result.batches}`,
-      );
-      this.metrics.setWorkerHeartbeat('platform.freeAccessExpirySweep');
-      return result;
-    } finally {
-      await this.lock.release(FREE_ACCESS_EXPIRY_SWEEP_LOCK_KEY, lockToken);
-    }
+    return outcome.value;
   }
 
   private processWaitlistEvaluate(job: Job) {
@@ -243,30 +246,30 @@ export class PlatformProcessor extends WorkerHost {
    * different from "sweep silently stopped running" (heartbeat stalls).
    */
   private async processWaitlistExpiry() {
-    const lockToken = await this.lock.acquire(
+    const outcome = await withLock(
+      this.lock,
       WAITLIST_EXPIRY_LOCK_KEY,
       WAITLIST_EXPIRY_LOCK_TTL_MS,
+      async () => {
+        const expiredOffers = await this.waitlistOffers.expireDueOffers();
+        const expiredEntries = await this.waitlistEntries.expireDueEntries();
+        this.logger.log(
+          `waitlist expiry: expiredOffers=${expiredOffers} expiredEntries=${expiredEntries}`,
+        );
+        // COMPLETED run — always heartbeats, even when both counts are zero
+        // (a healthy, idle sweep), so a stalled heartbeat can only mean the
+        // sweep itself stopped running, never "there was nothing to expire".
+        this.metrics.setWorkerHeartbeat('platform.waitlistExpiry');
+        return { expiredOffers, expiredEntries };
+      },
     );
-    if (!lockToken) {
+    if (!outcome.ran) {
       this.logger.log(
         'waitlist expiry sweep already in progress elsewhere (or the lock is unavailable) — skipping this run',
       );
       return { skipped: true };
     }
-    try {
-      const expiredOffers = await this.waitlistOffers.expireDueOffers();
-      const expiredEntries = await this.waitlistEntries.expireDueEntries();
-      this.logger.log(
-        `waitlist expiry: expiredOffers=${expiredOffers} expiredEntries=${expiredEntries}`,
-      );
-      // COMPLETED run — always heartbeats, even when both counts are zero
-      // (a healthy, idle sweep), so a stalled heartbeat can only mean the
-      // sweep itself stopped running, never "there was nothing to expire".
-      this.metrics.setWorkerHeartbeat('platform.waitlistExpiry');
-      return { expiredOffers, expiredEntries };
-    } finally {
-      await this.lock.release(WAITLIST_EXPIRY_LOCK_KEY, lockToken);
-    }
+    return outcome.value;
   }
 
   /**
@@ -277,24 +280,24 @@ export class PlatformProcessor extends WorkerHost {
    * itself stopped running.
    */
   private async processQueueDayClose() {
-    const lockToken = await this.lock.acquire(
+    const outcome = await withLock(
+      this.lock,
       QUEUE_DAY_CLOSE_LOCK_KEY,
       QUEUE_DAY_CLOSE_LOCK_TTL_MS,
+      async () => {
+        const { closed } = await this.patientQueue.closeUnresolvedEntries();
+        this.logger.log(`queue day-close: closed=${closed}`);
+        this.metrics.setWorkerHeartbeat('platform.queueDayClose');
+        return { closed };
+      },
     );
-    if (!lockToken) {
+    if (!outcome.ran) {
       this.logger.log(
         'queue day-close sweep already in progress elsewhere (or the lock is unavailable) — skipping this run',
       );
       return { skipped: true };
     }
-    try {
-      const { closed } = await this.patientQueue.closeUnresolvedEntries();
-      this.logger.log(`queue day-close: closed=${closed}`);
-      this.metrics.setWorkerHeartbeat('platform.queueDayClose');
-      return { closed };
-    } finally {
-      await this.lock.release(QUEUE_DAY_CLOSE_LOCK_KEY, lockToken);
-    }
+    return outcome.value;
   }
 
   /**
@@ -306,24 +309,24 @@ export class PlatformProcessor extends WorkerHost {
    * retention window with no visible signal (FR-X010's own failure mode).
    */
   private async processExportExpiry() {
-    const lockToken = await this.lock.acquire(
+    const outcome = await withLock(
+      this.lock,
       EXPORT_EXPIRY_LOCK_KEY,
       EXPORT_EXPIRY_LOCK_TTL_MS,
+      async () => {
+        const { expired } = await this.reportExport.expireDueExports();
+        this.logger.log(`export expiry: expired=${expired}`);
+        this.metrics.setWorkerHeartbeat('platform.exportExpiry');
+        return { expired };
+      },
     );
-    if (!lockToken) {
+    if (!outcome.ran) {
       this.logger.log(
         'export expiry sweep already in progress elsewhere (or the lock is unavailable) — skipping this run',
       );
       return { skipped: true };
     }
-    try {
-      const { expired } = await this.reportExport.expireDueExports();
-      this.logger.log(`export expiry: expired=${expired}`);
-      this.metrics.setWorkerHeartbeat('platform.exportExpiry');
-      return { expired };
-    } finally {
-      await this.lock.release(EXPORT_EXPIRY_LOCK_KEY, lockToken);
-    }
+    return outcome.value;
   }
 
   /**
@@ -333,94 +336,83 @@ export class PlatformProcessor extends WorkerHost {
    * heartbeat can only mean the sweep itself stopped running.
    */
   private async processBirthdayGreetings() {
-    const lockToken = await this.lock.acquire(
+    const outcome = await withLock(
+      this.lock,
       BIRTHDAY_GREETINGS_LOCK_KEY,
       BIRTHDAY_GREETINGS_LOCK_TTL_MS,
+      async (keepAlive) => {
+        const result = await this.birthdayGreetings.sweep(new Date(), {
+          keepAlive: () => keepAlive(),
+        });
+        this.logger.log(
+          `birthday greetings: tenants=${result.tenants} processed=${result.processed} emitted=${result.emitted}`,
+        );
+        this.metrics.setWorkerHeartbeat('platform.birthdayGreetings');
+        return result;
+      },
     );
-    if (!lockToken) {
+    if (!outcome.ran) {
       this.logger.log(
         'birthday greetings sweep already in progress elsewhere (or the lock is unavailable) — skipping this run',
       );
       return { skipped: true };
     }
-    try {
-      const result = await this.birthdayGreetings.sweep(new Date(), {
-        keepAlive: () =>
-          this.lock.renew(
-            BIRTHDAY_GREETINGS_LOCK_KEY,
-            lockToken,
-            BIRTHDAY_GREETINGS_LOCK_TTL_MS,
-          ),
-      });
-      this.logger.log(
-        `birthday greetings: tenants=${result.tenants} processed=${result.processed} emitted=${result.emitted}`,
-      );
-      this.metrics.setWorkerHeartbeat('platform.birthdayGreetings');
-      return result;
-    } finally {
-      await this.lock.release(BIRTHDAY_GREETINGS_LOCK_KEY, lockToken);
-    }
+    return outcome.value;
   }
 
   /** Time-driven ready-made rules; one run at a time across all workers. */
   private async processRulesSweep() {
-    if (!this.rulesSweep) return { skipped: true };
-    const lockToken = await this.lock.acquire(
+    const rulesSweep = this.rulesSweep;
+    if (!rulesSweep) return { skipped: true };
+    const outcome = await withLock(
+      this.lock,
       RULES_SWEEP_LOCK_KEY,
       RULES_SWEEP_LOCK_TTL_MS,
+      async (keepAlive) => {
+        const result = await rulesSweep.sweep(new Date(), {
+          keepAlive: () => keepAlive(),
+        });
+        this.logger.log(
+          `notification rules sweep: tenants=${result.tenants} processed=${result.processed} scheduled=${result.scheduled}`,
+        );
+        this.metrics.setWorkerHeartbeat('platform.notificationRulesSweep');
+        return result;
+      },
     );
-    if (!lockToken) {
+    if (!outcome.ran) {
       this.logger.log(
         'notification rules sweep already in progress elsewhere (or the lock is unavailable) — skipping this run',
       );
       return { skipped: true };
     }
-    try {
-      const result = await this.rulesSweep.sweep(new Date(), {
-        keepAlive: () =>
-          this.lock.renew(
-            RULES_SWEEP_LOCK_KEY,
-            lockToken,
-            RULES_SWEEP_LOCK_TTL_MS,
-          ),
-      });
-      this.logger.log(
-        `notification rules sweep: tenants=${result.tenants} processed=${result.processed} scheduled=${result.scheduled}`,
-      );
-      this.metrics.setWorkerHeartbeat('platform.notificationRulesSweep');
-      return result;
-    } finally {
-      await this.lock.release(RULES_SWEEP_LOCK_KEY, lockToken);
-    }
+    return outcome.value;
   }
 
   /** Launches scheduled campaigns that came due; one run at a time across all workers. */
   private async processScheduledLaunch() {
-    if (!this.scheduledLaunch) return { skipped: true };
-    const lockToken = await this.lock.acquire(
+    const scheduledLaunch = this.scheduledLaunch;
+    if (!scheduledLaunch) return { skipped: true };
+    const outcome = await withLock(
+      this.lock,
       SCHEDULED_LAUNCH_LOCK_KEY,
       SCHEDULED_LAUNCH_LOCK_TTL_MS,
+      async (keepAlive) => {
+        const result = await scheduledLaunch.sweep(new Date(), {
+          keepAlive: () => keepAlive(),
+        });
+        if (result.due > 0) {
+          this.logger.log(
+            `scheduled campaign launch: due=${result.due} launched=${result.launched} failed=${result.failed}`,
+          );
+        }
+        this.metrics.setWorkerHeartbeat('platform.campaignsScheduledLaunch');
+        return result;
+      },
     );
-    if (!lockToken) return { skipped: true };
-    try {
-      const result = await this.scheduledLaunch.sweep(new Date(), {
-        keepAlive: () =>
-          this.lock.renew(
-            SCHEDULED_LAUNCH_LOCK_KEY,
-            lockToken,
-            SCHEDULED_LAUNCH_LOCK_TTL_MS,
-          ),
-      });
-      if (result.due > 0) {
-        this.logger.log(
-          `scheduled campaign launch: due=${result.due} launched=${result.launched} failed=${result.failed}`,
-        );
-      }
-      this.metrics.setWorkerHeartbeat('platform.campaignsScheduledLaunch');
-      return result;
-    } finally {
-      await this.lock.release(SCHEDULED_LAUNCH_LOCK_KEY, lockToken);
+    if (!outcome.ran) {
+      return { skipped: true };
     }
+    return outcome.value;
   }
 
   @OnWorkerEvent('failed')

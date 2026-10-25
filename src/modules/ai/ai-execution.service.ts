@@ -3,7 +3,7 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { randomUUID } from 'node:crypto';
 
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
@@ -57,7 +57,6 @@ import {
 import {
   AI_CONVERSATION_STATUS,
   AI_MESSAGE_ROLE,
-  currentPeriodMonth,
 } from './ai.constants';
 import {
   AI_FEATURE,
@@ -95,6 +94,7 @@ import {
 } from './guardrails/scope-guard';
 import { describeToday } from './prompt/turn-clock';
 import { AiCostLedgerService } from './cost/ai-cost-ledger.service';
+import { AiUsageMeteringService } from './execution/ai-usage-metering.service';
 import { PRICING_STATUS } from './cost/ai-price-catalog.service';
 import { AiRequestExecutionService } from './idempotency/ai-request-execution.service';
 import { AiModelRouterService } from './routing/ai-model-router.service';
@@ -207,6 +207,8 @@ export class AiExecutionService {
   private readonly logger = new Logger('AiExecutionService');
   /** AI-023 (FR-048): the per-round-trip tool-call fan-out cap, read from config. */
   private readonly maxToolCallsPerIteration: number;
+  /** Final-row persistence + usage/quota metering shared by both turn paths. */
+  private readonly metering: AiUsageMeteringService;
 
   constructor(
     @InjectRepository(AiConversation)
@@ -245,6 +247,7 @@ export class AiExecutionService {
     /** Fleet-level counters. Optional: a missing counter must never cost a turn. */
     @Optional() private readonly platformMetrics?: MetricsService,
   ) {
+    this.metering = new AiUsageMeteringService(this.dataSource, this.usage);
     // AI-023 (FR-048, R7): read once at construction — same posture as
     // MAX_TOOL_ITERATIONS being a fixed module constant; this bound is
     // config-driven (env-tunable) rather than a hardcoded constant, but is
@@ -842,40 +845,19 @@ export class AiExecutionService {
       // 5) persist the assistant message + meter usage/cost in one short transaction.
       const totalTokens = promptTokens + completionTokens;
       const costUsd = AiCostLedgerService.toUsdNumber(accounting.costMicrousd);
-      const assistant = await this.dataSource.transaction(async (manager) => {
-        const saved = await manager.getRepository(AiMessage).save(
-          manager.getRepository(AiMessage).create({
-            ai_conversation_id: aiConversationId,
-            tenant: { id: tenantId } as Tenant,
-            role: AI_MESSAGE_ROLE.ASSISTANT,
-            content: finalContent,
-            tokens_used: completionTokens,
-          }),
-        );
-        await this.recordUsage(
-          manager,
-          meterTenantId,
-          agent?.id ?? null,
-          totalTokens,
-        );
-        return saved;
+      const assistant = await this.metering.persistAssistantTurn({
+        tenantId,
+        meterTenantId,
+        aiConversationId,
+        agentId: agent?.id ?? null,
+        content: finalContent,
+        completionTokens,
+        totalTokens,
       });
 
-      // 1 was already reserved atomically by the pre-check above — add only
-      // the remainder so the total recorded equals totalTokens, exactly as
-      // before this fix (a no-op via increment()'s own guard if totalTokens
-      // is somehow <= 1).
-      await this.usage.increment(
-        tenantId,
-        USAGE_METRIC.AI_TOKENS,
-        totalTokens - 1,
-      );
-      if (quotaFundedBy === 'credit') {
-        // FIN-011: the credit-funded turn pays its real cost, not 1 unit.
-        await this.usage
-          .settleCreditRemainder(tenantId, USAGE_METRIC.AI_TOKENS, totalTokens - 1)
-          .catch(() => undefined);
-      }
+      // 1 was already reserved atomically by the pre-check above — settle only
+      // the remainder (see AiUsageMeteringService.settleTokens).
+      await this.metering.settleTokens(tenantId, totalTokens, quotaFundedBy);
 
       // Mirror the bot reply into the unified timeline (after the assistant row is
       // committed, so its timestamp follows the customer turn).
@@ -2078,37 +2060,18 @@ export class AiExecutionService {
         accounting.pricingStatus = PRICING_STATUS.UNPRICED;
       }
       const costUsd = AiCostLedgerService.toUsdNumber(accounting.costMicrousd);
-      const assistant = await this.dataSource.transaction(async (manager) => {
-        const saved = await manager.getRepository(AiMessage).save(
-          manager.getRepository(AiMessage).create({
-            ai_conversation_id: aiConversationId,
-            tenant: { id: tenantId } as Tenant,
-            role: AI_MESSAGE_ROLE.ASSISTANT,
-            content: full,
-            tokens_used: completionTokens,
-          }),
-        );
-        await this.recordUsage(
-          manager,
-          meterTenantId,
-          agent?.id ?? null,
-          totalTokens,
-        );
-        return saved;
+      const assistant = await this.metering.persistAssistantTurn({
+        tenantId,
+        meterTenantId,
+        aiConversationId,
+        agentId: agent?.id ?? null,
+        content: full,
+        completionTokens,
+        totalTokens,
       });
 
       // 1 was already reserved atomically by the pre-check above.
-      await this.usage.increment(
-        tenantId,
-        USAGE_METRIC.AI_TOKENS,
-        totalTokens - 1,
-      );
-      if (quotaFundedBy === 'credit') {
-        // FIN-011: the credit-funded turn pays its real cost, not 1 unit.
-        await this.usage
-          .settleCreditRemainder(tenantId, USAGE_METRIC.AI_TOKENS, totalTokens - 1)
-          .catch(() => undefined);
-      }
+      await this.metering.settleTokens(tenantId, totalTokens, quotaFundedBy);
       let mirroredMessageId: string | null = null;
       if (linkedConversationId && full) {
         const mirrored = await this.mirrorToTimeline(
@@ -2804,75 +2767,6 @@ export class AiExecutionService {
       [selected],
     );
     return rows[0]?.id ?? conversationTenantId;
-  }
-
-  /**
-   * Atomically increment the monthly usage row for (tenant, agent).
-   *
-   * Was find-then-save, which lost updates under concurrent turns (two turns read
-   * the same row → last write wins → tokens undercounted) or hit 23505. A single
-   * `INSERT … ON CONFLICT DO UPDATE SET x = x + EXCLUDED.x` against the existing
-   * UNIQUE(tenantId, agentId, period_month) is race-safe — the running total can
-   * never be lost. Runs inside the caller's transaction.
-   *
-   * AGENT-OPTIONAL. Callers used to skip this entirely when a turn had no agent
-   * (`if (agent) recordUsage(...)`), so every guest/public turn and every turn
-   * on a tenant with no Admin-provisioned agent went UNRECORDED. `agentId` is
-   * nullable on the table, so those turns are now recorded with a NULL agent.
-   *
-   * The NULL case needs its own upsert: Postgres treats NULLs as DISTINCT in a
-   * unique index, so `ON CONFLICT ("tenantId","agentId",period_month)` can never
-   * match a NULL-agent row and would insert a fresh row per turn. It is done as
-   * UPDATE-then-INSERT instead. Two concurrent first-turns of a period can both
-   * miss the UPDATE and insert, leaving two rows for that period — no tokens are
-   * lost (every reader aggregates with `SUM(...)`, and `topAgents` filters
-   * `agent IS NOT NULL`), it is only an extra row. Removing even that would take
-   * a partial unique index on (tenantId, period_month) WHERE agentId IS NULL,
-   * which is schema surface this fix does not need.
-   */
-  private async recordUsage(
-    manager: EntityManager,
-    tenantId: string,
-    agentId: string | null,
-    tokens: number,
-  ): Promise<void> {
-    const period = currentPeriodMonth();
-
-    if (agentId === null) {
-      const result: unknown = await manager.query(
-        `UPDATE ai_usage_logs
-            SET total_tokens   = total_tokens   + $3,
-                total_requests = total_requests + 1
-          WHERE "tenantId" = $1 AND "agentId" IS NULL AND period_month = $2
-        RETURNING id`,
-        [tenantId, period, tokens],
-      );
-      // TypeORM's Postgres driver answers an UPDATE … RETURNING with a TUPLE,
-      // `[rows, affectedCount]`, not the bare row array a SELECT gives. This used
-      // to read `.length` of the tuple — always 2 — so it took "the row exists"
-      // as a fact and returned, and the INSERT below never ran: no agent-less turn
-      // (every guest turn, every clinic without an agent) was ever written to
-      // `ai_usage_logs`, so the clinic's AI usage analytics for them stayed empty.
-      const touched =
-        Array.isArray(result) && Array.isArray(result[0]) ? result[0] : result;
-      if (Array.isArray(touched) && touched.length > 0) return;
-
-      await manager.query(
-        `INSERT INTO ai_usage_logs ("tenantId", "agentId", period_month, total_tokens, total_requests)
-         VALUES ($1, NULL, $2, $3, 1)`,
-        [tenantId, period, tokens],
-      );
-      return;
-    }
-
-    await manager.query(
-      `INSERT INTO ai_usage_logs ("tenantId", "agentId", period_month, total_tokens, total_requests)
-       VALUES ($1, $2, $3, $4, 1)
-       ON CONFLICT ("tenantId", "agentId", period_month)
-       DO UPDATE SET total_tokens   = ai_usage_logs.total_tokens   + EXCLUDED.total_tokens,
-                     total_requests = ai_usage_logs.total_requests + 1`,
-      [tenantId, agentId, period, tokens],
-    );
   }
 
   /**

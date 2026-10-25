@@ -109,3 +109,32 @@ export class DistributedLockService {
     }
   }
 }
+
+/** The outcome of {@link withLock}: the callback's value, or that the lock was not obtained. */
+export type LockOutcome<T> = { ran: true; value: T } | { ran: false };
+
+/**
+ * Run `fn` while holding `key`, releasing it in a `finally` — the
+ * acquire / skip-if-held / try / release shape every singleton sweep repeated.
+ *
+ * `ran: false` means the lock was not obtained (held elsewhere, or Redis
+ * unavailable — `acquire` treats both the same); `fn` was NOT called, and the
+ * caller decides how loudly to log the skip. `fn` receives `keepAlive`, which
+ * renews THIS run's token for a long sweep and returns `false` once the lock
+ * is lost. Takes the lock service as an argument rather than being a method so
+ * callers that stub `acquire` / `release` / `renew` keep working unchanged.
+ */
+export async function withLock<T>(
+  lock: Pick<DistributedLockService, 'acquire' | 'release' | 'renew'>,
+  key: string,
+  ttlMs: number,
+  fn: (keepAlive: () => Promise<boolean>) => Promise<T>,
+): Promise<LockOutcome<T>> {
+  const token = await lock.acquire(key, ttlMs);
+  if (!token) return { ran: false };
+  try {
+    return { ran: true, value: await fn(() => lock.renew(key, token, ttlMs)) };
+  } finally {
+    await lock.release(key, token);
+  }
+}

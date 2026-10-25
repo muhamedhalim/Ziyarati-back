@@ -1,4 +1,4 @@
-import { forwardRef, Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
@@ -72,7 +72,7 @@ import { WhatsappCoexistenceEchoService } from './meta/whatsapp-coexistence-echo
 import { WhatsappOnboardingController } from './meta/whatsapp-onboarding.controller';
 import { StorageModule } from '../storage/storage.module';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
-import { NotificationsModule } from '../notifications/notifications.module';
+import { NotificationDeliveryModule } from '../notifications/notification-delivery.module';
 import { AiOrchestratorModule } from '../ai-orchestrator/ai-orchestrator.module';
 import { AuthModule } from '../auth/auth.module';
 import { CrmModule } from '../crm/crm.module';
@@ -162,8 +162,10 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
     SubscriptionBillingModule,
     ActivityLogModule,
     ConfigModule,
-    // Two-way: WhatsApp sends notifications; notification webhooks record delivery.
-    forwardRef(() => NotificationsModule),
+    // The webhook records delivery on scheduled_notifications. Only the leaf
+    // delivery module is imported — NotificationsModule imports THIS module to
+    // send, so importing it back would be a cycle.
+    NotificationDeliveryModule,
     // Inbound automation: reuse the single cross-channel AI orchestrator (no AI
     // logic duplicated here — the bridge only maps WhatsApp ⇄ orchestrator).
     AiOrchestratorModule,

@@ -1,6 +1,4 @@
 import {
-  forwardRef,
-  Inject,
   Injectable,
   Logger,
   Optional,
@@ -78,14 +76,12 @@ export class NotificationDispatchService {
     private readonly logs: NotificationLogService,
     private readonly queue: QueueService,
     private readonly rateLimiter: TenantRateLimiterService,
-    @Inject(forwardRef(() => WhatsappExecutionService))
     private readonly whatsapp: WhatsappExecutionService,
     private readonly config: ConfigService,
     private readonly channelFactory: NotificationChannelFactory,
     // Optional + last: a dispatcher built without them (older direct
     // constructions) simply skips template-variable binding.
     @Optional()
-    @Inject(forwardRef(() => WhatsappTemplateService))
     private readonly whatsappTemplates?: WhatsappTemplateService,
     @Optional()
     private readonly variableResolver?: NotificationVariableResolver,

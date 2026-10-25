@@ -1,4 +1,4 @@
-import { DistributedLockService } from './distributed-lock.service';
+import { DistributedLockService, withLock } from './distributed-lock.service';
 import { AppRedisService } from './app-redis.service';
 
 describe('DistributedLockService', () => {
@@ -118,5 +118,57 @@ describe('DistributedLockService', () => {
     await expect(lock.renew('lock:x', 'token-123', 30_000)).resolves.toBe(
       false,
     );
+  });
+});
+
+describe('withLock', () => {
+  const makeLock = (token: string | null) => ({
+    acquire: jest.fn().mockResolvedValue(token),
+    release: jest.fn().mockResolvedValue(undefined),
+    renew: jest.fn().mockResolvedValue(true),
+  });
+
+  it('runs fn under the lock, returns its value and releases with the same token', async () => {
+    const lock = makeLock('tok');
+    const fn = jest.fn().mockResolvedValue(42);
+
+    await expect(withLock(lock, 'k', 1000, fn)).resolves.toEqual({
+      ran: true,
+      value: 42,
+    });
+    expect(lock.acquire).toHaveBeenCalledWith('k', 1000);
+    expect(lock.release).toHaveBeenCalledWith('k', 'tok');
+  });
+
+  it('does not call fn or release when the lock is not obtained', async () => {
+    const lock = makeLock(null);
+    const fn = jest.fn();
+
+    await expect(withLock(lock, 'k', 1000, fn)).resolves.toEqual({
+      ran: false,
+    });
+    expect(fn).not.toHaveBeenCalled();
+    expect(lock.release).not.toHaveBeenCalled();
+  });
+
+  it('still releases when fn throws, and rethrows', async () => {
+    const lock = makeLock('tok');
+
+    await expect(
+      withLock(lock, 'k', 1000, async () => {
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+    expect(lock.release).toHaveBeenCalledWith('k', 'tok');
+  });
+
+  it("hands fn a keepAlive that renews THIS run's token for the same ttl", async () => {
+    const lock = makeLock('tok');
+    lock.renew.mockResolvedValueOnce(false);
+
+    await withLock(lock, 'k', 1000, async (keepAlive) => {
+      await expect(keepAlive()).resolves.toBe(false);
+    });
+    expect(lock.renew).toHaveBeenCalledWith('k', 'tok', 1000);
   });
 });

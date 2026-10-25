@@ -25,7 +25,7 @@ import { NotificationRuleService } from './notification-rule.service';
 import { NotificationSchedulerService } from './notification-scheduler.service';
 import { NotificationLogService } from './notification-log.service';
 import { NotificationDispatchService } from './notification-dispatch.service';
-import { NotificationDeliveryService } from './notification-delivery.service';
+import { NotificationDeliveryModule } from './notification-delivery.module';
 import { NotificationEventListener } from './notification-event.listener';
 import { NotificationAuditService } from './notification-audit.service';
 import { ReminderSchedulerService } from './reminder-scheduler.service';
@@ -77,7 +77,8 @@ import { EmailChannelProvider } from './channels/email-channel.provider';
  *    delegate → SENT(+provider_ref) / transient-retry / permanent-FAIL; exhausted
  *    transients → DLQ.
  *  - Delivery webhooks are ingested by the SINGLE WhatsApp webhook, which calls
- *    NotificationDeliveryService (forwardRef both ways).
+ *    NotificationDeliveryService, hosted in the leaf NotificationDeliveryModule
+ *    so the dependency runs one way (Notifications → WhatsApp → Delivery).
  *  - Durability sweep + stale-PROCESSING reclaim + log retention run in the worker.
  *
  * `TenantRateLimiterService` comes from the @Global QueueModule.
@@ -108,7 +109,10 @@ import { EmailChannelProvider } from './channels/email-channel.provider';
     // AccessControlService — the time-driven rules sweep applies the same
     // `notifications` entitlement gate the `notifications.*` jobs enforce.
     forwardRef(() => SubscriptionBillingModule),
-    forwardRef(() => WhatsappModule),
+    WhatsappModule,
+    // Hosts NotificationDeliveryService; re-exported below so existing
+    // consumers of NotificationsModule still see it.
+    NotificationDeliveryModule,
     PatientActionsModule,
   ],
   controllers: [
@@ -127,7 +131,6 @@ import { EmailChannelProvider } from './channels/email-channel.provider';
     NotificationLogService,
     NotificationDispatchService,
     NotificationVariableResolver,
-    NotificationDeliveryService,
     NotificationEventListener,
     NotificationAuditService,
     ReminderSchedulerService,
@@ -163,7 +166,7 @@ import { EmailChannelProvider } from './channels/email-channel.provider';
     NotificationSchedulerService,
     NotificationLogService,
     NotificationDispatchService,
-    NotificationDeliveryService,
+    NotificationDeliveryModule,
     ReminderSchedulerService,
     // Exported so the worker can run the retention sweep, and so future
     // producers outside this module can emit without importing the catalog.

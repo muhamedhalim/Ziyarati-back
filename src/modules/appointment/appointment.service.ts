@@ -8,7 +8,6 @@ import {
   FindOptionsWhere,
   In,
   LessThan,
-  Like,
   MoreThanOrEqual,
   Repository,
 } from 'typeorm';
@@ -22,7 +21,14 @@ import { AppointmentReschedule } from '../../entities/Calendar&Appointments/Appo
 import { AppointmentCancellation } from '../../entities/Calendar&Appointments/AppointmentCancellation';
 import { ScheduledNotification } from '../../entities/Notifications/ScheduledNotification';
 import { OutboxJob } from '../../entities/Campaigns/OutboxJob';
-import { leadMinutesFromReminderSourceRef } from '../notifications/reminder-scheduler.service';
+import {
+  listAppointmentReminders,
+  type ReminderView,
+} from '../notifications/appointment-reminder-view';
+import {
+  readClinicCurrency,
+  readPaymentRequired,
+} from './appointment-tenant-settings';
 import { QUEUE, JOB } from '../../queue/queue.constants';
 import { AppointmentActionOrigin } from '../../entities/enums';
 
@@ -147,17 +153,7 @@ export interface TimelineEntry {
   data: Record<string, unknown>;
 }
 
-/** Spec 014 (Clinic Platform Completion) — T055 (S3, FR-M015). One
- *  reminder row (any lead time) for an appointment. */
-export interface ReminderView {
-  id: string;
-  leadMinutes: number | null;
-  scheduledAt: Date;
-  status: string;
-  channel: string | null;
-  skipReason: string | null;
-  failureReason: string | null;
-}
+export type { ReminderView };
 
 /**
  * Appointment domain service.
@@ -1353,23 +1349,11 @@ export class AppointmentsService {
   ): Promise<ReminderView[]> {
     await this.findOne(tenantId, id, caller);
 
-    const rows = await this.scheduledNotifications.find({
-      where: {
-        tenant: { id: tenantId },
-        source_ref: Like(`appointment-reminder:${id}:%`),
-      },
-      order: { scheduled_at: 'ASC' },
-    });
-
-    return rows.map((row) => ({
-      id: row.id,
-      leadMinutes: leadMinutesFromReminderSourceRef(row.source_ref ?? null),
-      scheduledAt: row.scheduled_at,
-      status: row.status,
-      channel: row.channel ?? null,
-      skipReason: row.skip_reason ?? null,
-      failureReason: row.failure_reason ?? null,
-    }));
+    return listAppointmentReminders(
+      this.scheduledNotifications,
+      tenantId,
+      id,
+    );
   }
 
   // ─────────────────── Payment outcome (system-triggered) ────────────────── //
@@ -2014,11 +1998,7 @@ export class AppointmentsService {
     if (hasInsurance) return false;
     if (!totalAmount || totalAmount <= 0) return false;
 
-    const rows: { payment_required: boolean }[] = await manager.query(
-      `SELECT payment_required FROM tenant_settings WHERE tenant_id = $1 LIMIT 1`,
-      [tenantId],
-    );
-    if (!(rows[0]?.payment_required ?? true)) return false;
+    if (!(await readPaymentRequired(manager, tenantId))) return false;
 
     // The clinic asks for online payment — but can it actually take one?
     const capability = await this.onlinePayments.resolve(tenantId, manager);
@@ -2033,11 +2013,7 @@ export class AppointmentsService {
     manager: EntityManager,
     tenantId: string,
   ): Promise<string> {
-    const rows: { currency: string | null }[] = await manager.query(
-      `SELECT currency FROM tenant_settings WHERE tenant_id = $1 LIMIT 1`,
-      [tenantId],
-    );
-    return rows[0]?.currency?.trim() || 'SAR';
+    return readClinicCurrency(manager, tenantId);
   }
 
   /**
