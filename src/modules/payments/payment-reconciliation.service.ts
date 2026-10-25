@@ -131,16 +131,16 @@ export class PaymentReconciliationService {
 
   /**
    * FIN-X2 — gather a sweep's candidates page by page (see `SWEEP_MAX_PAGES`).
-   * `fetch` receives the ids already taken so a stuck head cannot be read twice.
+   * `readPage` receives the ids already taken so a stuck head cannot be read twice.
    */
   private async collectCandidates<T extends { id: string }>(
     label: string,
     pageSize: number,
-    fetch: (exclude: string[]) => Promise<T[]>,
+    readPage: (exclude: string[]) => Promise<T[]>,
   ): Promise<T[]> {
     const out: T[] = [];
     for (let page = 0; page < SWEEP_MAX_PAGES; page++) {
-      const rows = await fetch(out.map((r) => r.id));
+      const rows = await readPage(out.map((r) => r.id));
       out.push(...rows);
       if (rows.length < pageSize) return out;
     }

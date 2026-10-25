@@ -218,12 +218,20 @@ describe('financial integrity constraints (FIN-X5)', () => {
   });
 
   runIf('the migration refuses, changing nothing, when existing data violates an invariant - and succeeds once fixed', async () => {
-    // Take the last migration back off, plant a violation, then try to apply it again.
-    const last = await ds.query(
-      `SELECT name FROM migrations ORDER BY id DESC LIMIT 1`,
-    );
-    expect(last[0].name).toBe(MIGRATION);
-    await ds.undoLastMigration({ transaction: 'each' });
+    // Take this migration (and any added after it, newest first) back off, plant a violation,
+    // then try to apply it again. It used to assume it was the LAST migration, which broke the
+    // moment a later one was added.
+    const applied = (): Promise<{ name: string }[]> =>
+      ds.query(`SELECT name FROM migrations ORDER BY id DESC`);
+    expect((await applied()).map((m) => m.name)).toContain(MIGRATION);
+    for (
+      let guard = 0;
+      (await applied()).some((m) => m.name === MIGRATION);
+      guard++
+    ) {
+      expect(guard).toBeLessThan(50);
+      await ds.undoLastMigration({ transaction: 'each' });
+    }
     expect(
       await count(
         `SELECT count(*) n FROM pg_constraint WHERE conname = 'CHK_payments_amount_positive'`,

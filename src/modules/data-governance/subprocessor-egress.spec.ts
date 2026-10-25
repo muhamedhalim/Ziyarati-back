@@ -112,6 +112,9 @@ describe('subprocessor register ↔ code', () => {
     'modules/notifications/channels/meta-whatsapp-cloud.provider.ts':
       'meta-whatsapp',
     'modules/payments/preflight/tap-preflight.ts': 'tap',
+    // The Tap API seam (charges, refunds, payouts, tokens, connect). It reaches
+    // `fetch` through `globalThis`, which the plain `fetch(` pattern cannot see.
+    'modules/payments/providers/tap/tap-api.client.ts': 'tap',
     'modules/platform-usage/usage-report.service.ts': 'internal',
     'modules/platform/webhook-http-client.ts': 'tenant-configured',
     'modules/storage/storage.service.ts': 'aws',
@@ -120,7 +123,7 @@ describe('subprocessor register ↔ code', () => {
   };
 
   const OUTBOUND_PATTERN =
-    /\bfetch\(|https?\.request|from 'node:https'|from 'https'|from 'node:http'|from 'http'|new (?:S3Client|SESv2Client|SQSClient|OpenAI|Resend)\b|from 'openai'|from '@aws-sdk/;
+    /\bfetch\(|globalThis\b[^;\n]{0,20}\.fetch\b|https?\.request|from 'node:https'|from 'https'|from 'node:http'|from 'http'|new (?:S3Client|SESv2Client|SQSClient|OpenAI|Resend)\b|from 'openai'|from '@aws-sdk/;
 
   it('registers every file that can call out, and lists no file that no longer does', () => {
     const found = FILES.filter((f) =>
@@ -129,6 +132,17 @@ describe('subprocessor register ↔ code', () => {
     const unregistered = found.filter((f) => !(f in OUTBOUND));
     const stale = Object.keys(OUTBOUND).filter((f) => !found.includes(f));
     expect({ unregistered, stale }).toEqual({ unregistered: [], stale: [] });
+  });
+
+  it('detects fetch reached through globalThis, and ignores a callback merely named like it', () => {
+    expect(OUTBOUND_PATTERN.test('const f = (globalThis as any).fetch;')).toBe(
+      true,
+    );
+    expect(OUTBOUND_PATTERN.test('const f = globalThis.fetch')).toBe(true);
+    expect(OUTBOUND_PATTERN.test('await readPage(out.map((r) => r.id));')).toBe(
+      false,
+    );
+    expect(OUTBOUND_PATTERN.test('await fetch(url)')).toBe(true);
   });
 
   it('maps every outbound file to a real register entry', () => {
