@@ -85,6 +85,14 @@ jobs:
       JWT_REFRESH_SECRET: ai-audit-ci-refresh-secret-not-for-production-use
       PAYMENT_PROVIDER: noop
       EMAIL_ENABLED: "false"
+      # Inert placeholders (same values as backend-ci.yml): det-10 signs a webhook with META_APP_SECRET and
+      # reads it back through ConfigService.getOrThrow, and the encryption key must exist for stored
+      # provider credentials. No provider is reachable with them; nothing here is a real credential.
+      META_APP_ID: "000000000000000"
+      META_APP_SECRET: ci-placeholder-meta-app-secret
+      META_WEBHOOK_VERIFY_TOKEN: ci-placeholder-verify-token
+      META_EMBEDDED_SIGNUP_CONFIG_ID: "000000000000000"
+      CREDENTIALS_ENCRYPTION_KEY: BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
       # Deliberately UNSET (H14 finding): the OpenAI provider dials the real
       # API whenever OPENAI_API_KEY is present, key or no OPENAI_LIVE_TESTS
       # flag. The deterministic suite runs on ScriptedAiProvider only — no key
