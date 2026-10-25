@@ -403,9 +403,9 @@ export class WhatsappTemplateService {
       // reschedule token is a secret: neither may cross over. A patient's name
       // must never be written into a link, and the token must never be printed
       // as message text.
-      const isToken =
+      const isSecureLink =
         source === WHATSAPP_TEMPLATE_VARIABLE_SOURCE.RESCHEDULE_TOKEN;
-      if (isButton !== isToken) {
+      if (isButton !== isSecureLink) {
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
           message: isButton
             ? `A link button can only be filled with its secure appointment link, not "${source}".`

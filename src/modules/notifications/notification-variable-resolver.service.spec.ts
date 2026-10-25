@@ -245,7 +245,8 @@ describe('NotificationVariableResolver', () => {
   });
 
   describe('library template sources', () => {
-    const SECRET = 'Ab3dEfGh1jKlMnOpQrStUvWxYz0123456789_-aBcD';
+    // Synthetic sentinel (not a credential): the spec asserts it never leaks into resolved variables.
+    const SECRET = 'Ab3dEfGh1jKlMnOpQrStUvWxYz0123456789_-aBcD'; // gitleaks:allow
     const confirmation = (over: Record<string, unknown> = {}) =>
       ({
         language: 'ar',

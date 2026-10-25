@@ -1,0 +1,21 @@
+# Gitleaks configuration for the CI secret scan (backend-ci.yml → "Secret scan of the commits under review").
+#
+# The default ruleset stays fully on. The only exemption is one narrow, exact-value allow-list for
+# generic-api-key (below). Do NOT add paths, wildcards or other rules here: a new finding must be fixed in
+# the code (or suppressed on its own line with `gitleaks:allow` plus a comment saying why it is not a secret).
+
+title = "ziyarati-back"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "WhatsApp template / notification-rule LIBRARY IDENTIFIERS. They are catalogue names (stored in `library_key`, `purposeKey`, `templateLibraryKey`), not credentials: generic-api-key matches them only because the property is called `key` and the snake_case name has ~3.7 bits of entropy. Matched on the exact secret value, so any other value assigned to a *key property is still scanned."
+regexTarget = "secret"
+regexes = [
+  '''^appointment_reminder_24h$''',
+  '''^appointmentReminder24h$''',
+]
