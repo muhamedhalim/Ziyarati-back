@@ -26,8 +26,8 @@ import {
   type ReminderView,
 } from '../notifications/appointment-reminder-view';
 import {
-  readClinicCurrency,
-  readPaymentRequired,
+  readBookingSettings,
+  type BookingTenantSettings,
 } from './appointment-tenant-settings';
 import { QUEUE, JOB } from '../../queue/queue.constants';
 import { AppointmentActionOrigin } from '../../entities/enums';
@@ -535,8 +535,13 @@ export class AppointmentsService {
     // by hand. Now the two axes agree: if no online payment is due, the
     // booking is confirmed at creation. Insurance still never implies PAID;
     // `payment_status` stays INSURANCE.
+    // One `tenant_settings` statement serves both the payment decision and the booking's currency.
+    let settingsRead: Promise<BookingTenantSettings> | undefined;
+    const bookingSettings = () =>
+      (settingsRead ??= readBookingSettings(reads, tenantId));
     const paymentDue = await this.isOnlinePaymentDue(
       reads,
+      bookingSettings,
       tenantId,
       dto.hasInsurance === true,
       totalAmount,
@@ -586,7 +591,7 @@ export class AppointmentsService {
         payment_status: paymentStatus,
         total_amount: totalAmount,
         currency:
-          dto.currency ?? (await this.clinicCurrency(manager, tenantId)),
+          dto.currency ?? (await bookingSettings()).currency,
         booked_timezone: branch.timezone,
         notes: dto.notes,
         source: dto.source ?? AppointmentSource.MANUAL,
@@ -1991,6 +1996,7 @@ export class AppointmentsService {
    */
   private async isOnlinePaymentDue(
     manager: EntityManager,
+    settings: () => Promise<BookingTenantSettings>,
     tenantId: string,
     hasInsurance: boolean,
     totalAmount: number | undefined,
@@ -1998,22 +2004,11 @@ export class AppointmentsService {
     if (hasInsurance) return false;
     if (!totalAmount || totalAmount <= 0) return false;
 
-    if (!(await readPaymentRequired(manager, tenantId))) return false;
+    if (!(await settings()).paymentRequired) return false;
 
     // The clinic asks for online payment — but can it actually take one?
     const capability = await this.onlinePayments.resolve(tenantId, manager);
     return capability.available;
-  }
-
-  /**
-   * FIN-P7 — the currency a booking is charged in: the clinic's own setting, not a
-   * hard-coded SAR. SAR remains the fallback for a clinic that has no settings row.
-   */
-  private async clinicCurrency(
-    manager: EntityManager,
-    tenantId: string,
-  ): Promise<string> {
-    return readClinicCurrency(manager, tenantId);
   }
 
   /**

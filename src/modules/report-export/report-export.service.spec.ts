@@ -101,6 +101,14 @@ describe('ReportExportService (T181/T183/T184)', () => {
     permissions: [],
   };
 
+  // XlsxWriterService loads `exceljs` lazily, so the first spec that writes a workbook pays the whole
+  // module-load cost inside its own 5 s budget; on a loaded 2-vCPU runner that is enough to time it out.
+  // Pay it here, outside any test, so every spec is judged on the behaviour under test.
+  beforeAll(() => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require('exceljs');
+  }, 60_000);
+
   beforeEach(async () => {
     mockQuery.mockReset();
     exportJobs = Object.assign(createMockRepository(), {

@@ -317,3 +317,18 @@ export async function withConfig<T>(rt: AuditRuntime, values: Record<string, unk
     }
   }
 }
+
+/**
+ * The first availability day AFTER today in the clinic's zone (Asia/Riyadh in the seed).
+ *
+ * Today's grid is only the part of the day still ahead of the booking lead time, so it is short, or
+ * absent, whenever a suite runs after the clinic's opening hour (09:00). A spec that picks a slot by
+ * index, or counts a day's slots, therefore judges the first FULL day instead of `days[0]`, so it
+ * gives the same answer at 03:00 and at 15:00.
+ */
+export function firstFullDay<T extends { date: string }>(days: readonly T[]): T {
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Riyadh' }).format(new Date());
+  const day = days.find((d) => d.date > today);
+  if (!day) throw new Error(`no availability day after ${today}: ${JSON.stringify(days.map((d) => d.date))}`);
+  return day;
+}

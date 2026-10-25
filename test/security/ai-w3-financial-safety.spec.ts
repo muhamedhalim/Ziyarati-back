@@ -182,13 +182,22 @@ describe('W3 — financial safety: server-derived amounts, zero AI-path payment 
   it('structural: AiToolDispatchService injects PaymentLinkService.create only — no payment-VERIFICATION/capture/refund service is reachable from any of the 26 tools', () => {
     const fs = require('fs') as typeof import('fs');
     const path = require('path') as typeof import('path');
-    const dispatchSourcePath = path.join(__dirname, '../../src/modules/ai/tools/ai-tool-dispatch.service.ts');
-    const source: string = fs.readFileSync(dispatchSourcePath, 'utf8');
-    expect(source).toMatch(/PaymentLinkService/);
+    const toolsDir = path.join(__dirname, '../../src/modules/ai/tools');
+    const dispatchSourcePath = path.join(toolsDir, 'ai-tool-dispatch.service.ts');
+    expect(fs.readFileSync(dispatchSourcePath, 'utf8')).toMatch(/PaymentLinkService/);
+    // The dispatcher's tool handlers now live in sibling files (ai-tool-*.handler.ts, the call ledger,
+    // the confirmation gate). The rule is about every tool, so scan every non-spec source in the folder.
+    const source: string = fs
+      .readdirSync(toolsDir)
+      .filter((f) => f.endsWith('.ts') && !f.endsWith('.spec.ts'))
+      .map((f) => fs.readFileSync(path.join(toolsDir, f), 'utf8'))
+      .join('\n');
     // The verify/capture/refund service is never imported. `PaymentService`
     // as a whole-word check (not merely absent as a substring of
     // `PaymentLinkService`, which DOES legitimately appear).
     expect(source).not.toMatch(/\bPaymentService\b/);
-    expect(source).not.toMatch(/\.verify\(|\.capture\(|\.refund\(|\.markPaid\(/);
+    // `AiToolConfirmationGate.verify` checks the patient's "yes" to a cancel/move proposal; it is a
+    // conversation gate, not a payment verification, so it is the one `.verify(` allowed.
+    expect(source.replace(/this\.gate\.verify\(/g, '')).not.toMatch(/\.verify\(|\.capture\(|\.refund\(|\.markPaid\(/);
   });
 });
