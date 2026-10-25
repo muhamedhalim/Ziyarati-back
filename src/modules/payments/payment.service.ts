@@ -651,7 +651,7 @@ export class PaymentService {
       if (
         dto.gatewayPaymentId &&
         !payment.gateway_payment_id &&
-        this.gateways.resolve(payment.gateway).name === 'noop'
+        this.gateways.resolve(payment.gateway).acceptsClientChargeId === true
       ) {
         payment.gateway_payment_id = dto.gatewayPaymentId;
         await repo.save(payment);
@@ -720,7 +720,7 @@ export class PaymentService {
             payment,
             result,
             // FIN-008: a real gateway must REPORT what it captured.
-            this.gateways.resolve(prep.gateway).name !== 'noop',
+            this.gateways.resolve(prep.gateway).reportsCapturedAmount !== false,
           );
           payment.status = PaymentStatus.PAID;
           payment.paid_at = new Date();

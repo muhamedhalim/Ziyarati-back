@@ -30,7 +30,13 @@ describe('PaymentService.create (booking payments)', () => {
   let appointments: MockRepository;
   let dataSource: MockDataSource;
   let manager: MockEntityManager;
-  let gateway: { name: string; createPayment: jest.Mock; verifyPayment: jest.Mock };
+  let gateway: {
+    name: string;
+    reportsCapturedAmount: boolean;
+    acceptsClientChargeId: boolean;
+    createPayment: jest.Mock;
+    verifyPayment: jest.Mock;
+  };
   let merchants: {
     assertChargeable: jest.Mock;
     routingContext: jest.Mock;
@@ -52,6 +58,8 @@ describe('PaymentService.create (booking payments)', () => {
     );
     gateway = {
       name: 'noop',
+      reportsCapturedAmount: false,
+      acceptsClientChargeId: true,
       createPayment: jest.fn().mockResolvedValue({
         success: true,
         gatewayPaymentId: 'gw-1',
@@ -531,6 +539,8 @@ describe('PaymentService.create (booking payments)', () => {
 
     it('FIN-008: a REAL gateway that reports no captured amount is rejected, never booked PAID', async () => {
       gateway.name = 'tap';
+      gateway.reportsCapturedAmount = true;
+      gateway.acceptsClientChargeId = false;
       const paymentRepo = manager.getRepository(Payment) as MockRepository;
       paymentRepo.findOne.mockResolvedValue(pendingPayment());
       gateway.verifyPayment.mockResolvedValueOnce({ status: 'paid', raw: {} });
@@ -545,6 +555,8 @@ describe('PaymentService.create (booking payments)', () => {
 
     it('FIN-003: a caller-supplied gatewayPaymentId is NOT linked to a payment of a real gateway', async () => {
       gateway.name = 'tap';
+      gateway.reportsCapturedAmount = true;
+      gateway.acceptsClientChargeId = false;
       const paymentRepo = manager.getRepository(Payment) as MockRepository;
       paymentRepo.findOne.mockResolvedValue(pendingPayment({ gateway_payment_id: null }));
 
@@ -557,6 +569,8 @@ describe('PaymentService.create (booking payments)', () => {
 
     it('FIN-003: the Noop simulator (dev/test) still accepts a caller-supplied id', async () => {
       gateway.name = 'noop';
+      gateway.reportsCapturedAmount = false;
+      gateway.acceptsClientChargeId = true;
       const paymentRepo = manager.getRepository(Payment) as MockRepository;
       paymentRepo.findOne.mockResolvedValue(pendingPayment({ gateway_payment_id: null }));
       paymentRepo.save.mockImplementation(async (p: any) => p);

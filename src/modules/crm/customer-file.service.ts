@@ -62,16 +62,23 @@ export class CustomerFileService {
       buffer: input.buffer,
     });
 
-    const file = await this.files.save(
-      this.files.create({
-        customer: { id: customerId } as Customer,
-        tenant: { id: tenantId } as Tenant,
-        uploaded_by: userId ? ({ id: userId } as User) : undefined,
-        file_name: input.fileName?.trim() || stored.filename,
-        file_type: stored.mimeType,
-        storage_key: stored.storageKey,
-      }),
-    );
+    let file: CustomerFile;
+    try {
+      file = await this.files.save(
+        this.files.create({
+          customer: { id: customerId } as Customer,
+          tenant: { id: tenantId } as Tenant,
+          uploaded_by: userId ? ({ id: userId } as User) : undefined,
+          file_name: input.fileName?.trim() || stored.filename,
+          file_type: stored.mimeType,
+          storage_key: stored.storageKey,
+        }),
+      );
+    } catch (err) {
+      // No row references the object, so nothing could ever find or delete it.
+      await this.storage.discardOrphan(stored.storageKey, tenantId);
+      throw err;
+    }
     return this.withResolvedUrl(file, tenantId);
   }
 
@@ -86,8 +93,10 @@ export class CustomerFileService {
         // document readable by version id (residency plan P11).
         await this.storage.purgeObject(file.storage_key, tenantId);
       } catch (err) {
-        this.logger.warn(
-          `Failed to delete S3 object ${file.storage_key}: ${(err as Error)?.message}`,
+        // The row is already gone, so this object can no longer be reached from the app:
+        // log at error level with a greppable marker so the leak is alertable.
+        this.logger.error(
+          `ORPHANED_OBJECT ${file.storage_key}: S3 purge failed after the row was removed: ${(err as Error)?.message}`,
         );
       }
     }

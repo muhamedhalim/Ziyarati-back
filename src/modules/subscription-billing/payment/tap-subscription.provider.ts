@@ -98,6 +98,7 @@ const MIT_CLIENT_IP = '127.0.0.1';
 export class TapSubscriptionProvider implements PaymentProvider, OnModuleInit {
   readonly name = 'tap';
   readonly supportsCheckout = true;
+  readonly reportsCapturedAmount = true;
 
   private readonly logger = new Logger('TapSubscriptionProvider');
 

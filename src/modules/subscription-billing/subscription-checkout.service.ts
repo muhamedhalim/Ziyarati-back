@@ -254,7 +254,7 @@ export class SubscriptionCheckoutService {
       reference: chargeId,
       capturedMinorUnits: v.capturedMinorUnits,
       capturedCurrency: v.capturedCurrency,
-      amountRequired: this.payment.supportsCheckout,
+      amountRequired: this.payment.reportsCapturedAmount,
       savedPaymentMethod: v.savedPaymentMethod,
     });
     if (settled.outcome === 'rejected') {

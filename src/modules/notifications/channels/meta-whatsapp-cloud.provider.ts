@@ -18,6 +18,15 @@ import { NOTIFICATION_CHANNEL } from '../notification.constants';
  *
  * Failure handling is explicit: HTTP 429 / 5xx / network = TRANSIENT (retry);
  * 4xx (bad number, invalid token, template/policy) = PERMANENT (no retry).
+ *
+ * DO NOT USE TO SEND CLINIC MESSAGES. It reads ONE platform-wide
+ * `WHATSAPP_PHONE_NUMBER_ID` / `WHATSAPP_ACCESS_TOKEN`, so a message sent here
+ * would leave from the platform's number, not the clinic's connected account.
+ * It is registered only so `NotificationChannelFactory` recognises WHATSAPP as a
+ * supported channel; `NotificationDispatchService` sends WhatsApp exclusively
+ * through `WhatsappExecutionService` (per-tenant account, template state, quota
+ * and consent), and a spec pins that. Route a send through this class only
+ * after it resolves the tenant's account the same way.
  */
 @Injectable()
 export class MetaWhatsAppCloudProvider implements NotificationChannelProvider {

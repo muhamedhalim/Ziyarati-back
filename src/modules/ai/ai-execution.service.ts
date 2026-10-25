@@ -1,3 +1,4 @@
+import { AI_CHANNEL } from '../ai-orchestrator/ai-channel.constants';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -2374,7 +2375,7 @@ export class AiExecutionService {
     // branch, on purpose. See WHATSAPP_CHANNEL_TOOL_NAMES' own docblock for
     // why the toolset is tenant-scoped discovery + booking, not a filtered
     // AI_TOOLS.
-    if (channel === 'WHATSAPP') {
+    if (channel === AI_CHANNEL.WHATSAPP) {
       return AI_TOOLS.filter((t) =>
         WHATSAPP_CHANNEL_TOOL_NAMES.includes(t.name),
       );
@@ -2415,7 +2416,7 @@ export class AiExecutionService {
    */
   private defaultSystemPrompt(channel: AiExecutionTransport): string {
     if (this.ctx.getUser()?.guest) return DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT;
-    if (channel === 'WHATSAPP') return DEFAULT_WHATSAPP_SYSTEM_PROMPT;
+    if (channel === AI_CHANNEL.WHATSAPP) return DEFAULT_WHATSAPP_SYSTEM_PROMPT;
     return DEFAULT_ASSISTANT_SYSTEM_PROMPT;
   }
 
@@ -2500,7 +2501,7 @@ export class AiExecutionService {
     if (String(this.config.get('AI_SCOPE_GUARD_ENABLED', 'true')) === 'false') {
       return false;
     }
-    return !!this.ctx.getUser()?.guest || channel === 'WHATSAPP';
+    return !!this.ctx.getUser()?.guest || channel === AI_CHANNEL.WHATSAPP;
   }
 
   /** What tripped, never what was said: the message itself stays out of the log. */
@@ -2674,7 +2675,7 @@ export class AiExecutionService {
     // amnesia — the own-clinic working set is that channel's pinned block. It
     // always carries today's date, so a WhatsApp turn never resolves "tomorrow"
     // from the model's memory.
-    const ownClinic = !user?.guest && !!user && channel === 'WHATSAPP';
+    const ownClinic = !user?.guest && !!user && channel === AI_CHANNEL.WHATSAPP;
     if (!user?.guest && !ownClinic) return undefined;
     try {
       if (ownClinic) {

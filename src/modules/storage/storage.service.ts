@@ -288,15 +288,35 @@ export class StorageService {
     } catch (err) {
       const status = (err as { $metadata?: { httpStatusCode?: number } })
         ?.$metadata?.httpStatusCode;
-      if (status === 404 || status === 403) return false;
-      // Unknown failure (network, credentials) — surface, don't silently pass.
+      // Only 404 means "not there". The task role holds s3:ListBucket, so S3 answers a
+      // missing key with 404; a 403 is therefore an access fault (IAM, bucket policy or
+      // KMS) and must not be reported to the user as "your file was not found".
+      if (status === 404) return false;
+      // Anything else (403, network, credentials) — surface, don't silently pass.
       this.logger.error(
-        `headObject failed for ${key}: ${(err as Error)?.message}`,
+        `headObject failed for ${key} (HTTP ${status ?? 'n/a'}): ${(err as Error)?.message}`,
       );
       throw new AppError(ErrorCode.INTERNAL_ERROR, {
         message: 'Could not verify the uploaded file in storage.',
         cause: err,
       });
+    }
+  }
+
+  /**
+   * Compensation for "object written, then the database write failed": removes the
+   * object this request just created (every version) so it is not left behind with
+   * nothing referencing it. Best effort by design — it runs on an error path, so it
+   * never throws and never replaces the original error; a failure is logged loudly
+   * (key only) so the leak is visible.
+   */
+  async discardOrphan(key: string, tenantId: string): Promise<void> {
+    try {
+      await this.purgeObject(key, tenantId);
+    } catch (err) {
+      this.logger.error(
+        `ORPHANED_OBJECT ${key}: compensating delete failed: ${(err as Error)?.message}`,
+      );
     }
   }
 

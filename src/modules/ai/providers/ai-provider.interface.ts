@@ -107,8 +107,11 @@ export interface AiCompletionProvider {
   readonly name: string;
   /** Returns true if this provider can serve the requested model. */
   supports(model?: string): boolean;
-  /** Generates a completion. Must not throw for expected failures — return a
-   *  fallback result so the executor can still persist + degrade gracefully. */
+  /** Generates a completion. The Noop provider never throws (it returns a
+   *  `fallback` result). A real provider (OpenAI) MAY throw on a provider or
+   *  transport failure: the caller (`AiExecutionService`) catches it, logs the
+   *  real cause, persists and degrades gracefully. Do not swallow the error
+   *  inside a provider — that hides the cause from the executor's logging. */
   complete(request: AiCompletionRequest): Promise<AiCompletionResult>;
   /** Optional token-by-token streaming (SSE). Providers that support it yield
    *  deltas then a terminal `{ done: true }`. */

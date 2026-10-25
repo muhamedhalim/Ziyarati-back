@@ -19,6 +19,7 @@ describe('CustomerFileService', () => {
     upload: jest.Mock;
     getSignedDownloadUrl: jest.Mock;
     purgeObject: jest.Mock;
+    discardOrphan: jest.Mock;
   };
 
   const uploadInput = {
@@ -41,6 +42,7 @@ describe('CustomerFileService', () => {
       }),
       getSignedDownloadUrl: jest.fn().mockResolvedValue('https://signed.example.com/file'),
       purgeObject: jest.fn().mockResolvedValue({ versionsRemoved: 1 }),
+      discardOrphan: jest.fn().mockResolvedValue(undefined),
     };
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -76,6 +78,23 @@ describe('CustomerFileService', () => {
       expect(created.uploaded_by).toEqual({ id: 'user-1' });
       expect(created.storage_key).toBe(`${TENANT}/customer-file/x.pdf`);
       expect(created.file_name).toBe('lab-result.pdf');
+    });
+
+    it('removes the just-written object when the row cannot be saved, and keeps the original error', async () => {
+      files.save.mockRejectedValueOnce(new Error('db down'));
+
+      await expect(service.upload(TENANT, CUSTOMER, uploadInput, 'user-1')).rejects.toThrow('db down');
+
+      expect(storage.discardOrphan).toHaveBeenCalledWith(`${TENANT}/customer-file/x.pdf`, TENANT);
+    });
+
+    it('does not touch storage when the upload itself is refused', async () => {
+      storage.upload.mockRejectedValueOnce(new Error('s3 down'));
+
+      await expect(service.upload(TENANT, CUSTOMER, uploadInput, 'user-1')).rejects.toThrow('s3 down');
+
+      expect(files.save).not.toHaveBeenCalled();
+      expect(storage.discardOrphan).not.toHaveBeenCalled();
     });
 
     it('uses the provided fileName override instead of the original filename', async () => {

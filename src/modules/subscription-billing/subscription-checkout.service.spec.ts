@@ -30,6 +30,7 @@ describe('SubscriptionCheckoutService', () => {
   let payment: {
     name: string;
     supportsCheckout: boolean;
+    reportsCapturedAmount: boolean;
     checkoutWindowMinutes: number;
     createCheckout: jest.Mock;
     verifyCheckout: jest.Mock;
@@ -73,6 +74,7 @@ describe('SubscriptionCheckoutService', () => {
     payment = {
       name: 'tap',
       supportsCheckout: true,
+      reportsCapturedAmount: true,
       checkoutWindowMinutes: 30,
       createCheckout: jest.fn().mockResolvedValue({
         status: 'created',

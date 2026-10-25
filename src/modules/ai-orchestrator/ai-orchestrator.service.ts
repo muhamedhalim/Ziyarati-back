@@ -9,7 +9,7 @@ import {
 import { ConversationSessionService } from './conversation-session.service';
 import { AgentRouterService } from './agent-router.service';
 import { AiMemoryService } from '../ai-memory/ai-memory.service';
-import { AI_CHANNELS, AiChannel, AiSession } from './ai-channel.constants';
+import { AI_CHANNEL, AI_CHANNELS, AiChannel, AiSession } from './ai-channel.constants';
 import { AppError, ErrorCode } from '../../common/errors';
 import { AI_CONVERSATION_STATUS } from '../ai/ai.constants';
 import { ConfigService } from '@nestjs/config';
@@ -159,7 +159,7 @@ export class AiOrchestratorService {
   /** Synchronous turn (REST). Delegates to the engine's sendMessage. */
   async handle(tenantId: string, input: OrchestrateInput) {
     this.assertChannelAllowed(input);
-    const transport = input.channel === 'WHATSAPP' ? 'WHATSAPP' : 'REST';
+    const transport = input.channel === AI_CHANNEL.WHATSAPP ? 'WHATSAPP' : 'REST';
     const { conversationId, session, routedRole, handedOver, memoryLoader } =
       await this.prepare(tenantId, input, transport);
     if (handedOver) {
@@ -239,7 +239,7 @@ export class AiOrchestratorService {
     onToolEvent?: AiToolProgressListener,
   ) {
     this.assertChannelAllowed(input);
-    const transport = input.channel === 'WHATSAPP' ? 'WHATSAPP' : 'WEBSOCKET';
+    const transport = input.channel === AI_CHANNEL.WHATSAPP ? 'WHATSAPP' : 'WEBSOCKET';
     const { conversationId, session, routedRole, handedOver, memoryLoader } =
       await this.prepare(tenantId, input, transport);
     if (handedOver) {

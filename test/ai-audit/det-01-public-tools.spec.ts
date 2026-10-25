@@ -133,11 +133,16 @@ describe('public widget — tool behaviour through real gateway turns', () => {
 
   // ── F-02 (fixed with F-01 on the public path) ───────────────────────────────
   it('F-02 FIXED (public): the selected 45-minute service is applied, so a free 09:00-17:00 day is a real slot grid, not one window start', () => {
-    const day = (observed.avail_withids.days as any[])[0];
+    // Today is already partly elapsed (and inside the booking lead time) whenever the suite runs after the clinic's
+    // opening hour, so its grid starts late. Judge the first FULL day: the first one after today in the clinic's zone.
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Riyadh' }).format(new Date());
+    const fullDay = (days: any[]) => days.find((d) => d.date > today);
+    const day = fullDay(observed.avail_withids.days as any[]);
+    expect(day).toBeDefined();
     expect(day.slots.length).toBeGreaterThanOrEqual(8);
     expect(day.slots.map((s: any) => s.localTime).slice(0, 3)).toEqual(['09:00', '09:45', '10:30']);
     // and no-arg equals with-ids
-    expect((observed.avail_noargs.days as any[])[0].slots).toEqual(day.slots);
+    expect(fullDay(observed.avail_noargs.days as any[]).slots).toEqual(day.slots);
   });
 
   // ── the "no acting user" gates must fire for a guest ────────────────────────

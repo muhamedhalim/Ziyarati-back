@@ -255,6 +255,14 @@ export interface PaymentProvider {
    * payment that cannot be made.
    */
   readonly supportsCheckout: boolean;
+  /**
+   * TRUE when a successful charge/verify from this provider states the amount
+   * and currency it actually captured, so the settlement path can REQUIRE them
+   * (anti under/over-payment). Kept separate from `supportsCheckout`: that flag
+   * answers "can a payer pay on a hosted page", this one answers "is the
+   * provider's answer a real capture". Today both are true only for Tap.
+   */
+  readonly reportsCapturedAmount: boolean;
   /** Minutes a hosted checkout stays payable (a fresh one blocks a merchant-initiated charge of the same invoice). */
   readonly checkoutWindowMinutes: number;
   createCheckout(request: CheckoutRequest): Promise<CheckoutResult>;

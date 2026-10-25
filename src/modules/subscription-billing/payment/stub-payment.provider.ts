@@ -30,6 +30,7 @@ export class StubPaymentProvider implements PaymentProvider {
    */
   readonly name = 'stub';
   readonly supportsCheckout = false;
+  readonly reportsCapturedAmount = false;
   readonly checkoutWindowMinutes = 30;
 
   async charge(request: ChargeRequest): Promise<ChargeResult> {

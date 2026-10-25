@@ -1,4 +1,5 @@
 import { PublicBookingFlowService } from './public-booking-flow.service';
+import { SESSION_UNSET } from '../ai-orchestrator/conversation-session.service';
 
 /**
  * Spec 014 (Clinic Platform Completion) — T066/T067 unit coverage for the
@@ -84,9 +85,9 @@ describe('PublicBookingFlowService.selectClinic', () => {
     expect(bookingContext.patchSelection).toHaveBeenCalledWith(TENANT, CONV, {
       selectedClinicId: 'clinic-a',
       selectedBranchId: 'branch-1',
-      selectedDoctorId: undefined,
-      selectedServiceIds: undefined,
-      selectedStartAt: undefined,
+      selectedDoctorId: SESSION_UNSET,
+      selectedServiceIds: SESSION_UNSET,
+      selectedStartAt: SESSION_UNSET,
     });
   });
 
@@ -140,9 +141,9 @@ describe('PublicBookingFlowService.selectBranch', () => {
     expect(bookingContext.patchSelection).toHaveBeenCalledWith(TENANT, CONV, {
       selectedClinicId: 'clinic-a',
       selectedBranchId: 'branch-1',
-      selectedDoctorId: undefined,
-      selectedServiceIds: undefined,
-      selectedStartAt: undefined,
+      selectedDoctorId: SESSION_UNSET,
+      selectedServiceIds: SESSION_UNSET,
+      selectedStartAt: SESSION_UNSET,
     });
   });
 });
@@ -221,7 +222,7 @@ describe('PublicBookingFlowService.selectDoctor', () => {
 
     expect(bookingContext.patchSelection).toHaveBeenCalledWith(TENANT, CONV, {
       selectedDoctorId: 'doc-1',
-      selectedStartAt: undefined,
+      selectedStartAt: SESSION_UNSET,
     });
   });
 });

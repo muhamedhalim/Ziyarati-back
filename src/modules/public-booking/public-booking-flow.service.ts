@@ -16,6 +16,14 @@ import {
   PublicAvailabilityWindow,
 } from '../scheduling/availability.service';
 import { WhatsappBotActorService } from '../whatsapp/whatsapp-bot-actor.service';
+import { runAsBotActor } from '../whatsapp/bot-actor-run';
+import {
+  branchSelectedPatch,
+  clinicSelectedPatch,
+  doctorSelectedPatch,
+  servicesSelectedPatch,
+  slotSelectedPatch,
+} from './public-booking-selection';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { AiSession } from '../ai-orchestrator/ai-channel.constants';
 
@@ -115,14 +123,11 @@ export class PublicBookingFlowService {
     });
     const only = detail.branches.length === 1 ? detail.branches[0] : undefined;
 
-    await this.bookingContext.patchSelection(guestTenantId, conversationId, {
-      selectedClinicId: clinicId,
-      selectedBranchId: only?.id,
-      // A new clinic invalidates every downstream choice.
-      selectedDoctorId: undefined,
-      selectedServiceIds: undefined,
-      selectedStartAt: undefined,
-    });
+    await this.bookingContext.patchSelection(
+      guestTenantId,
+      conversationId,
+      clinicSelectedPatch(clinicId, only?.id),
+    );
   }
 
   async selectBranch(
@@ -141,14 +146,11 @@ export class PublicBookingFlowService {
       throw this.notFound();
     }
 
-    await this.bookingContext.patchSelection(guestTenantId, conversationId, {
-      selectedClinicId: owner,
-      selectedBranchId: branchId,
-      // Doctors and services are branch-specific — a branch change invalidates them.
-      selectedDoctorId: undefined,
-      selectedServiceIds: undefined,
-      selectedStartAt: undefined,
-    });
+    await this.bookingContext.patchSelection(
+      guestTenantId,
+      conversationId,
+      branchSelectedPatch(owner, branchId),
+    );
   }
 
   async listServices(
@@ -191,12 +193,11 @@ export class PublicBookingFlowService {
       );
     }
 
-    await this.bookingContext.patchSelection(guestTenantId, conversationId, {
-      selectedServiceIds: serviceIds,
-      // A different service set may change who can serve it.
-      selectedDoctorId: undefined,
-      selectedStartAt: undefined,
-    });
+    await this.bookingContext.patchSelection(
+      guestTenantId,
+      conversationId,
+      servicesSelectedPatch(serviceIds),
+    );
   }
 
   /**
@@ -246,11 +247,11 @@ export class PublicBookingFlowService {
       );
     }
 
-    await this.bookingContext.patchSelection(guestTenantId, conversationId, {
-      selectedDoctorId: staffId,
-      // The doctor's calendar differs, so a previously chosen time is stale.
-      selectedStartAt: undefined,
-    });
+    await this.bookingContext.patchSelection(
+      guestTenantId,
+      conversationId,
+      doctorSelectedPatch(staffId),
+    );
   }
 
   async availability(
@@ -311,9 +312,11 @@ export class PublicBookingFlowService {
       'doctor',
     );
 
-    await this.bookingContext.patchSelection(guestTenantId, conversationId, {
-      selectedStartAt: startAt,
-    });
+    await this.bookingContext.patchSelection(
+      guestTenantId,
+      conversationId,
+      slotSelectedPatch(startAt),
+    );
   }
 
   /**
@@ -340,11 +343,7 @@ export class PublicBookingFlowService {
     );
     const hasInsurance = input.hasInsurance === true;
 
-    const bot = await this.botActor.ensureBotActor(ctx.tenantId);
-
-    const appt = await this.tenantContext.run(async () => {
-      this.tenantContext.setPrincipal(bot);
-
+    const appt = await runAsBotActor(this.botActor, this.tenantContext, ctx.tenantId, async (bot) => {
       const customer = await this.customers.findOrCreateForBooking(
         ctx.tenantId,
         {

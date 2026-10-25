@@ -206,6 +206,21 @@ export interface PaymentGatewayProvider {
   readonly settlesDirectlyToPayee?: boolean;
 
   /**
+   * FALSE only for a simulator that cannot say what it captured. Every other
+   * provider (the default, when the flag is absent) MUST report the captured
+   * amount and currency on a paid result, and `PaymentService` refuses to book
+   * a payment PAID without them (FIN-008: anti under/over-payment).
+   */
+  readonly reportsCapturedAmount?: boolean;
+
+  /**
+   * TRUE only for the dev/test simulator, which accepts a caller-supplied charge
+   * id for a payment. Absent/false for every real gateway: a client-supplied id
+   * must never be linked to a real payment (FIN-003).
+   */
+  readonly acceptsClientChargeId?: boolean;
+
+  /**
    * Strategy selection. Returns true when this provider should handle the given
    * gateway name. A concrete adapter also returns false when it is not
    * configured (missing credentials), so the factory can fall back to Noop.

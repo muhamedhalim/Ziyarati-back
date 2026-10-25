@@ -33,6 +33,7 @@ export class RecurringUnavailableProvider implements PaymentProvider {
   /** No hosted page either: a paid subscription stays on the legacy path until a real provider is bound. */
   readonly name = 'none';
   readonly supportsCheckout = false;
+  readonly reportsCapturedAmount = false;
   readonly checkoutWindowMinutes = 30;
 
   async charge(request: ChargeRequest): Promise<ChargeResult> {

@@ -90,6 +90,28 @@ describe('WhatsappCampaignDeliveryProvider', () => {
       expect(result.transient).toBeUndefined();
     });
 
+    it('classifies a Meta error code: permanent codes are not retried, capacity codes are (L-05)', async () => {
+      execution.sendTemplateMessage.mockResolvedValueOnce({
+        status: WHATSAPP_DELIVERY_STATUS.FAILED,
+        error: 'message undeliverable',
+        errorCode: 131026,
+      });
+      await expect(provider.send(payload())).resolves.toMatchObject({
+        success: false,
+        transient: false,
+      });
+
+      execution.sendTemplateMessage.mockResolvedValueOnce({
+        status: WHATSAPP_DELIVERY_STATUS.FAILED,
+        error: 'throughput limit',
+        errorCode: 130429,
+      });
+      await expect(provider.send(payload())).resolves.toMatchObject({
+        success: false,
+        transient: true,
+      });
+    });
+
     it('reports failure when the seam returns SENT but no message id', async () => {
       execution.sendTemplateMessage.mockResolvedValueOnce({
         status: WHATSAPP_DELIVERY_STATUS.SENT,

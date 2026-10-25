@@ -17,6 +17,7 @@ import { AppointmentsService } from '../appointment/appointment.service';
 import { CreateAppointmentDto } from '../appointment/dto/create-appointment.dto';
 import { PatientActionLinkService } from '../patient-actions/patient-action-link.service';
 import { WhatsappBotActorService } from '../whatsapp/whatsapp-bot-actor.service';
+import { runAsBotActor } from '../whatsapp/bot-actor-run';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActivityAuditService } from '../activity-log/activity-audit.service';
 
@@ -267,9 +268,7 @@ export class WaitlistOfferService {
     const entry = offer!.entry;
 
     try {
-      const bot = await this.botActor.ensureBotActor(tenantId);
-      const appointment = await this.tenantContext.run(async () => {
-        this.tenantContext.setPrincipal(bot);
+      const appointment = await runAsBotActor(this.botActor, this.tenantContext, tenantId, async (bot) => {
         const dto: CreateAppointmentDto = {
           branchId: offer!.branch.id,
           customerId: entry.customer.id,

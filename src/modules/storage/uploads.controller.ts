@@ -142,18 +142,25 @@ export class UploadsController {
       buffer: file.buffer,
     });
 
-    await this.audit.record({
-      tenantId,
-      action: 'UPLOADED',
-      docType: dto.docType,
-      actor: { id: userId, role: this.actorRole(), ip, userAgent },
-      metadata: {
-        storageKey: stored.storageKey,
-        size: stored.size,
-        mimeType: stored.mimeType,
-        sha256: stored.sha256,
-      },
-    });
+    try {
+      await this.audit.record({
+        tenantId,
+        action: 'UPLOADED',
+        docType: dto.docType,
+        actor: { id: userId, role: this.actorRole(), ip, userAgent },
+        metadata: {
+          storageKey: stored.storageKey,
+          size: stored.size,
+          mimeType: stored.mimeType,
+          sha256: stored.sha256,
+        },
+      });
+    } catch (err) {
+      // The caller gets an error and never learns the key, so nothing can ever
+      // reference this object: remove it instead of leaving it behind.
+      await this.storage.discardOrphan(stored.storageKey, tenantId);
+      throw err;
+    }
     return stored;
   }
 

@@ -5,6 +5,7 @@ import {
   CampaignDeliveryProvider,
   CampaignDeliveryResult,
 } from './campaign-delivery.provider.interface';
+import { classifyMetaFailure } from '../../notifications/meta-error-classification';
 import { CAMPAIGN_CHANNEL } from '../campaign.constants';
 import { WhatsappExecutionService } from '../../whatsapp/whatsapp-execution.service';
 import { WHATSAPP_DELIVERY_STATUS } from '../../whatsapp/whatsapp.constants';
@@ -68,11 +69,18 @@ export class WhatsappCampaignDeliveryProvider implements CampaignDeliveryProvide
         return { success: true, providerRef: result.providerMessageId };
       }
 
-      // The send seam already logged + classified nothing: let the dispatcher's
-      // heuristic read the provider's own error text (429/timeout ⇒ transient).
+      // Meta's numeric code, when the send reported one, decides retry vs not
+      // (the same classifier the notification path uses). Without a code the
+      // failure stays unclassified and the dispatcher's text heuristic applies
+      // (429/timeout ⇒ transient).
+      const transient =
+        typeof result.errorCode === 'number'
+          ? classifyMetaFailure(result.errorCode) === 'transient'
+          : undefined;
       return {
         success: false,
         error: result.error ?? 'WhatsApp provider rejected the message',
+        ...(transient === undefined ? {} : { transient }),
       };
     } catch (err) {
       return this.classifyThrown(err, payload);

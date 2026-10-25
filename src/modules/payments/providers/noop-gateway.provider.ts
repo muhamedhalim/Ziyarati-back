@@ -20,6 +20,8 @@ import {
 @Injectable()
 export class NoopGatewayProvider implements PaymentGatewayProvider {
   readonly name = 'noop';
+  readonly reportsCapturedAmount = false;
+  readonly acceptsClientChargeId = true;
   private readonly logger = new Logger('NoopGatewayProvider');
 
   /** The fallback supports everything. */
@@ -60,6 +62,7 @@ export class NoopGatewayProvider implements PaymentGatewayProvider {
     return {
       success: true,
       gatewayRefundId: `noop_rf_${request.paymentId}`,
+      status: 'succeeded',
       raw: { provider: 'noop', simulated: true, paymentId: request.paymentId },
     };
   }

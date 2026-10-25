@@ -155,13 +155,19 @@ export class AiTrainingFileService {
       },
       AI_TRAINING_UPLOAD_POLICY,
     );
-    return this.upload(tenantId, {
-      fileName: stored.filename,
-      fileUrl: stored.storageKey,
-      fileType: file.mimetype === 'text/markdown' ? 'MD' : 'TXT',
-      fileSize: file.size,
-      agentId,
-    });
+    try {
+      return await this.upload(tenantId, {
+        fileName: stored.filename,
+        fileUrl: stored.storageKey,
+        fileType: file.mimetype === 'text/markdown' ? 'MD' : 'TXT',
+        fileSize: file.size,
+        agentId,
+      });
+    } catch (err) {
+      // Quota re-check, agent check or the save failed: no row references the object.
+      await this.storage.discardOrphan(stored.storageKey, tenantId);
+      throw err;
+    }
   }
 
   async findAll(tenantId: string, filter: TrainingFileFilterDto) {

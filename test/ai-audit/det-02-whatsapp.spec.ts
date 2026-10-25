@@ -27,18 +27,29 @@ describe('WhatsApp surface — tools, identity binding and appointment actions',
   const observed: Record<string, any> = {};
   const q = (sql: string, p: unknown[] = []) => rt.harness.dataSource.query(sql, p);
 
-  /** A CONFIRMED appointment for `customerId`, starting `hoursAhead` from now. */
+  /**
+   * A CONFIRMED appointment for `customerId`, starting about `hoursAhead` from now. The audit specs share one
+   * database and the double-booking guard is a DB exclusion constraint (appointments_no_overlap), so a slot an
+   * earlier spec (det-09 also books now+2h with the same doctor) already holds is skipped forward an hour.
+   */
   async function newAppointment(customerId: string, hoursAhead: number): Promise<string> {
     const { full } = rt.seed;
-    const start = new Date(Date.now() + hoursAhead * 3_600_000);
-    start.setUTCMinutes(0, 0, 0);
-    const end = new Date(start.getTime() + 45 * 60_000);
-    const rows = await q(
-      `INSERT INTO appointments (status,payment_status,currency,source,start_at,end_at,"tenantId","branchId","customerId","staffId")
-       VALUES ('CONFIRMED','UNPAID','SAR','MANUAL',$1,$2,$3,$4,$5,$6) RETURNING id`,
-      [start.toISOString(), end.toISOString(), full.tenantId, full.branchId, customerId, full.doctorStaffIds.omar],
-    );
-    return rows[0].id;
+    for (let bump = 0; bump < 12; bump += 1) {
+      const start = new Date(Date.now() + (hoursAhead + bump) * 3_600_000);
+      start.setUTCMinutes(0, 0, 0);
+      const end = new Date(start.getTime() + 45 * 60_000);
+      try {
+        const rows = await q(
+          `INSERT INTO appointments (status,payment_status,currency,source,start_at,end_at,"tenantId","branchId","customerId","staffId")
+           VALUES ('CONFIRMED','UNPAID','SAR','MANUAL',$1,$2,$3,$4,$5,$6) RETURNING id`,
+          [start.toISOString(), end.toISOString(), full.tenantId, full.branchId, customerId, full.doctorStaffIds.omar],
+        );
+        return rows[0].id;
+      } catch (err) {
+        if (!/appointments_no_overlap/.test(String(err))) throw err;
+      }
+    }
+    throw new Error(`no free hour for omar within 12h of +${hoursAhead}h`);
   }
   const statusOf = async (id: string) => (await q(`SELECT status, start_at FROM appointments WHERE id=$1`, [id]))[0];
 

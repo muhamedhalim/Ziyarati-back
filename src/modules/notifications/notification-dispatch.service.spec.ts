@@ -276,6 +276,26 @@ describe('NotificationDispatchService.processScheduled', () => {
       );
     });
 
+    it('O-01: a WhatsApp send goes through the tenant-scoped execution service, never the platform-global channel provider', async () => {
+      const platformProvider = { name: 'meta-whatsapp-cloud', send: jest.fn() };
+      channelFactory.resolve.mockImplementation((channel?: string) =>
+        channel === NOTIFICATION_CHANNEL.WHATSAPP ? platformProvider : emailProvider,
+      );
+      scheduled.findOne.mockResolvedValueOnce(whatsappNotification());
+      whatsapp.sendTemplateMessage.mockResolvedValueOnce({
+        status: 'SENT',
+        providerMessageId: 'w1',
+      });
+      await service.processScheduled(TENANT, ID);
+      expect(whatsapp.sendTemplateMessage).toHaveBeenCalledWith(
+        TENANT,
+        expect.anything(),
+        expect.anything(),
+      );
+      // The factory is consulted only to confirm the channel is supported.
+      expect(platformProvider.send).not.toHaveBeenCalled();
+    });
+
     it('T015: writes skip_reason (and a null channel) on a suppressed send — no provider was ever attempted', async () => {
       customers.findOne.mockResolvedValueOnce(
         defaultCustomer({ opted_out_at: new Date() }),

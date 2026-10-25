@@ -592,7 +592,7 @@ export class PaymentReconciliationService {
         reference: verify.reference ?? reference ?? invoice.id,
         capturedMinorUnits: verify.capturedMinorUnits,
         capturedCurrency: verify.capturedCurrency,
-        amountRequired: this.subscriptionProvider.supportsCheckout,
+        amountRequired: this.subscriptionProvider.reportsCapturedAmount,
         savedPaymentMethod: verify.savedPaymentMethod,
       });
       if (settled.outcome === 'rejected') {

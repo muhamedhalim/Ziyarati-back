@@ -246,7 +246,7 @@ export class BillingService {
         reference: chargeId,
         capturedMinorUnits: v.capturedMinorUnits,
         capturedCurrency: v.capturedCurrency,
-        amountRequired: this.payment.supportsCheckout,
+        amountRequired: this.payment.reportsCapturedAmount,
         savedPaymentMethod: v.savedPaymentMethod,
       });
       // Rejected (amount mismatch, …) is left for manual review: still blocking.
@@ -438,7 +438,7 @@ export class BillingService {
         reference: result.reference ?? `${this.payment.name}:${invoice.id}`,
         capturedMinorUnits: result.capturedMinorUnits,
         capturedCurrency: result.capturedCurrency,
-        amountRequired: this.payment.supportsCheckout,
+        amountRequired: this.payment.reportsCapturedAmount,
         paymentMethodId: method?.id,
         savedPaymentMethod: result.savedPaymentMethod,
       });
