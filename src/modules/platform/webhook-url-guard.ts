@@ -218,6 +218,20 @@ export class SsrfBlockedError extends Error {
   }
 }
 
+/**
+ * CVE-2026-105482: unpatched Node truncates a `dns.resolve*()` name at the
+ * first NUL byte, so records for a DIFFERENT name than the one validated come
+ * back. WHATWG URL already forbids NUL/control code points in a host, so this
+ * is unreachable through `new URL()` today; it keeps the guarantee local to
+ * the resolver call instead of depending on the URL parser and the runtime.
+ */
+export function assertResolvableHostname(host: string): void {
+  // eslint-disable-next-line no-control-regex
+  if (!host || /[\u0000-\u001f\u007f%]/.test(host)) {
+    throw new SsrfBlockedError('Webhook host contains characters that are not allowed');
+  }
+}
+
 export interface PinnedWebhookTarget {
   /** The literal IP address to connect to — MUST be used as-is for the socket, never re-resolved. */
   address: string;
@@ -253,6 +267,7 @@ export async function resolveSafeWebhookTarget(url: URL): Promise<PinnedWebhookT
     return { address: host, family: 6 };
   }
 
+  assertResolvableHostname(host);
   const [v4, v6] = await Promise.allSettled([dns.resolve4(host), dns.resolve6(host)]);
   const candidates: PinnedWebhookTarget[] = [];
   if (v4.status === 'fulfilled') candidates.push(...v4.value.map((a) => ({ address: a, family: 4 as const })));

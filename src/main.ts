@@ -18,6 +18,7 @@ import { isTracingEnabled, shutdownTracing } from './common/logging/tracing';
 import { DataSource } from 'typeorm';
 import { AppRedisService } from './queue/app-redis.service';
 import { requestContext } from './common/middleware/request-context.middleware';
+import { rejectBrotliRequestBody } from './common/middleware/brotli-request-body.middleware';
 import { TenantContextService } from './core/tenant-context/tenant-context.service';
 import { MetricsService } from './metrics/metrics.service';
 import cookieParser from 'cookie-parser';
@@ -95,6 +96,11 @@ async function bootstrap() {
   // JSON or `text/plain` (T146: no streaming/SSE/binary-download response
   // exists anywhere in this codebase), so nothing needs an explicit filter.
   app.use(compression());
+
+  // ---------------- Request body encoding (CVE-2026-111497) ----------------
+  // Keeps attacker bytes away from the Brotli decoder body-parser would run
+  // pre-auth. Must precede the body parsers Nest installs at init.
+  app.use(rejectBrotliRequestBody);
 
   // ---------------- Request correlation id ----------------
   // Registered first so every downstream layer (guards, routes, filter) sees it.

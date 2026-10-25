@@ -1,4 +1,9 @@
-import { assertSafeWebhookUrl, resolveSafeWebhookTarget, SsrfBlockedError } from './webhook-url-guard';
+import {
+  assertResolvableHostname,
+  assertSafeWebhookUrl,
+  resolveSafeWebhookTarget,
+  SsrfBlockedError,
+} from './webhook-url-guard';
 import { AppError } from '../../common/errors';
 
 jest.mock('node:dns', () => ({
@@ -235,6 +240,64 @@ describe('resolveSafeWebhookTarget (DNS resolution + rebinding protection)', () 
       AppError,
     );
     expect(dnsMock.resolve4).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Node.js 2026-10-21 security release — the APPLICATION-level invariants. The runtime fixes themselves
+ * (Node >= 24.22.1) are not exercised here; these prove the guard never hands the resolver or the TLS
+ * layer a name the runtime could misread.
+ */
+describe('Node.js 2026-10 DNS/TLS hostname CVEs (application defenses)', () => {
+  beforeEach(() => {
+    dnsMock.resolve4.mockReset();
+    dnsMock.resolve6.mockReset();
+  });
+
+  describe('CVE-2026-105482 — dns.resolve*() NUL truncation', () => {
+    it.each([
+      ['a NUL byte', 'public.example.com\u0000.internal'],
+      ['a control character', 'public.example.com\u0001'],
+      ['DEL', 'public.example.com\u007f'],
+      ['a percent escape', 'public.example.com%00.internal'],
+      ['the empty string', ''],
+    ])('assertResolvableHostname refuses %s', (_name, host) => {
+      expect(() => assertResolvableHostname(host)).toThrow(SsrfBlockedError);
+    });
+
+    it('accepts an ordinary hostname', () => {
+      expect(() => assertResolvableHostname('api.example.com')).not.toThrow();
+    });
+
+    it('a URL carrying a NUL in its host never parses, so it never reaches the resolver', async () => {
+      expect(() => assertSafeWebhookUrl('https://public.example.com%00.internal/hook')).toThrow(AppError);
+      expect(() => assertSafeWebhookUrl('https://public.example.com\u0000.internal/hook')).toThrow(AppError);
+      expect(dnsMock.resolve4).not.toHaveBeenCalled();
+      expect(dnsMock.resolve6).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('CVE-2026-105483 / -106069 / -106072 — non-canonical IP spellings', () => {
+    // webhook-http-client.ts passes url.hostname as the TLS servername, so it must already be canonical.
+    it.each([
+      ['fullwidth digits', 'https://１２７.0.0.1/hook', '127.0.0.1'],
+      ['a leading-zero (octal) octet', 'https://0127.0.0.1/hook', '87.0.0.1'],
+      ['a hex octet', 'https://0x7f.0.0.1/hook', '127.0.0.1'],
+      ['a single decimal integer', 'https://2130706433/hook', '127.0.0.1'],
+      ['shorthand dotted form', 'https://127.1/hook', '127.0.0.1'],
+    ])('%s is canonicalised by WHATWG URL before any check or TLS servername', (_name, raw, canonical) => {
+      expect(new URL(raw).hostname).toBe(canonical);
+    });
+
+    it.each([
+      'https://１２７.0.0.1/hook',
+      'https://0x7f.0.0.1/hook',
+      'https://0177.0.0.1/hook',
+    ])('%s is blocked as loopback and never resolved', async (raw) => {
+      expect(() => assertSafeWebhookUrl(raw)).toThrow(AppError);
+      await expect(resolveSafeWebhookTarget(new URL(raw))).rejects.toThrow();
+      expect(dnsMock.resolve4).not.toHaveBeenCalled();
+    });
   });
 });
 

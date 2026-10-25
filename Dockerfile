@@ -20,7 +20,10 @@
 # whose prebuilt binary for linux-x64 musl was verified on this exact base
 # (P1.2, 2026-09-04). linux-arm64 musl is NOT verified yet — keep ECS tasks on
 # X86_64 until it is (infra/docs/CURRENT-STATE-AUDIT.md F-12).
-ARG NODE_IMAGE=node:24.16.0-alpine3.22
+# 24.22.1 = the Node.js 2026-10-21 security release (CVE-2026-111497 Brotli, the
+# TLS/DNS hostname CVEs, et al.). It is not published on alpine3.22, hence 3.23;
+# bcrypt's musl prebuild was re-verified on this base (2026-10-25).
+ARG NODE_IMAGE=node:24.22.1-alpine3.23
 # Amazon RDS trust anchors. Production refuses to connect to Postgres without
 # validating the server certificate (database-ssl.ts, ZT-012); the ECS task sets
 # DB_SSL_CA=/app/certs/rds-global-bundle.pem. Public CA bundle, not a secret.
