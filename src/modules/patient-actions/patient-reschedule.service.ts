@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
+import { AppError, ErrorCode } from '../../common/errors';
 import { PatientActionLink } from '../../entities/Calendar&Appointments/PatientActionLink';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import {
@@ -109,6 +110,8 @@ export class PatientRescheduleService {
         fromDate,
         toDate,
         slotMinutes: this.durationMinutes(appointment),
+        // The reschedule itself refuses a past start; never offer one.
+        notBefore: new Date(),
       },
     );
     // contracts/public-surfaces.md §A names this field `slots`, distinct
@@ -129,6 +132,17 @@ export class PatientRescheduleService {
     startAt: string,
   ): Promise<Appointment> {
     const appointment = link.appointment;
+    // BUG-03 — same rule as cancelViaLink: the clinic's opt-in gates the
+    // write itself, not just what the page offers.
+    const settings = await this.tenantSettings.findOne({
+      where: { tenant: { id: tenantId } },
+    });
+    if (!settings?.self_reschedule_enabled) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: 'Online rescheduling is not available for this clinic',
+        publicContext: { blockedReason: 'DISABLED_BY_CLINIC' },
+      });
+    }
     await this.changeWindow.assertWithinWindow(tenantId, appointment.start_at);
     const previousStartAt = appointment.start_at;
 

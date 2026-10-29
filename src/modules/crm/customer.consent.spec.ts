@@ -29,6 +29,11 @@ describe('CustomerService — consent provenance', () => {
 
   beforeEach(async () => {
     customers = createMockRepository();
+    (customers as unknown as { manager: unknown }).manager = {
+      transaction: jest.fn(async (work: (m: unknown) => unknown) =>
+        work({ query: jest.fn(), getRepository: () => customers }),
+      ),
+    };
     // `save` echoes what it was given, like TypeORM does.
     customers.save.mockImplementation((c: unknown) =>
       Promise.resolve({ id: 'cust-1', ...(c as object) }),

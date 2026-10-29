@@ -508,6 +508,13 @@ export class AvailabilityService {
       fromDate: string;
       toDate: string;
       slotMinutes?: number;
+      /**
+       * Drop free time before this instant. Both callers are patient-facing
+       * (public booking, patient self-reschedule) and pass "now": a slot that
+       * has already started can never be booked (`AppointmentsService.create`
+       * rejects a past start), so offering one only fails the patient later.
+       */
+      notBefore?: Date;
     },
   ): Promise<{ timezone: string; windows: PublicAvailabilityWindow[] }> {
     if (
@@ -523,8 +530,7 @@ export class AvailabilityService {
 
     // Delegates to `rangeWindows` (which owns the day loop and the horizon cap)
     // and flattens — so the two range-shaped callers share ONE loop and cannot
-    // drift apart. `notBefore` is deliberately not passed: this projection's
-    // existing callers ask for an explicit range and render it themselves.
+    // drift apart. `notBefore` is the caller's choice (see the param above).
     const { timezone, days } = await this.rangeWindows(tenantId, params);
     return {
       timezone,

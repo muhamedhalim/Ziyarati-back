@@ -110,8 +110,10 @@ function toRawPrincipalRows(row: any): any[] {
   };
 
   const userRoles = row.userRoles ?? [];
-  const pairs: Array<{ roleSlug: string | null; permissionSlug: string | null }> =
-    [];
+  const pairs: Array<{
+    roleSlug: string | null;
+    permissionSlug: string | null;
+  }> = [];
   if (userRoles.length === 0) {
     pairs.push({ roleSlug: null, permissionSlug: null });
   } else {
@@ -999,6 +1001,12 @@ describe('AuthService', () => {
       const result = await service.refresh('rt');
 
       expect(result.user).toEqual(expectedPrincipal);
+      // SEC-02 — the new access token names the SAME session as the family, so
+      // revoking the family (logout) ends it too.
+      expect(jwt.signAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'access', sid: FAMILY }),
+        expect.anything(),
+      );
       // The child inherits the family and records its parent — the lineage
       // that makes family-scoped revocation possible.
       expect(refreshTokens.save).toHaveBeenCalledWith(
@@ -1168,11 +1176,23 @@ describe('AuthService', () => {
 
   // ────────────────────────────────── logout ────────────────────────────────
   describe('logout', () => {
-    it('revokes the presented refresh token', async () => {
-      jwt.verifyAsync.mockResolvedValueOnce({ jti: 'jti-1', type: 'refresh' });
+    const JTI = '11111111-1111-4111-8111-111111111111';
+    const FAMILY = '22222222-2222-4222-8222-222222222222';
+
+    it("ends the whole session: every live token in the presented token's family is revoked (SEC-02)", async () => {
+      jwt.verifyAsync.mockResolvedValueOnce({ jti: JTI, type: 'refresh' });
+      refreshTokens.findOne.mockResolvedValueOnce({
+        id: JTI,
+        family_id: FAMILY,
+      });
       await service.logout('rt');
+      expect(refreshTokens.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: JTI } }),
+      );
+      // Family-scoped, not user-scoped: other devices keep their sessions.
+      expect(refreshTokens.update).toHaveBeenCalledTimes(1);
       expect(refreshTokens.update).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'jti-1' }),
+        expect.objectContaining({ family_id: FAMILY }),
         expect.objectContaining({ revoked_at: expect.any(Date) }),
       );
     });
@@ -1181,6 +1201,48 @@ describe('AuthService', () => {
       jwt.verifyAsync.mockRejectedValueOnce(new Error('bad'));
       await expect(service.logout('rt')).resolves.toBeUndefined();
       expect(refreshTokens.update).not.toHaveBeenCalled();
+    });
+
+    it('is a no-op for a token whose jti is not a uuid or matches no row', async () => {
+      jwt.verifyAsync.mockResolvedValueOnce({
+        jti: 'not-a-uuid',
+        type: 'refresh',
+      });
+      await service.logout('rt');
+      jwt.verifyAsync.mockResolvedValueOnce({ jti: JTI, type: 'refresh' });
+      refreshTokens.findOne.mockResolvedValueOnce(null);
+      await service.logout('rt');
+      expect(refreshTokens.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('isSessionLive (SEC-02)', () => {
+    const SID = '33333333-3333-4333-8333-333333333333';
+    let query: jest.Mock;
+    beforeEach(() => {
+      query = jest.fn();
+      (refreshTokens as unknown as { query: jest.Mock }).query = query;
+    });
+
+    it('is live while the family has a live token or a rotation is mid-flight', async () => {
+      query.mockResolvedValueOnce([{ '?column?': 1 }]);
+      await expect(service.isSessionLive(SID)).resolves.toBe(true);
+      const [sql, params] = query.mock.calls[0] as [string, unknown[]];
+      expect(sql).toMatch(/revoked_at IS NULL AND expires_at > now\(\)/);
+      // In-flight rotation: revoked parent, recorded successor not inserted yet.
+      expect(sql).toMatch(/replaced_by_id IS NOT NULL/);
+      expect(sql).toMatch(/NOT EXISTS/);
+      expect(params).toEqual([SID, 10]);
+    });
+
+    it('is ended once nothing in the family is live (logout, logout-all, reuse, offboarding)', async () => {
+      query.mockResolvedValueOnce([]);
+      await expect(service.isSessionLive(SID)).resolves.toBe(false);
+    });
+
+    it('treats a malformed sid as ended without touching the database', async () => {
+      await expect(service.isSessionLive('nope')).resolves.toBe(false);
+      expect(query).not.toHaveBeenCalled();
     });
   });
 
@@ -1370,7 +1432,10 @@ describe('AuthService', () => {
 
     it('kills every other outstanding link for the user in the same transaction', async () => {
       passwordResets.findOne.mockResolvedValueOnce(reset());
-      await service.resetPassword({ token: 'tok', newPassword: 'NewPass123!' } as any);
+      await service.resetPassword({
+        token: 'tok',
+        newPassword: 'NewPass123!',
+      } as any);
       expect(dataSource.manager.createQueryBuilder).toHaveBeenCalled();
     });
 
@@ -1378,7 +1443,10 @@ describe('AuthService', () => {
       passwordResets.findOne.mockResolvedValueOnce(reset());
       dataSource.manager.update.mockResolvedValueOnce({ affected: 0 });
       await expect(
-        service.resetPassword({ token: 'tok', newPassword: 'NewPass123!' } as any),
+        service.resetPassword({
+          token: 'tok',
+          newPassword: 'NewPass123!',
+        } as any),
       ).rejects.toMatchObject({ code: ErrorCode.INVALID_RESET_TOKEN });
       expect(dataSource.manager.update).toHaveBeenCalledTimes(1); // only the claim
       expect(refreshTokens.update).not.toHaveBeenCalled();
@@ -1655,7 +1723,11 @@ describe('AuthService', () => {
         roles: [
           {
             slug: ROLE.OWNER,
-            permissions: ['appointments.read', 'appointments.create', 'staff.manage'],
+            permissions: [
+              'appointments.read',
+              'appointments.create',
+              'staff.manage',
+            ],
           },
         ],
       }),
@@ -1664,7 +1736,10 @@ describe('AuthService', () => {
         email: 'mgr@t1.test',
         tenant: { id: 'tenant-1' },
         roles: [
-          { slug: ROLE.MANAGER, permissions: ['appointments.read', 'staff.manage'] },
+          {
+            slug: ROLE.MANAGER,
+            permissions: ['appointments.read', 'staff.manage'],
+          },
         ],
       }),
       'doctor (ownership-scoped)': buildRow({
@@ -1689,7 +1764,10 @@ describe('AuthService', () => {
         email: 'sup@platform.test',
         tenant: null,
         roles: [
-          { slug: ROLE.PLATFORM_SUPPORT, permissions: ['support.tickets.read'] },
+          {
+            slug: ROLE.PLATFORM_SUPPORT,
+            permissions: ['support.tickets.read'],
+          },
         ],
       }),
       'super-admin (tenantId: null)': buildRow({
@@ -1711,7 +1789,10 @@ describe('AuthService', () => {
         email: 'two@t1.test',
         tenant: { id: 'tenant-1' },
         roles: [
-          { slug: ROLE.OWNER, permissions: ['appointments.read', 'staff.manage'] },
+          {
+            slug: ROLE.OWNER,
+            permissions: ['appointments.read', 'staff.manage'],
+          },
           {
             slug: ROLE.DOCTOR,
             permissions: ['appointments.read_own', 'appointments.read'],
@@ -1795,9 +1876,14 @@ describe('AuthService', () => {
     it('preloadedTenant: set (non-null) on a tenant user, null on a super-admin, and never present on the principal', async () => {
       mockPrincipal(users, {
         ...principalRow(),
-        tenant: { id: 'tenant-1', approval_status: 'APPROVED', is_active: true },
+        tenant: {
+          id: 'tenant-1',
+          approval_status: 'APPROVED',
+          is_active: true,
+        },
       });
-      const withTenant = await service.buildAuthenticatedUserWithTenant('user-1');
+      const withTenant =
+        await service.buildAuthenticatedUserWithTenant('user-1');
       expect(withTenant.tenant).not.toBeNull();
       expect((withTenant.principal as any).tenant).toBeUndefined();
 

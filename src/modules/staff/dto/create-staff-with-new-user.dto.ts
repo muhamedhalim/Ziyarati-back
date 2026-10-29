@@ -7,11 +7,13 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   Max,
   MaxLength,
   Min,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { PHONE_MESSAGE, PHONE_PATTERN } from '../../../common/utils/phone.util';
 
 import { CUSTOM_ROLE_SENTINEL, ROLE } from '../../../rbac/rbac.constants';
 
@@ -29,7 +31,8 @@ export class CreateStaffWithNewUserDto {
   // ── Account ──────────────────────────────────────────────────────────── //
 
   @ApiProperty({
-    description: 'Email address for the new staff member. Must be unique within the clinic.',
+    description:
+      'Email address for the new staff member. Must be unique within the clinic.',
     example: 'receptionist@al-noor.com',
     format: 'email',
     maxLength: 255,
@@ -55,6 +58,7 @@ export class CreateStaffWithNewUserDto {
   @IsOptional()
   @IsString()
   @MaxLength(20)
+  @Matches(PHONE_PATTERN, { message: PHONE_MESSAGE })
   phone?: string;
 
   @ApiPropertyOptional({
@@ -68,8 +72,7 @@ export class CreateStaffWithNewUserDto {
   roleSlug?: string;
 
   @ApiPropertyOptional({
-    description:
-      `Permission slugs to grant, used ONLY when \`roleSlug\` is \`"${CUSTOM_ROLE_SENTINEL}"\`. A tenant-scoped custom role carrying exactly this set is created and assigned. Every slug must already be a permission the CALLER holds — requesting one they don't hold is rejected (privilege-escalation guard). Must be non-empty when \`roleSlug\` is \`"${CUSTOM_ROLE_SENTINEL}"\`. Discover selectable slugs via \`GET /staff/assignable-permissions\` (already scoped to what the caller may grant).`,
+    description: `Permission slugs to grant, used ONLY when \`roleSlug\` is \`"${CUSTOM_ROLE_SENTINEL}"\`. A tenant-scoped custom role carrying exactly this set is created and assigned. Every slug must already be a permission the CALLER holds — requesting one they don't hold is rejected (privilege-escalation guard). Must be non-empty when \`roleSlug\` is \`"${CUSTOM_ROLE_SENTINEL}"\`. Discover selectable slugs via \`GET /staff/assignable-permissions\` (already scoped to what the caller may grant).`,
     example: ['appointments.read', 'customers.read'],
     type: [String],
   })
@@ -112,7 +115,8 @@ export class CreateStaffWithNewUserDto {
   // ── Booking settings ─────────────────────────────────────────────────── //
 
   @ApiPropertyOptional({
-    description: 'Whether the staff member is bookable immediately. Defaults to true.',
+    description:
+      'Whether the staff member is bookable immediately. Defaults to true.',
     example: true,
     default: true,
   })
@@ -135,7 +139,8 @@ export class CreateStaffWithNewUserDto {
   bookingBufferMinutes?: number;
 
   @ApiPropertyOptional({
-    description: 'Branches (same clinic) to assign the staff member to. Omit on single-branch clinics.',
+    description:
+      'Branches (same clinic) to assign the staff member to. Omit on single-branch clinics.',
     type: [String],
     format: 'uuid',
   })

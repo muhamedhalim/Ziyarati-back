@@ -86,6 +86,7 @@ export class WsAuthService {
       guest?: boolean;
       type?: string;
       exp?: number;
+      sid?: string;
     };
     try {
       payload = await this.jwt.verifyAsync(token, { secret: accessSecret });
@@ -96,7 +97,9 @@ export class WsAuthService {
     // handshake must too, otherwise a REFRESH token authenticates a socket whenever the two
     // secrets happen to be equal. Guest tokens are minted without a `type` claim; they are
     // tenant-scoped and `guest: true`, and may not carry a conflicting type either.
-    if (payload.guest ? payload.type !== undefined : payload.type !== 'access') {
+    if (
+      payload.guest ? payload.type !== undefined : payload.type !== 'access'
+    ) {
       throw new UnauthorizedException('Invalid token type');
     }
     if (!payload.sub || !payload.tenantId) {
@@ -121,6 +124,15 @@ export class WsAuthService {
         },
         expiresAt,
       };
+    }
+
+    // Same session rule as REST (SEC-02): a logged-out session's access token
+    // cannot open a socket either.
+    if (
+      payload.sid !== undefined &&
+      !(await this.auth.isSessionLive(payload.sid))
+    ) {
+      throw new UnauthorizedException('Session has ended');
     }
 
     // Real principal: reuse the EXACT same lookup JwtStrategy uses for REST, so

@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { PHONE_MESSAGE, PHONE_PATTERN } from '../../../common/utils/phone.util';
 import {
   IsBoolean,
   IsEmail,
@@ -29,11 +30,14 @@ export class CreateCustomerDto {
   full_name?: string;
 
   @ApiProperty({
-    description: 'Phone number. Not required to be unique — multiple customers may share one.',
+    description:
+      'Phone number: 7–15 digits, optional leading +, separators allowed. Not unique — a household may share one; ' +
+      'the same phone AND the same name is the same patient (409).',
     example: '+966500000000',
   })
   @IsString()
   @MaxLength(20)
+  @Matches(PHONE_PATTERN, { message: PHONE_MESSAGE })
   phone!: string;
 
   @ApiPropertyOptional({

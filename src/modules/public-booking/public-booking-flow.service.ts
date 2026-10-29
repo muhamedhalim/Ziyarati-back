@@ -290,6 +290,8 @@ export class PublicBookingFlowService {
         fromDate,
         toDate,
         slotMinutes: slotMinutes > 0 ? slotMinutes : undefined,
+        // Never offer a time that has already started — confirm would refuse it.
+        notBefore: new Date(),
       },
     );
     return { timezone, slots: windows };
@@ -301,8 +303,16 @@ export class PublicBookingFlowService {
     principal: GuestPrincipal,
     startAt: string,
   ): Promise<void> {
-    if (Number.isNaN(new Date(startAt).getTime())) {
+    const start = new Date(startAt);
+    if (Number.isNaN(start.getTime())) {
       throw this.unprocessable('startAt must be a valid ISO-8601 timestamp.');
+    }
+    // Refuse a past time HERE, not five steps later at confirm (which re-checks
+    // it anyway): the patient would otherwise fill in their details first.
+    if (start.getTime() <= Date.now()) {
+      throw this.unprocessable(
+        'That time has already passed. Please choose a later time.',
+      );
     }
     // Requires a doctor first: a time means nothing without whose calendar it is.
     await this.requireContext(
@@ -343,34 +353,43 @@ export class PublicBookingFlowService {
     );
     const hasInsurance = input.hasInsurance === true;
 
-    const appt = await runAsBotActor(this.botActor, this.tenantContext, ctx.tenantId, async (bot) => {
-      const customer = await this.customers.findOrCreateForBooking(
-        ctx.tenantId,
-        {
-          fullName: input.fullName,
-          phone: input.phone,
-          email: input.email,
-        },
-      );
+    const appt = await runAsBotActor(
+      this.botActor,
+      this.tenantContext,
+      ctx.tenantId,
+      async (bot) => {
+        const customer = await this.customers.findOrCreateForBooking(
+          ctx.tenantId,
+          {
+            fullName: input.fullName,
+            phone: input.phone,
+            email: input.email,
+          },
+        );
 
-      // Bind the customer server-side so nothing later can retarget the
-      // booking at someone else's record.
-      await this.bookingContext.patchSelection(guestTenantId, conversationId, {
-        bookingCustomerId: customer.id,
-      });
+        // Bind the customer server-side so nothing later can retarget the
+        // booking at someone else's record.
+        await this.bookingContext.patchSelection(
+          guestTenantId,
+          conversationId,
+          {
+            bookingCustomerId: customer.id,
+          },
+        );
 
-      const dto: CreateAppointmentDto = {
-        branchId: ctx.branchId,
-        customerId: customer.id,
-        staffId: ctx.staffId!,
-        startAt: ctx.startAt!,
-        serviceIds: ctx.serviceIds,
-        notes: input.notes,
-        source: AppointmentSource.PUBLIC_AI,
-        hasInsurance,
-      };
-      return this.appointments.create(ctx.tenantId, bot.id, dto);
-    });
+        const dto: CreateAppointmentDto = {
+          branchId: ctx.branchId,
+          customerId: customer.id,
+          staffId: ctx.staffId!,
+          startAt: ctx.startAt!,
+          serviceIds: ctx.serviceIds,
+          notes: input.notes,
+          source: AppointmentSource.PUBLIC_AI,
+          hasInsurance,
+        };
+        return this.appointments.create(ctx.tenantId, bot.id, dto);
+      },
+    );
 
     // T071 (FR-P015) — `AppointmentCreatedEvent` already fires from `create()`
     // above; this is the domain-specific attribution record, following

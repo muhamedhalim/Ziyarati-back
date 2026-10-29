@@ -14,7 +14,7 @@ import { createMockConfigService } from '../../../test/utils/mock-factories';
  */
 describe('WsAuthService', () => {
   let jwt: JwtService;
-  let auth: { buildAuthenticatedUser: jest.Mock };
+  let auth: { buildAuthenticatedUser: jest.Mock; isSessionLive: jest.Mock };
 
   const socketWith = (
     auth: Record<string, unknown>,
@@ -26,7 +26,7 @@ describe('WsAuthService', () => {
 
   beforeEach(() => {
     jwt = new JwtService({});
-    auth = { buildAuthenticatedUser: jest.fn() };
+    auth = { buildAuthenticatedUser: jest.fn(), isSessionLive: jest.fn() };
   });
 
   describe('authenticate', () => {
@@ -83,6 +83,36 @@ describe('WsAuthService', () => {
       expect(result).toMatchObject({ id: 'user-1', tenantId: 'tenant-1' });
     });
 
+    it('SEC-02: refuses an access token whose session was logged out, and admits a live one', async () => {
+      const service = new WsAuthService(
+        jwt,
+        createMockConfigService({ JWT_ACCESS_SECRET: 'test-secret' }) as never,
+        auth as never,
+      );
+      const sid = '55555555-5555-4555-8555-555555555555';
+      const token = await jwt.signAsync(
+        { sub: 'user-1', tenantId: 'tenant-1', type: 'access', sid },
+        { secret: 'test-secret' },
+      );
+      auth.isSessionLive.mockResolvedValueOnce(false);
+      await expect(service.authenticate(socketWith({ token }))).rejects.toThrow(
+        'Session has ended',
+      );
+      expect(auth.buildAuthenticatedUser).not.toHaveBeenCalled();
+
+      auth.isSessionLive.mockResolvedValueOnce(true);
+      auth.buildAuthenticatedUser.mockResolvedValueOnce({
+        id: 'user-1',
+        tenantId: 'tenant-1',
+        roles: ['owner'],
+        permissions: [],
+      });
+      await expect(
+        service.authenticate(socketWith({ token })),
+      ).resolves.toMatchObject({ id: 'user-1' });
+      expect(auth.isSessionLive).toHaveBeenCalledWith(sid);
+    });
+
     it('CR-44: rejects a REFRESH token on the handshake even when it verifies with the access secret', async () => {
       const service = new WsAuthService(
         jwt,
@@ -93,7 +123,9 @@ describe('WsAuthService', () => {
         { sub: 'user-1', tenantId: 'tenant-1', type: 'refresh' },
         { secret: 'test-secret' },
       );
-      await expect(service.authenticate(socketWith({ token }))).rejects.toThrow('Invalid token type');
+      await expect(service.authenticate(socketWith({ token }))).rejects.toThrow(
+        'Invalid token type',
+      );
       expect(auth.buildAuthenticatedUser).not.toHaveBeenCalled();
     });
 
@@ -107,7 +139,9 @@ describe('WsAuthService', () => {
         { sub: 'user-1', tenantId: 'tenant-1' },
         { secret: 'test-secret' },
       );
-      await expect(service.authenticate(socketWith({ token }))).rejects.toThrow('Invalid token type');
+      await expect(service.authenticate(socketWith({ token }))).rejects.toThrow(
+        'Invalid token type',
+      );
     });
 
     it('CR-44: a guest token must not smuggle in a conflicting type either', async () => {
@@ -120,7 +154,9 @@ describe('WsAuthService', () => {
         { sub: 'guest-1', tenantId: 'tenant-1', guest: true, type: 'refresh' },
         { secret: 'test-secret' },
       );
-      await expect(service.authenticate(socketWith({ token }))).rejects.toThrow('Invalid token type');
+      await expect(service.authenticate(socketWith({ token }))).rejects.toThrow(
+        'Invalid token type',
+      );
     });
 
     it('rejects a token with no tenant (tenant-scoping required)', async () => {

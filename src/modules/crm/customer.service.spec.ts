@@ -23,9 +23,21 @@ describe('CustomerService', () => {
   let usage: { assertResourceWithinLimit: jest.Mock };
   let staffScope: { hasAppointmentWithCustomer: jest.Mock };
 
+  let identityLock: jest.Mock;
+
   beforeEach(async () => {
     customers = createMockRepository();
-    staffScope = { hasAppointmentWithCustomer: jest.fn().mockResolvedValue(true) };
+    // create() checks for the same patient and inserts inside one transaction
+    // holding an advisory lock on (tenant, phone digits) — CRM-DUP-01.
+    identityLock = jest.fn();
+    (customers as unknown as { manager: unknown }).manager = {
+      transaction: jest.fn(async (work: (m: unknown) => unknown) =>
+        work({ query: identityLock, getRepository: () => customers }),
+      ),
+    };
+    staffScope = {
+      hasAppointmentWithCustomer: jest.fn().mockResolvedValue(true),
+    };
     // T044 (015-db-api-efficiency-audit, P7-2/ORM-001): list() now reads the
     // tenant FK column via entity metadata (R-11 — Customer exposes no plain
     // `tenantId` property), the same `.metadata.findRelationWithPropertyPath`
@@ -34,7 +46,9 @@ describe('CustomerService', () => {
     (customers as unknown as { metadata: unknown }).metadata = {
       name: 'Customer',
       findRelationWithPropertyPath: (path: string) =>
-        path === 'tenant' ? { joinColumns: [{ databaseName: 'tenantId' }] } : undefined,
+        path === 'tenant'
+          ? { joinColumns: [{ databaseName: 'tenantId' }] }
+          : undefined,
     };
     usage = {
       assertResourceWithinLimit: jest.fn().mockResolvedValue(undefined),
@@ -92,12 +106,109 @@ describe('CustomerService', () => {
     // Product requirement: phone is NOT a uniqueness key — multiple customers
     // may legitimately share one (e.g. a shared household line). Unlike
     // national_id below, no pre-check is even attempted for phone.
-    it('does not check phone uniqueness — creates successfully with no lookup, even if another customer shares the phone', async () => {
+    it('a shared phone alone is not a duplicate — a household member with another name is created', async () => {
+      customers.find.mockResolvedValueOnce([
+        { id: 'c-mother', full_name: 'Huda Salem', phone: '+966500000000' },
+      ]);
       customers.save.mockResolvedValueOnce({ id: 'c2' });
       await expect(
-        service.create(TENANT, { phone: '+966500', email: 'b@b.com' } as any),
+        service.create(TENANT, {
+          full_name: 'Adam Salem',
+          phone: '+966500000000',
+        } as any),
       ).resolves.toEqual({ id: 'c2' });
       expect(customers.findOne).not.toHaveBeenCalled();
+    });
+
+    describe('same patient (CRM-DUP-01)', () => {
+      it('refuses a second record with the same phone AND name, pointing at the existing one', async () => {
+        customers.find.mockResolvedValueOnce([
+          {
+            id: 'c-existing',
+            full_name: 'Sara Al-Otaibi',
+            phone: '+966 50 000 0000',
+          },
+        ]);
+        await expect(
+          service.create(TENANT, {
+            full_name: '  sara   al-otaibi ',
+            phone: '+966500000000',
+          } as any),
+        ).rejects.toMatchObject({
+          code: ErrorCode.DUPLICATE_PATIENT,
+          publicContext: { existingCustomerId: 'c-existing' },
+        });
+        expect(customers.save).not.toHaveBeenCalled();
+      });
+
+      it("compares phone DIGITS inside the caller's tenant only, under a (tenant, digits) lock", async () => {
+        customers.find.mockResolvedValueOnce([]);
+        await service.create(TENANT, {
+          full_name: 'Sara',
+          phone: '050-000 0000',
+        } as any);
+        const where = customers.find.mock.calls[0][0].where;
+        expect(where.tenant).toEqual({ id: TENANT });
+        // Raw(...) over regexp_replace(phone, non-digits) = the typed number's digits.
+        expect(where.phone.getSql('"phone"')).toContain(
+          'regexp_replace("phone"',
+        );
+        expect(where.phone.objectLiteralParameters).toEqual({
+          digits: '0500000000',
+        });
+        expect(identityLock).toHaveBeenCalledWith(
+          'SELECT pg_advisory_xact_lock(hashtext($1))',
+          [`customer-identity:${TENANT}:0500000000`],
+        );
+        expect(customers.save).toHaveBeenCalledTimes(1);
+      });
+
+      it('never treats a record without a name as the same patient', async () => {
+        customers.find.mockResolvedValue([
+          { id: 'c-x', full_name: null, phone: '0500000000' },
+        ]);
+        customers.save.mockResolvedValueOnce({ id: 'c-new' });
+        await expect(
+          service.create(TENANT, { phone: '0500000000' } as any),
+        ).resolves.toEqual({ id: 'c-new' });
+        customers.save.mockResolvedValueOnce({ id: 'c-new2' });
+        await expect(
+          service.create(TENANT, {
+            full_name: 'Sara',
+            phone: '0500000000',
+          } as any),
+        ).resolves.toEqual({ id: 'c-new2' });
+      });
+
+      it('an edit may not turn a record into a copy of another patient, but may keep its own identity', async () => {
+        customers.findOne.mockResolvedValueOnce({
+          id: 'c-1',
+          full_name: 'Adam',
+          phone: '0500000000',
+        });
+        customers.find.mockResolvedValueOnce([
+          { id: 'c-2', full_name: 'Huda', phone: '0500000000' },
+        ]);
+        await expect(
+          service.update(TENANT, 'c-1', { full_name: 'Huda' } as any),
+        ).rejects.toMatchObject({
+          code: ErrorCode.DUPLICATE_PATIENT,
+          publicContext: { existingCustomerId: 'c-2' },
+        });
+
+        // Re-saving its own phone/name (it IS the only match) is not a conflict.
+        customers.findOne.mockResolvedValueOnce({
+          id: 'c-1',
+          full_name: 'Adam',
+          phone: '0500000000',
+        });
+        customers.find.mockResolvedValueOnce([
+          { id: 'c-1', full_name: 'Adam', phone: '050 000 0000' },
+        ]);
+        await expect(
+          service.update(TENANT, 'c-1', { phone: '050 000 0000' } as any),
+        ).resolves.toBeDefined();
+      });
     });
 
     it('rejects a duplicate national_id within the tenant', async () => {
@@ -461,7 +572,10 @@ describe('CustomerService', () => {
       customers.findOne.mockResolvedValueOnce({ id: 'c1', phone: '+966500' });
       customers.save.mockImplementationOnce(async (c: any) => c);
 
-      await service.update(TENANT, 'c1', { national_id: undefined, source: 'x' } as any);
+      await service.update(TENANT, 'c1', {
+        national_id: undefined,
+        source: 'x',
+      } as any);
 
       expect(staffScope.hasAppointmentWithCustomer).not.toHaveBeenCalled();
     });
@@ -579,7 +693,10 @@ describe('CustomerService', () => {
 
     it('reuses the record when phone and name both match', async () => {
       customers.find.mockResolvedValueOnce([existing()]);
-      const c = await service.findOrCreateForBooking(TENANT, { fullName: 'Sara Al-Otaibi', phone: PHONE });
+      const c = await service.findOrCreateForBooking(TENANT, {
+        fullName: 'Sara Al-Otaibi',
+        phone: PHONE,
+      });
       expect(c.id).toBe('c-existing');
       expect(customers.save).not.toHaveBeenCalled();
     });
@@ -589,31 +706,53 @@ describe('CustomerService', () => {
       ['a compatibility form of the same letters', 'Ｓara Al-Otaibi'],
     ])('recognises the same person despite %s', async (_label, typed) => {
       customers.find.mockResolvedValueOnce([existing()]);
-      const c = await service.findOrCreateForBooking(TENANT, { fullName: typed, phone: PHONE });
+      const c = await service.findOrCreateForBooking(TENANT, {
+        fullName: typed,
+        phone: PHONE,
+      });
       expect(c.id).toBe('c-existing');
     });
 
     it('ignores Arabic diacritics and tatweel when comparing names', async () => {
       customers.find.mockResolvedValueOnce([existing({ full_name: 'محمد' })]);
-      const c = await service.findOrCreateForBooking(TENANT, { fullName: 'مُحَمَّـد', phone: PHONE });
+      const c = await service.findOrCreateForBooking(TENANT, {
+        fullName: 'مُحَمَّـد',
+        phone: PHONE,
+      });
       expect(c.id).toBe('c-existing');
     });
 
     it('creates a NEW record when the phone matches but the name does not — the existing patient is untouched', async () => {
       customers.find.mockResolvedValueOnce([existing()]);
-      const c = await service.findOrCreateForBooking(TENANT, { fullName: 'Someone Else', phone: PHONE });
+      const c = await service.findOrCreateForBooking(TENANT, {
+        fullName: 'Someone Else',
+        phone: PHONE,
+      });
       expect(c.id).not.toBe('c-existing');
       expect(created).toHaveLength(1);
-      expect(created[0]).toMatchObject({ full_name: 'Someone Else', phone: PHONE, source: 'public_ai' });
+      expect(created[0]).toMatchObject({
+        full_name: 'Someone Else',
+        phone: PHONE,
+        source: 'public_ai',
+      });
       expect(customers.update).not.toHaveBeenCalled();
     });
 
     it('never treats a missing name as a match — an unnamed record cannot be claimed by phone', async () => {
-      customers.find.mockResolvedValueOnce([existing({ full_name: undefined })]);
-      const noName = await service.findOrCreateForBooking(TENANT, { phone: PHONE });
+      customers.find.mockResolvedValueOnce([
+        existing({ full_name: undefined }),
+      ]);
+      const noName = await service.findOrCreateForBooking(TENANT, {
+        phone: PHONE,
+      });
       expect(noName.id).not.toBe('c-existing');
-      customers.find.mockResolvedValueOnce([existing({ full_name: undefined })]);
-      const blankName = await service.findOrCreateForBooking(TENANT, { fullName: '   ', phone: PHONE });
+      customers.find.mockResolvedValueOnce([
+        existing({ full_name: undefined }),
+      ]);
+      const blankName = await service.findOrCreateForBooking(TENANT, {
+        fullName: '   ',
+        phone: PHONE,
+      });
       expect(blankName.id).not.toBe('c-existing');
     });
 
@@ -622,22 +761,44 @@ describe('CustomerService', () => {
         existing({ id: 'c-mother', full_name: 'Huda Salem' }),
         existing({ id: 'c-child', full_name: 'Adam Salem' }),
       ]);
-      const c = await service.findOrCreateForBooking(TENANT, { fullName: 'Adam Salem', phone: PHONE });
+      const c = await service.findOrCreateForBooking(TENANT, {
+        fullName: 'Adam Salem',
+        phone: PHONE,
+      });
       expect(c.id).toBe('c-child');
     });
 
     it('looks only inside the tenant it was given, and only at a bounded number of rows', async () => {
       customers.find.mockResolvedValueOnce([]);
-      await service.findOrCreateForBooking(TENANT, { fullName: 'Nadia', phone: PHONE });
+      await service.findOrCreateForBooking(TENANT, {
+        fullName: 'Nadia',
+        phone: PHONE,
+      });
       expect(customers.find).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { tenant: { id: TENANT }, phone: PHONE }, take: 20 }),
+        expect.objectContaining({
+          where: expect.objectContaining({ tenant: { id: TENANT } }),
+          take: 20,
+        }),
       );
+      // Same digit-based match as the staff "Add patient" path (CRM-DUP-01).
+      expect(
+        customers.find.mock.calls[0][0].where.phone.objectLiteralParameters,
+      ).toEqual({
+        digits: PHONE.replace(/\D/g, ''),
+      });
     });
 
     it('stores NULL (no placeholder address) when no email is supplied — one phone may own several records', async () => {
       customers.find.mockResolvedValue([]);
-      await service.findOrCreateForBooking(TENANT, { fullName: 'One', phone: PHONE });
-      await service.findOrCreateForBooking(TENANT, { fullName: 'Two', phone: PHONE, email: '   ' });
+      await service.findOrCreateForBooking(TENANT, {
+        fullName: 'One',
+        phone: PHONE,
+      });
+      await service.findOrCreateForBooking(TENANT, {
+        fullName: 'Two',
+        phone: PHONE,
+        email: '   ',
+      });
       expect(created).toHaveLength(2);
       for (const c of created) expect(c.email ?? null).toBeNull();
       expect(JSON.stringify(created)).not.toMatch(/\.internal/);
@@ -645,13 +806,19 @@ describe('CustomerService', () => {
 
     it('stores the address the visitor typed', async () => {
       customers.find.mockResolvedValue([]);
-      await service.findOrCreateForBooking(TENANT, { fullName: 'Layla', phone: PHONE, email: 'layla@example.com' });
+      await service.findOrCreateForBooking(TENANT, {
+        fullName: 'Layla',
+        phone: PHONE,
+        email: 'layla@example.com',
+      });
       expect(created[0].email).toBe('layla@example.com');
     });
 
     it('if the typed address belongs to another record it is not attached — the booking proceeds with NULL email', async () => {
       customers.find.mockResolvedValue([]);
-      customers.save.mockRejectedValueOnce(Object.assign(new Error('duplicate key'), { code: '23505' }));
+      customers.save.mockRejectedValueOnce(
+        Object.assign(new Error('duplicate key'), { code: '23505' }),
+      );
       const c = await service.findOrCreateForBooking(TENANT, {
         fullName: 'Layla',
         phone: PHONE,
@@ -663,10 +830,34 @@ describe('CustomerService', () => {
     });
 
     it('a concurrent insert of the SAME person is re-read rather than duplicated', async () => {
+      const raced = existing({ id: 'c-raced', full_name: 'Omar' });
       customers.find.mockResolvedValueOnce([]); // first look: nobody
-      customers.save.mockRejectedValueOnce(Object.assign(new Error('duplicate key'), { code: '23505' }));
-      customers.find.mockResolvedValueOnce([existing({ id: 'c-raced', full_name: 'Omar' })]); // the racer's row
-      const c = await service.findOrCreateForBooking(TENANT, { fullName: 'Omar', phone: PHONE });
+      // The racer committed first: create()'s check under the (tenant, phone) lock sees it and
+      // refuses (CRM-DUP-01), and the booking re-reads it instead of failing or duplicating.
+      customers.find.mockResolvedValueOnce([raced]);
+      customers.find.mockResolvedValueOnce([raced]);
+      const c = await service.findOrCreateForBooking(TENANT, {
+        fullName: 'Omar',
+        phone: PHONE,
+      });
+      expect(c.id).toBe('c-raced');
+      expect(created).toHaveLength(0);
+      expect(customers.save).not.toHaveBeenCalled();
+    });
+
+    it('a unique-key race on insert is still re-read rather than duplicated', async () => {
+      customers.find.mockResolvedValueOnce([]); // first look: nobody
+      customers.find.mockResolvedValueOnce([]); // check under the lock: nobody yet
+      customers.save.mockRejectedValueOnce(
+        Object.assign(new Error('duplicate key'), { code: '23505' }),
+      );
+      customers.find.mockResolvedValueOnce([
+        existing({ id: 'c-raced', full_name: 'Omar' }),
+      ]); // the racer's row
+      const c = await service.findOrCreateForBooking(TENANT, {
+        fullName: 'Omar',
+        phone: PHONE,
+      });
       expect(c.id).toBe('c-raced');
       expect(created).toHaveLength(0);
     });
@@ -674,7 +865,12 @@ describe('CustomerService', () => {
     it('rethrows a failure that is not an address clash (no address was supplied)', async () => {
       customers.find.mockResolvedValue([]);
       customers.save.mockRejectedValueOnce(new Error('connection lost'));
-      await expect(service.findOrCreateForBooking(TENANT, { fullName: 'Omar', phone: PHONE })).rejects.toThrow('connection lost');
+      await expect(
+        service.findOrCreateForBooking(TENANT, {
+          fullName: 'Omar',
+          phone: PHONE,
+        }),
+      ).rejects.toThrow('connection lost');
     });
   });
 
@@ -736,7 +932,9 @@ describe('CustomerService', () => {
       const qb = mockList([{ id: 'c1' }], 1);
       await service.list(TENANT, { page: 1, limit: 10, isActive: true } as any);
       const allCalls = [...qb.where.mock.calls, ...qb.andWhere.mock.calls];
-      expect(allCalls.some(([sql]) => /deleted_at/i.test(String(sql)))).toBe(false);
+      expect(allCalls.some(([sql]) => /deleted_at/i.test(String(sql)))).toBe(
+        false,
+      );
     });
 
     it('issues exactly one query (createQueryBuilder, not findAndCount) with limit/offset, never skip/take', async () => {

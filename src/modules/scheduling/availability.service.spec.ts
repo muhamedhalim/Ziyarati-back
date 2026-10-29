@@ -397,7 +397,7 @@ describe('AvailabilityService.assertBookable', () => {
       });
     });
 
-    it('rejects a day OUTSIDE the employee\'s own working-days set, even with the tenant flag off', async () => {
+    it("rejects a day OUTSIDE the employee's own working-days set, even with the tenant flag off", async () => {
       // The staff member has an explicit weekly schedule (e.g. Mon/Wed/Fri),
       // but nothing at all for the requested day — no calendar slot either.
       nothingConfigured();
@@ -548,8 +548,52 @@ describe('AvailabilityService.assertBookable', () => {
           toDate: '2026-07-01',
         });
         expect(pub.windows).toEqual(
-          authenticated.windows.map((w: any) => ({ startAt: w.startTime, endAt: w.endTime })),
+          authenticated.windows.map((w: any) => ({
+            startAt: w.startTime,
+            endAt: w.endTime,
+          })),
         );
+      });
+
+      it('drops windows before notBefore, and returns nothing for a day entirely in the past', async () => {
+        fullDaySlot();
+        const all = await service.publicWindows(TENANT, {
+          branchId: BRANCH,
+          staffId: STAFF,
+          fromDate: '2026-07-01',
+          toDate: '2026-07-01',
+          slotMinutes: 30,
+        });
+        expect(all.windows.length).toBeGreaterThan(0);
+
+        const floor = new Date(
+          all.windows[Math.floor(all.windows.length / 2)].startAt,
+        );
+        const later = await service.publicWindows(TENANT, {
+          branchId: BRANCH,
+          staffId: STAFF,
+          fromDate: '2026-07-01',
+          toDate: '2026-07-01',
+          slotMinutes: 30,
+          notBefore: floor,
+        });
+        expect(later.windows.length).toBeGreaterThan(0);
+        expect(later.windows.length).toBeLessThan(all.windows.length);
+        for (const w of later.windows) {
+          expect(new Date(w.startAt).getTime()).toBeGreaterThanOrEqual(
+            floor.getTime(),
+          );
+        }
+
+        const none = await service.publicWindows(TENANT, {
+          branchId: BRANCH,
+          staffId: STAFF,
+          fromDate: '2026-07-01',
+          toDate: '2026-07-01',
+          slotMinutes: 30,
+          notBefore: new Date('2026-07-02T00:00:00Z'),
+        });
+        expect(none.windows).toEqual([]);
       });
 
       it('caps the horizon at 14 days regardless of the requested range', async () => {

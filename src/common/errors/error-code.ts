@@ -149,6 +149,11 @@ export enum ErrorCode {
   SALES_BONUS_STATE_CONFLICT = 'SALES_BONUS_STATE_CONFLICT',
   /** The activity id does not exist, was deleted, or belongs to a different employee than the one in the route. */
   SALES_ACTIVITY_NOT_FOUND = 'SALES_ACTIVITY_NOT_FOUND',
+  /**
+   * CRM-DUP-01 — a live patient in this clinic already has the same phone
+   * number AND the same name. `context.existingCustomerId` names that record.
+   */
+  DUPLICATE_PATIENT = 'DUPLICATE_PATIENT',
 }
 
 export interface ErrorCodeMeta {
@@ -205,7 +210,8 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
   },
   [ErrorCode.MAINTENANCE_MODE]: {
     status: HttpStatus.SERVICE_UNAVAILABLE,
-    message: 'The platform is currently under maintenance. Please try again later.',
+    message:
+      'The platform is currently under maintenance. Please try again later.',
   },
 
   [ErrorCode.FILE_TOO_LARGE]: {
@@ -379,7 +385,8 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
   },
   [ErrorCode.SALES_TARGET_VERSION_CONFLICT]: {
     status: HttpStatus.CONFLICT,
-    message: 'This target was changed by someone else. Reload it and try again.',
+    message:
+      'This target was changed by someone else. Reload it and try again.',
   },
   [ErrorCode.SALES_TARGET_LOCKED]: {
     status: HttpStatus.CONFLICT,
@@ -412,5 +419,9 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
   [ErrorCode.SALES_ACTIVITY_NOT_FOUND]: {
     status: HttpStatus.NOT_FOUND,
     message: 'Sales activity not found',
+  },
+  [ErrorCode.DUPLICATE_PATIENT]: {
+    status: HttpStatus.CONFLICT,
+    message: 'A patient with this phone number and name already exists',
   },
 };

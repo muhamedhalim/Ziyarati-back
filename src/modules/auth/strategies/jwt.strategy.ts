@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
-import { ExtractJwt, Strategy, type JwtFromRequestFunction } from 'passport-jwt';
+import {
+  ExtractJwt,
+  Strategy,
+  type JwtFromRequestFunction,
+} from 'passport-jwt';
 import type { Request } from 'express';
 import { AuthService } from '../auth.service';
 import { CookieService } from '../cookie.service';
@@ -45,14 +49,33 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
    * of re-querying the identical tenant by id a second time (PERF-BE-003) —
    * see `preloaded-tenant.types.ts` for why this is request-scoped, not part
    * of the returned principal.
+   *
+   * Tokens carrying a `sid` are also refused once that session is logged out
+   * (see `AuthService.isSessionLive`).
    */
-  async validate(req: Request, payload: JwtPayload): Promise<AuthenticatedUser> {
+  async validate(
+    req: Request,
+    payload: JwtPayload,
+  ): Promise<AuthenticatedUser> {
     if (payload.type !== 'access') {
-      throw new AppError(ErrorCode.UNAUTHORIZED, { message: 'Invalid token type' });
+      throw new AppError(ErrorCode.UNAUTHORIZED, {
+        message: 'Invalid token type',
+      });
     }
-    const { principal, tenant } = await this.authService.buildAuthenticatedUserWithTenant(
-      payload.sub,
-    );
+    // A signed, unexpired token is not enough: its session must not have been
+    // logged out since it was issued (SEC-02). Run alongside the principal
+    // lookup so the check adds no round trip of latency.
+    const [{ principal, tenant }, sessionLive] = await Promise.all([
+      this.authService.buildAuthenticatedUserWithTenant(payload.sub),
+      payload.sid === undefined
+        ? true
+        : this.authService.isSessionLive(payload.sid),
+    ]);
+    if (!sessionLive) {
+      throw new AppError(ErrorCode.UNAUTHORIZED, {
+        message: 'Session has ended',
+      });
+    }
     (req as PreloadedTenantRequest).preloadedTenant = tenant;
     return principal;
   }

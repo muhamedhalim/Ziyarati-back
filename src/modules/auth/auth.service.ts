@@ -989,7 +989,16 @@ export class AuthService {
     );
   }
 
-  /** Revokes a single refresh token (single-device logout). */
+  /**
+   * Ends ONE session (single-device logout): every token in the presented
+   * token's rotation family is revoked, and because access tokens carry that
+   * family as `sid`, {@link isSessionLive} turns them away from the next
+   * request on (SEC-02). Other devices' families are untouched.
+   *
+   * The whole family rather than only the presented row: a refresh racing the
+   * logout (another tab) may already have rotated the presented token into a
+   * live successor, which would otherwise outlive the logout.
+   */
   async logout(refreshToken: string): Promise<void> {
     // Same reasoning as refresh() above: resolved before the try/catch so a
     // missing secret fails loudly instead of being swallowed into the
@@ -1003,15 +1012,59 @@ export class AuthService {
     } catch {
       return; // logging out with a bad token is a no-op
     }
-    await this.refreshTokens.update(
-      { id: payload.jti, revoked_at: IsNull() },
-      { revoked_at: new Date() },
-    );
+    if (!AuthService.UUID_PATTERN.test(payload.jti ?? '')) {
+      return;
+    }
+    const stored = await this.refreshTokens.findOne({
+      where: { id: payload.jti },
+      select: { id: true, family_id: true },
+    });
+    if (!stored) {
+      return;
+    }
+    await this.revokeFamily(stored.family_id);
     this.logger.log({
       event: LOG_EVENT.AUTH_LOGOUT_SUCCEEDED,
       message: 'Logout succeeded',
       user_id: payload.sub,
     });
+  }
+
+  /**
+   * Whether the session an access token was issued for (`sid`, its refresh
+   * family) is still signed in. Called on every authenticated request, so it is
+   * one indexed lookup (`idx_refresh_tokens_family_active`).
+   *
+   * Live means the family still holds an unrevoked, unexpired token — OR a
+   * rotation is mid-flight: `claimRefreshRow` revokes the parent and records
+   * its successor in one statement, and the successor row is inserted a moment
+   * later. A request landing in that gap must not read "signed out", so a
+   * parent rotated within the retry window whose successor does not exist yet
+   * still counts. Logout, logout-all, reuse detection, password change/reset
+   * and offboarding all revoke WITHOUT recording a successor, so none of them
+   * can match that clause.
+   */
+  async isSessionLive(sid: string): Promise<boolean> {
+    if (!AuthService.UUID_PATTERN.test(sid)) {
+      return false;
+    }
+    const windowSeconds = this.config.get<number>(
+      'AUTH_REFRESH_RETRY_WINDOW_SECONDS',
+      10,
+    );
+    const rows: unknown[] = await this.refreshTokens.query(
+      `SELECT 1 FROM refresh_tokens
+        WHERE family_id = $1 AND revoked_at IS NULL AND expires_at > now()
+       UNION ALL
+       SELECT 1 FROM refresh_tokens p
+        WHERE p.family_id = $1
+          AND p.replaced_by_id IS NOT NULL
+          AND p.rotated_at > now() - make_interval(secs => $2)
+          AND NOT EXISTS (SELECT 1 FROM refresh_tokens c WHERE c.id = p.replaced_by_id)
+       LIMIT 1`,
+      [sid, windowSeconds],
+    );
+    return rows.length > 0;
   }
 
   /** Revokes every active refresh token for a user (global logout). */
@@ -1090,7 +1143,10 @@ export class AuthService {
         // Degraded mode: silently suppress rather than refuse (FR-062,
         // FR-062a) — nothing in status, body, headers or wording may
         // distinguish this from an ordinary below-threshold success.
-        this.metrics.recordAuthAbuseLimiterEvent(AUTH_ABUSE_LIMITER_SCOPE.FORGOT, 'suppressed');
+        this.metrics.recordAuthAbuseLimiterEvent(
+          AUTH_ABUSE_LIMITER_SCOPE.FORGOT,
+          'suppressed',
+        );
         return { message: AuthService.FORGOT_PASSWORD_MESSAGE };
       }
       throw new AppError(ErrorCode.RATE_LIMITED, {
@@ -1511,7 +1567,8 @@ export class AuthService {
           country_id: first.tenantCountryId ?? undefined,
           default_currency: first.tenantDefaultCurrency as string,
           default_timezone: first.tenantDefaultTimezone as string,
-          approval_status: first.tenantApprovalStatus as Tenant['approval_status'],
+          approval_status:
+            first.tenantApprovalStatus as Tenant['approval_status'],
           is_active: !!first.tenantIsActive,
           created_at: first.tenantCreatedAt as Date,
           updated_at: first.tenantUpdatedAt as Date,
@@ -1640,20 +1697,27 @@ export class AuthService {
             ),
           );
 
+    // Reserve the refresh-token row id so it can be embedded as the jti. On a
+    // rotation the id was already reserved by `refresh()` and written into the
+    // parent's `replaced_by_id` — reuse it rather than minting a second one.
+    const jti = lineage?.jti ?? randomUUID();
+    // A login roots its own family at its own id; a rotation continues its
+    // parent's. This is the whole basis of family-scoped revocation — and the
+    // access token names the same family as its session (`sid`), so revoking
+    // the family ends the access token too (SEC-02).
+    const familyId = lineage?.familyId ?? jti;
+
     const accessPayload: JwtPayload = {
       sub: userId,
       tenantId,
       type: 'access',
+      sid: familyId,
     };
     const accessToken = await this.jwt.signAsync(accessPayload, {
       secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
       expiresIn: accessTtlSeconds,
     });
 
-    // Reserve the refresh-token row id so it can be embedded as the jti. On a
-    // rotation the id was already reserved by `refresh()` and written into the
-    // parent's `replaced_by_id` — reuse it rather than minting a second one.
-    const jti = lineage?.jti ?? randomUUID();
     const refreshPayload: RefreshTokenPayload = {
       sub: userId,
       tenantId,
@@ -1670,9 +1734,7 @@ export class AuthService {
         id: jti,
         user: { id: userId } as User,
         token_hash: this.hashToken(refreshToken),
-        // A login roots its own family at its own id; a rotation continues its
-        // parent's. This is the whole basis of family-scoped revocation.
-        family_id: lineage?.familyId ?? jti,
+        family_id: familyId,
         parent_id: lineage?.parentId ?? null,
         device_info: context?.deviceInfo,
         ip_address: context?.ipAddress,
