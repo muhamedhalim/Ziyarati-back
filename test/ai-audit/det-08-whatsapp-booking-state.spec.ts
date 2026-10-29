@@ -18,6 +18,7 @@
 import { scriptedToolCall as call } from '../security/fixtures/scripted-ai-provider';
 import {
   bootAudit,
+  AVAILABILITY_HORIZON_DAYS,
   firstFullDay,
   GuestSession,
   gatewayTurn,
@@ -104,7 +105,7 @@ describe('Phase 1 — WhatsApp booking state, tool loop and price honesty', () =
               call('check_availability', {
                 branchId: main.id,
                 staffId: omar.id,
-                daysAhead: 3,
+                daysAhead: AVAILABILITY_HORIZON_DAYS,
                 slotMinutes: 45,
               }),
             ],
@@ -203,7 +204,7 @@ describe('Phase 1 — WhatsApp booking state, tool loop and price honesty', () =
               call('check_availability', {
                 branchId,
                 staffId,
-                daysAhead: 3,
+                daysAhead: AVAILABILITY_HORIZON_DAYS,
                 slotMinutes: 45,
               }),
             ],
@@ -474,7 +475,7 @@ describe('Phase 1 — WhatsApp booking state, tool loop and price honesty', () =
               call('check_availability', {
                 branchId: main.id,
                 staffId: omar.id,
-                daysAhead: 3,
+                daysAhead: AVAILABILITY_HORIZON_DAYS,
                 slotMinutes: 45,
               }),
             ],

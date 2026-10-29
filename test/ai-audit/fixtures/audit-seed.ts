@@ -116,9 +116,56 @@ async function insertBranch(
   return rows[0].id as string;
 }
 
+/** Weekdays (0 = Sunday) the seeded clinics are open: Sun-Thu. Friday is explicitly closed, Saturday is not published. */
+export const OPEN_WEEKDAYS: readonly number[] = [0, 1, 2, 3, 4];
+const SEED_ZONE = 'Asia/Riyadh';
+
+const WEEKDAY_INDEX: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+/** The clinic-local calendar date (YYYY-MM-DD) of an instant. */
+export function clinicDate(at: Date): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: SEED_ZONE }).format(at);
+}
+
+/** Clinic-local weekday of a YYYY-MM-DD date (0 = Sunday). Asia/Riyadh has no DST, so this is plain calendar maths. */
+function weekdayOf(date: string): number {
+  const name = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', weekday: 'short' }).format(new Date(`${date}T00:00:00Z`));
+  return WEEKDAY_INDEX[name];
+}
+
+/**
+ * The next `count` dates on which the seeded clinics are open, strictly AFTER today (clinic time).
+ *
+ * The audit specs judge "the first full day" of availability. On a Thursday that day is the coming
+ * Sunday (Fri/Sat are closed), so anything the seed or a spec places on a fixed offset such as "+3
+ * days" can land on the very day under test and shift its slot grid. Callers therefore derive dates
+ * from the clinic calendar instead of from a day offset, which gives the same answer on every weekday.
+ */
+export function upcomingOpenDays(now: Date, count: number): string[] {
+  const out: string[] = [];
+  const cursor = new Date(`${clinicDate(now)}T00:00:00Z`);
+  while (out.length < count) {
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+    const date = cursor.toISOString().slice(0, 10);
+    if (OPEN_WEEKDAYS.includes(weekdayOf(date))) out.push(date);
+  }
+  return out;
+}
+
+/**
+ * Start of the seeded CONFIRMED appointment: 10:00 clinic time (07:00Z) on the SECOND open day after
+ * today. The first open day stays free, so `firstFullDay` is a clean 09:00-17:00 grid whatever the
+ * weekday; and the appointment is always more than a full day away, so the 24 h cancellation policy
+ * (`cancellation_hours`) is never in play for it.
+ */
+export function seededAppointmentStart(now: Date = new Date()): Date {
+  const [, second] = upcomingOpenDays(now, 2);
+  return new Date(`${second}T07:00:00Z`);
+}
+
 /** Sun-Thu 09:00-17:00 open (days 0-4), day 5 explicitly closed, day 6 NOT published. */
 async function insertHours(ds: DataSource, tenantId: string, branchId: string) {
-  for (const d of [0, 1, 2, 3, 4]) {
+  for (const d of OPEN_WEEKDAYS) {
     await q(
       ds,
       `INSERT INTO working_hours (day_of_week,start_time,end_time,is_closed,"branchId","tenantId")
@@ -192,7 +239,7 @@ async function insertPatient(ds: DataSource, tenantId: string, name: string, pho
   return rows[0].id as string;
 }
 
-/** A CONFIRMED appointment ~3 days out, at 10:00 Asia/Riyadh (07:00Z), for cancel/reschedule tests. */
+/** A CONFIRMED appointment on the second open day, 10:00 Asia/Riyadh (07:00Z), for cancel/reschedule tests. */
 async function insertAppointment(
   ds: DataSource,
   tenantId: string,
@@ -201,9 +248,7 @@ async function insertAppointment(
   staffId: string,
   serviceId: string,
 ) {
-  const start = new Date();
-  start.setUTCDate(start.getUTCDate() + 3);
-  start.setUTCHours(7, 0, 0, 0);
+  const start = seededAppointmentStart();
   const end = new Date(start.getTime() + 45 * 60_000);
   const rows = await q(
     ds,

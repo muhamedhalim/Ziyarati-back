@@ -139,11 +139,7 @@ jobs:
       - name: Start Redis (zt-e2e-redis :63790)
         run: |
           docker run -d --name zt-e2e-redis -p 63790:6379 redis:7-alpine
-          for i in $(seq 1 30); do
-            [ "$(docker exec zt-e2e-redis redis-cli ping 2>/dev/null)" = "PONG" ] && exit 0
-            sleep 1
-          done
-          echo "::error::Redis did not become ready"; exit 1
+          bash scripts/ci/wait-for-redis.sh zt-e2e-redis 63790 30
 
       - name: Typecheck + build
         run: npm run build

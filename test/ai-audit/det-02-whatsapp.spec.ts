@@ -18,7 +18,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { scriptedToolCall as call } from '../security/fixtures/scripted-ai-provider';
-import { bootAudit, firstFullDay, whatsappTurn, whatsappToolCtx, saveEvidence, type AuditRuntime } from './fixtures/audit-runtime';
+import { AVAILABILITY_HORIZON_DAYS, bootAudit, firstFullDay, whatsappTurn, whatsappToolCtx, saveEvidence, type AuditRuntime } from './fixtures/audit-runtime';
 import { ReactiveProvider, toolResultsIn, lastToolResult } from './fixtures/reactive-provider';
 
 describe('WhatsApp surface — tools, identity binding and appointment actions', () => {
@@ -87,7 +87,7 @@ describe('WhatsApp surface — tools, identity binding and appointment actions',
   it('F-02 (WhatsApp): check_availability uses the slot length the MODEL passes — omitted, a free 09:00-17:00 day is one window start', async () => {
     const { full } = rt.seed;
     const ctx = await whatsappToolCtx(rt, full, full.patientIds.x);
-    const base = { branchId: full.branchId, staffId: full.doctorStaffIds.omar, daysAhead: 3 };
+    const base = { branchId: full.branchId, staffId: full.doctorStaffIds.omar, daysAhead: AVAILABILITY_HORIZON_DAYS };
     const noSlot = await rt.dispatch.execute(ctx, call('check_availability', base));
     const withSlot = await rt.dispatch.execute(ctx, call('check_availability', { ...base, slotMinutes: 45 }));
     observed.wa_avail_noslot = noSlot; observed.wa_avail_slot45 = withSlot;
@@ -100,7 +100,7 @@ describe('WhatsApp surface — tools, identity binding and appointment actions',
     const { full } = rt.seed;
     const ctx = await whatsappToolCtx(rt, full, full.patientIds.x);
     const avail = await rt.dispatch.execute(ctx, call('check_availability', {
-      branchId: full.branchId, staffId: full.doctorStaffIds.omar, daysAhead: 3, slotMinutes: 45,
+      branchId: full.branchId, staffId: full.doctorStaffIds.omar, daysAhead: AVAILABILITY_HORIZON_DAYS, slotMinutes: 45,
     }));
     const slot = firstFullDay(avail.days as any[]).slots[1].startAt;
     const res = await rt.dispatch.execute(ctx, call('book_appointment', {
@@ -156,7 +156,7 @@ describe('WhatsApp surface — tools, identity binding and appointment actions',
     const apptY = await newAppointment(full.patientIds.y, 96);
     const ctx = await whatsappToolCtx(rt, full, full.patientIds.x);
     const avail = await rt.dispatch.execute(ctx, call('check_availability', {
-      branchId: full.branchId, staffId: full.doctorStaffIds.omar, daysAhead: 3, slotMinutes: 45,
+      branchId: full.branchId, staffId: full.doctorStaffIds.omar, daysAhead: AVAILABILITY_HORIZON_DAYS, slotMinutes: 45,
     }));
     const target = firstFullDay(avail.days as any[]).slots[3].startAt;
     reactive.setHandler((req) => {

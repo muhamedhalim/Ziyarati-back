@@ -18,6 +18,7 @@
  */
 import { scriptedToolCall as call } from '../security/fixtures/scripted-ai-provider';
 import {
+  AVAILABILITY_HORIZON_DAYS,
   bootAudit,
   ownerPrincipal,
   whatsappTurn,
@@ -171,7 +172,7 @@ describe('Phase 2 — appointment changes: ownership, change window, confirmatio
     const { full } = rt.seed;
     const appt = await newAppointment(full.patientIds.y, 76);
     const ctx = await whatsappToolCtx(rt, full, full.patientIds.y);
-    const avail = await rt.dispatch.execute(ctx, call('check_availability', { branchId: full.branchId, staffId: full.doctorStaffIds.omar, daysAhead: 3, slotMinutes: 45 }));
+    const avail = await rt.dispatch.execute(ctx, call('check_availability', { branchId: full.branchId, staffId: full.doctorStaffIds.omar, daysAhead: AVAILABILITY_HORIZON_DAYS, slotMinutes: 45 }));
     const slots = (avail.days as any[]).flatMap((d) => d.slots.map((s: any) => s.startAt as string));
     const [timeA, timeB] = [slots[2], slots[4]];
     const before = await row(appt);

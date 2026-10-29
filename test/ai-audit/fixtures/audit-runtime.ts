@@ -319,16 +319,36 @@ export async function withConfig<T>(rt: AuditRuntime, values: Record<string, unk
 }
 
 /**
+ * Days searched by an availability call that must contain an open day after today.
+ *
+ * The seeded clinics are closed Fri/Sat. The tool searches today..today+(daysAhead-1) and, when that
+ * window holds no bookable day, answers with an EMPTY `days` and puts the first open days in
+ * `nextAvailable`. A short window (the specs used 3) is therefore empty on a Thursday after the
+ * last slot of the day — and the spec, not the product, breaks. Seven days always spans a weekend
+ * and the open days around it, so `days` is populated on every weekday and at every hour.
+ */
+export const AVAILABILITY_HORIZON_DAYS = 7;
+
+/**
  * The first availability day AFTER today in the clinic's zone (Asia/Riyadh in the seed).
  *
  * Today's grid is only the part of the day still ahead of the booking lead time, so it is short, or
  * absent, whenever a suite runs after the clinic's opening hour (09:00). A spec that picks a slot by
  * index, or counts a day's slots, therefore judges the first FULL day instead of `days[0]`, so it
  * gives the same answer at 03:00 and at 15:00.
+ *
+ * The caller must have searched `AVAILABILITY_HORIZON_DAYS`; if it did not and the window held no open
+ * day, the error says so (and shows `nextAvailable`) instead of reporting a bare "no day".
  */
-export function firstFullDay<T extends { date: string }>(days: readonly T[]): T {
+export function firstFullDay<T extends { date: string }>(days: readonly T[], answer?: { nextAvailable?: unknown }): T {
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Riyadh' }).format(new Date());
   const day = days.find((d) => d.date > today);
-  if (!day) throw new Error(`no availability day after ${today}: ${JSON.stringify(days.map((d) => d.date))}`);
+  if (!day) {
+    throw new Error(
+      `no availability day after ${today} in \`days\`: ${JSON.stringify(days.map((d) => d.date))}` +
+        (answer?.nextAvailable ? `; nextAvailable=${JSON.stringify(answer.nextAvailable)}` : '') +
+        ` — search at least AVAILABILITY_HORIZON_DAYS (${AVAILABILITY_HORIZON_DAYS}) days ahead`,
+    );
+  }
   return day;
 }

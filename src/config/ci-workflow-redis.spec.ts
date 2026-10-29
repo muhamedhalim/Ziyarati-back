@@ -1,4 +1,7 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:net';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 /**
@@ -89,4 +92,136 @@ describe('CI jobs that run the default unit suite provide Redis', () => {
       expect(publishesRedis).toBe(true);
     },
   );
+});
+
+/**
+ * The readiness wait is a script (`scripts/ci/wait-for-redis.sh`), not an inline loop. The inline
+ * version pinged Redis INSIDE the container (not the published port the tests use), waited a fixed 30 s
+ * even for a container that had already exited, and reported one bare message for every cause.
+ */
+describe('the Redis readiness wait', () => {
+  const SCRIPT = resolve(__dirname, '../../scripts/ci/wait-for-redis.sh');
+
+  describe('every workflow uses it', () => {
+    const files = readdirSync(WORKFLOWS).filter((f) => /\.ya?ml$/.test(f));
+    const startSteps = files.flatMap((f) => {
+      const text = readFileSync(join(WORKFLOWS, f), 'utf8').replace(/\r\n/g, '\n');
+      return [...text.matchAll(/- name: Start Redis[^\n]*\n\s+run: \|\n((?:\s{10,}[^\n]*\n?)+)/g)].map(
+        (m) => [`${f}`, m[1]] as const,
+      );
+    });
+
+    it('finds the Start Redis steps', () => {
+      expect(startSteps.length).toBeGreaterThanOrEqual(5);
+    });
+
+    it.each(startSteps)('%s: waits through the script with a bounded timeout, no inline loop', (_f, body) => {
+      expect(body).toMatch(/bash scripts\/ci\/wait-for-redis\.sh zt-e2e-redis 63790 \d+/);
+      expect(body).not.toMatch(/redis-cli ping|for i in|did not become ready/);
+    });
+  });
+
+  describe('behaviour', () => {
+    let dir: string;
+    let shim: string;
+    const servers: Server[] = [];
+
+    beforeAll(() => {
+      dir = mkdtempSync(join(tmpdir(), 'wait-redis-'));
+      shim = join(dir, 'docker-shim.sh');
+      // A stand-in for `docker`: container state comes from FAKE_STATE ("missing" => inspect fails).
+      writeFileSync(
+        shim,
+        [
+          '#!/usr/bin/env bash',
+          'case "$1" in',
+          '  inspect)',
+          '    if [ "$FAKE_STATE" = "missing" ]; then echo "Error: No such object" >&2; exit 1; fi',
+          '    case "$3" in',
+          '      "{{.State.Status}}") echo "$FAKE_STATE" ;;',
+          '      *) echo "status=$FAKE_STATE exitCode=137 oomKilled=true error= startedAt=then" ;;',
+          '    esac ;;',
+          '  ps) echo "FAKE-PS-ROW" ;;',
+          '  port) echo "6379/tcp -> 0.0.0.0:63790" ;;',
+          '  logs) echo "FAKE-REDIS-LOG: Out of memory" ;;',
+          'esac',
+          '',
+        ].join('\n'),
+      );
+    });
+
+    afterAll(async () => {
+      await Promise.all(servers.map((s) => new Promise((r) => s.close(() => r(undefined)))));
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    const run = (args: string[], env: Record<string, string>) =>
+      new Promise<{ code: number | null; out: string; ms: number }>((resolveRun) => {
+        const started = Date.now();
+        const child = spawn('bash', [SCRIPT, ...args], {
+          env: { ...process.env, DOCKER_BIN: `bash ${shim.replace(/\\/g, '/')}`, ...env },
+        });
+        let out = '';
+        child.stdout.on('data', (d) => (out += d));
+        child.stderr.on('data', (d) => (out += d));
+        child.on('close', (code) => resolveRun({ code, out, ms: Date.now() - started }));
+      });
+
+    /** A fake Redis: answers any PING with +PONG on a free port. */
+    const fakeRedis = (): Promise<number> =>
+      new Promise((resolveListen) => {
+        const server = createServer((sock) => sock.on('data', () => sock.write('+PONG\r\n')));
+        servers.push(server);
+        server.listen(0, '127.0.0.1', () => resolveListen((server.address() as { port: number }).port));
+      });
+
+    /** A port nothing listens on. */
+    const deadPort = async (): Promise<number> => {
+      const port = await fakeRedis();
+      const server = servers.pop()!;
+      await new Promise((r) => server.close(() => r(undefined)));
+      return port;
+    };
+
+    it('succeeds only when the PUBLISHED port answers PING', async () => {
+      const port = await fakeRedis();
+      const res = await run(['zt-e2e-redis', String(port), '10'], { FAKE_STATE: 'running' });
+      expect(res.code).toBe(0);
+      expect(res.out).toMatch(/Redis ready on 127\.0\.0\.1:\d+/);
+    }, 20_000);
+
+    it('a running container whose port does not answer fails at the timeout, naming the port, with diagnostics', async () => {
+      const port = await deadPort();
+      const res = await run(['zt-e2e-redis', String(port), '2'], { FAKE_STATE: 'running' });
+      expect(res.code).toBe(1);
+      expect(res.ms).toBeLessThan(15_000); // bounded
+      expect(res.out).toMatch(
+        /::error::Redis did not become ready within 2s: container 'zt-e2e-redis' is running but 127\.0\.0\.1:\d+ did not answer PING/,
+      );
+      expect(res.out).toContain('FAKE-REDIS-LOG: Out of memory');
+      expect(res.out).toContain('6379/tcp -> 0.0.0.0:63790');
+    }, 30_000);
+
+    it('an exited container fails FAST (not after the full timeout) and reports its exit code and OOM flag', async () => {
+      const port = await deadPort();
+      const res = await run(['zt-e2e-redis', String(port), '25'], { FAKE_STATE: 'exited' });
+      expect(res.code).toBe(1);
+      expect(res.ms).toBeLessThan(10_000);
+      expect(res.out).toMatch(/::error::Redis is not available: container 'zt-e2e-redis' is exited, not running/);
+      expect(res.out).toMatch(/exitCode=137 oomKilled=true/);
+      expect(res.out).toContain('FAKE-REDIS-LOG');
+    }, 30_000);
+
+    it('a container that was never created is reported as missing', async () => {
+      const res = await run(['zt-e2e-redis', '63790', '25'], { FAKE_STATE: 'missing' });
+      expect(res.code).toBe(1);
+      expect(res.out).toMatch(/container 'zt-e2e-redis' is missing, not running/);
+    }, 30_000);
+
+    it('rejects missing or non-numeric arguments instead of waiting', async () => {
+      expect((await run([], { FAKE_STATE: 'running' })).code).toBe(2);
+      expect((await run(['c', 'abc'], { FAKE_STATE: 'running' })).code).toBe(2);
+      expect((await run(['c', '63790', 'soon'], { FAKE_STATE: 'running' })).code).toBe(2);
+    });
+  });
 });
