@@ -27,8 +27,7 @@ function buildIndex(opts: {
 }) {
   const query = jest.fn().mockImplementation(async (sql: string) => {
     if (sql.includes('CROSS JOIN LATERAL')) return opts.samples ?? [];
-    if (sql.includes('GROUP BY sc.id, sc.name, t.id'))
-      return opts.categories ?? [];
+    if (sql.includes('AS service_count')) return opts.categories ?? [];
     return [];
   });
   const service = new PublicDiscoveryService({ query } as never, {} as never);
@@ -94,7 +93,24 @@ describe('PublicDiscoveryService.listCategories (C13)', () => {
     expect(result.map((c) => c.slug)).toEqual(['ecg']);
   });
 
-  it('visibility predicate: eligible clinic, active + non-deleted category and service, branch actually offers it', async () => {
+  it('lists a category that has no bookable service yet — a newly added category must appear straight away', async () => {
+    const { service, query } = buildIndex({
+      categories: [cat('c1', 'Dental', 't1', 0), cat('c2', 'Laser', 't1', 2)],
+    });
+    const result = await service.listCategories();
+    expect(result.map((c) => c.slug)).toEqual(['laser', 'dental']);
+    expect(result[1]).toMatchObject({
+      slug: 'dental',
+      clinicCount: 1,
+      serviceCount: 0,
+      services: [],
+    });
+    // The category list must not depend on an inner join to `services`.
+    const sql = query.mock.calls[0][0] as string;
+    expect(sql).not.toMatch(/\bJOIN services s\b/);
+  });
+
+  it('visibility predicate: eligible clinic, active + non-deleted category; the service count only counts services a branch actually offers', async () => {
     const { service, query } = buildIndex({});
     await service.listCategories();
     const sql = query.mock.calls[0][0] as string;

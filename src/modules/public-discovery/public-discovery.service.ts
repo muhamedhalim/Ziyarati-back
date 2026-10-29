@@ -1111,10 +1111,13 @@ export class PublicDiscoveryService {
    * deliberately: the clinic's own wording is the source of truth and there is no
    * second place to pin an old one.
    *
-   * VISIBILITY (fail-closed, mirrors `searchServices`): the clinic is eligible,
-   * the category is active and not soft-deleted, and it holds at least one
-   * active, not-deleted service that is actually offered at an active branch —
-   * so a category on the index always has results behind it.
+   * VISIBILITY (fail-closed): the clinic is eligible and the category is active
+   * and not soft-deleted. It does NOT require a service yet — a category the
+   * clinic has just added must appear straight away, which is the whole point
+   * of syncing it from the dashboard. `serviceCount`/`services` count only
+   * active, not-deleted services actually offered at an active branch (the
+   * `searchServices` rule), so a still-empty category reads "0 services" and
+   * its results page shows the normal empty state.
    *
    * Capped at `MAX_PUBLIC_CATEGORIES`, busiest first, so a platform with a long
    * tail of one-off names cannot make this an unbounded payload.
@@ -1132,23 +1135,32 @@ export class PublicDiscoveryService {
       }[];
     }[]
   > {
+    // `service_count` is a correlated count, not a JOIN: a category the clinic
+    // has just created (or emptied) has no bookable service yet and must still
+    // be listed, which an inner join to `services` silently dropped.
     const rows = (await this.dataSource.query(
       `SELECT sc.id, sc.name, t.id AS tenant_id,
-              COUNT(DISTINCT s.id)::int AS service_count
+              (
+                SELECT COUNT(DISTINCT s.id)::int
+                  FROM services s
+                 WHERE s."categoryId" = sc.id
+                   AND s."tenantId" = t.id
+                   AND s.is_active = true
+                   AND s.deleted_at IS NULL
+                   AND EXISTS (
+                     SELECT 1
+                       FROM branches b
+                       LEFT JOIN service_prices sp ON sp."serviceId" = s.id AND sp."branchId" = b.id AND sp.is_active = true
+                      WHERE b."tenantId" = t.id AND b.is_active = true AND b.deleted_at IS NULL
+                        AND ${BRANCH_OFFERS_SERVICE}
+                   )
+              ) AS service_count
          FROM service_categories sc
          JOIN tenants t ON t.id = sc."tenantId"
          LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
-         JOIN services s ON s."categoryId" = sc.id
-                        AND s."tenantId" = t.id
-                        AND s.is_active = true
-                        AND s.deleted_at IS NULL
-         JOIN branches b ON b."tenantId" = t.id AND b.is_active = true AND b.deleted_at IS NULL
-         LEFT JOIN service_prices sp ON sp."serviceId" = s.id AND sp."branchId" = b.id AND sp.is_active = true
         WHERE sc.is_active = true
           AND sc.deleted_at IS NULL
-          AND ${ELIGIBLE_CLINIC}
-          AND ${BRANCH_OFFERS_SERVICE}
-        GROUP BY sc.id, sc.name, t.id`,
+          AND ${ELIGIBLE_CLINIC}`,
     )) as Record<string, unknown>[];
 
     interface Group {
