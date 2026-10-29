@@ -172,7 +172,18 @@ export class WhatsappContactService {
     }
     if (dto.waId !== undefined) contact.wa_id = dto.waId;
     if (dto.displayName !== undefined) contact.display_name = dto.displayName;
-    return this.contacts.save(contact);
+    try {
+      return await this.contacts.save(contact);
+    } catch (err) {
+      // Re-pointing a contact at a number another contact of this tenant already holds trips
+      // `UQ_whatsapp_contact_tenant_wa_id`; that is a conflict, not a server error.
+      if (dto.waId && (err as { code?: string })?.code === PG_UNIQUE_VIOLATION) {
+        throw new AppError(ErrorCode.CONFLICT, {
+          message: 'A contact with this WhatsApp ID already exists for this tenant',
+        });
+      }
+      throw err;
+    }
   }
 
   async remove(tenantId: string, id: string): Promise<void> {

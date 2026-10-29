@@ -58,6 +58,25 @@ describe('WhatsappContactService', () => {
     });
   });
 
+  describe('update', () => {
+    it('maps a wa_id that another contact of the tenant already holds to a clean 409', async () => {
+      contacts.findOne.mockResolvedValueOnce({ id: 'contact-1', wa_id: 'old' });
+      contacts.save.mockRejectedValueOnce(uniqueViolation());
+
+      await expect(service.update(TENANT, 'contact-1', { waId: 'taken' })).rejects.toMatchObject({
+        code: ErrorCode.CONFLICT,
+      });
+    });
+
+    it('rethrows a DB error that is not the wa_id uniqueness violation', async () => {
+      const err = new Error('connection lost');
+      contacts.findOne.mockResolvedValueOnce({ id: 'contact-1', wa_id: 'old' });
+      contacts.save.mockRejectedValueOnce(err);
+
+      await expect(service.update(TENANT, 'contact-1', { waId: 'new' })).rejects.toBe(err);
+    });
+  });
+
   describe('bulkImport', () => {
     it('skips wa_ids already present for the tenant', async () => {
       contacts.find.mockResolvedValueOnce([{ id: 'existing', wa_id: 'a' }]);

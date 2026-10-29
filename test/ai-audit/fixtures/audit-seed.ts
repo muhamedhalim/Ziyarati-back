@@ -30,6 +30,8 @@
 import { randomUUID, createHash } from 'node:crypto';
 import type { DataSource } from 'typeorm';
 
+import { teardownTenants } from '../../utils/tenant-teardown';
+
 /** Per-process suffix — unique slugs/emails/phones across repeated runs. */
 export const RUN = randomUUID().slice(0, 8);
 
@@ -244,6 +246,7 @@ async function insertKb(ds: DataSource, tenantId: string, content: string) {
 }
 
 export async function seedAuditClinics(ds: DataSource): Promise<AuditSeed> {
+  await removeRunResidue(ds);
   // Shared city + specialty (global tables).
   const city = await q(
     ds,
@@ -347,80 +350,33 @@ export async function seedAuditClinics(ds: DataSource): Promise<AuditSeed> {
 }
 
 /**
- * Best-effort teardown, child-first. Each statement is independent and
- * caught, mirroring `teardownAiAuditSeed`: a missing optional table or an FK
- * from a row the test itself created must not mask the real test result.
+ * FK-ordered teardown of the three clinics (and the city/specialty they share).
+ *
+ * The order comes from the database catalog (`teardownTenants`), in ONE transaction: the previous
+ * hand-ordered list put `customers` before `conversations` and `branches` before `whatsapp_accounts`,
+ * and every statement was caught-and-continued, so the foreign-key errors only showed up in the
+ * Postgres log and the clinics were left behind. A row the plan cannot reach now fails loudly.
+ * Idempotent: a second call finds nothing and succeeds.
  */
 export async function teardownAuditClinics(ds: DataSource, seed: AuditSeed): Promise<void> {
-  const tenants = [seed.full.tenantId, seed.empty.tenantId, seed.b.tenantId];
-  // A guest's "talk to a human" (F-07) links a DISCOVERY-tenant AI conversation to a conversation the
-  // CLINIC owns. That row survives the per-tenant deletes below and its FK then blocks the clinic's
-  // conversations, users and finally the tenant itself — so it goes first, with its own children.
-  const crossTenantGuestConvs = `SELECT ac.id FROM ai_conversations ac JOIN conversations c ON c.id = ac."conversationId"
-      WHERE c."tenantId" = ANY($1) AND ac."tenantId" <> ALL($1)`;
-  for (const sql of [
-    `DELETE FROM ai_messages WHERE ai_conversation_id::text IN (SELECT id::text FROM (${crossTenantGuestConvs}) x)`,
-    `DELETE FROM ai_tool_calls WHERE ai_conversation_id::text IN (SELECT id::text FROM (${crossTenantGuestConvs}) x)`,
-    `DELETE FROM ai_conversations WHERE id IN (${crossTenantGuestConvs})`,
-  ]) {
-    await q(ds, sql, [tenants]).catch(() => undefined);
-  }
-  const perTenant = [
-    // AI ledgers / conversation state written by driven turns
-    `DELETE FROM ai_kb_embeddings WHERE tenant_id = ANY($1)`,
-    `DELETE FROM ai_tool_calls WHERE tenant_id = ANY($1)`,
-    `DELETE FROM ai_cost_entries WHERE tenant_id = ANY($1)`,
-    `DELETE FROM ai_request_executions WHERE tenant_id = ANY($1)`,
-    `DELETE FROM ai_messages WHERE ai_conversation_id::text IN (SELECT id::text FROM ai_conversations WHERE "tenantId" = ANY($1))`,
-    `DELETE FROM ai_conversations WHERE "tenantId" = ANY($1)`,
-    `DELETE FROM ai_knowledge_bases WHERE "tenantId" = ANY($1)`,
-    // whatsapp / crm side effects of inbound turns
-    `DELETE FROM whatsapp_webhooks WHERE "tenantId" = ANY($1)`,
-    `DELETE FROM whatsapp_contacts WHERE "tenantId" = ANY($1)`,
-    // bookings + audit made by tool calls
-    `DELETE FROM appointment_services WHERE "appointmentId" IN (SELECT id FROM appointments WHERE "tenantId" = ANY($1))`,
-    `DELETE FROM appointments WHERE "tenantId" = ANY($1)`,
-    `DELETE FROM customers WHERE "tenantId" = ANY($1)`,
-    // catalogue
-    `DELETE FROM staff_specialties WHERE "tenantId" = ANY($1)`,
-    `DELETE FROM tenant_specialties WHERE "tenantId" = ANY($1)`,
-    `DELETE FROM staff_schedules WHERE "tenantId" = ANY($1)`,
-    `DELETE FROM working_hours WHERE "tenantId" = ANY($1)`,
-    `DELETE FROM service_prices WHERE "tenantId" = ANY($1)`,
-    `DELETE FROM staff_services WHERE "tenantId" = ANY($1)`,
-    `DELETE FROM services WHERE "tenantId" = ANY($1)`,
-    `DELETE FROM staff_profiles WHERE "tenantId" = ANY($1)`,
-    `DELETE FROM user_roles WHERE "userId" IN (SELECT id FROM users WHERE "tenantId" = ANY($1))`,
-    // the WhatsApp bot actor provisions a per-tenant role on first use
-    `DELETE FROM role_permissions WHERE "roleId" IN (SELECT id FROM roles WHERE "tenantId" = ANY($1))`,
-    `DELETE FROM roles WHERE "tenantId" = ANY($1)`,
-    `DELETE FROM users WHERE "tenantId" = ANY($1)`,
-    `DELETE FROM branches WHERE "tenantId" = ANY($1)`,
-    `DELETE FROM tenant_settings WHERE tenant_id = ANY($1)`,
-    `DELETE FROM tenants WHERE id = ANY($1)`,
-  ];
-  for (const sql of perTenant) {
-    await q(ds, sql, [tenants]).catch(() => undefined);
-  }
-  // Generic sweep: every table holding an FK to tenants, in repeated passes so a
-  // child that is blocked by its own children succeeds on a later pass. Keeps
-  // teardown correct as the schema grows new tenant-owned ledgers.
-  const fks: { table_name: string; column_name: string }[] = await q(
-    ds,
-    `SELECT kcu.table_name, kcu.column_name
-       FROM information_schema.table_constraints tc
-       JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema
-       JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
-      WHERE tc.constraint_type = 'FOREIGN KEY' AND ccu.table_name = 'tenants' AND kcu.table_name <> 'tenants'`,
-  ).catch(() => []);
-  for (let pass = 0; pass < 5; pass += 1) {
-    for (const fk of fks) {
-      await q(ds, `DELETE FROM "${fk.table_name}" WHERE "${fk.column_name}" = ANY($1)`, [tenants]).catch(() => undefined);
-    }
-  }
-  await q(ds, `DELETE FROM tenants WHERE id = ANY($1)`, [tenants]).catch(() => undefined);
+  await teardownTenants(ds, [seed.full.tenantId, seed.empty.tenantId, seed.b.tenantId]);
   // Guest handovers land in the shared discovery tenant (finding F-07), so they are not removed with the clinics.
-  await q(ds, `DELETE FROM handover_requests WHERE reason = 'wants a person'`).catch(() => undefined);
-  await q(ds, `DELETE FROM specialties WHERE id = $1`, [seed.specialtyId]).catch(() => undefined);
-  await q(ds, `DELETE FROM cities WHERE id = $1`, [seed.cityId]).catch(() => undefined);
+  await q(ds, `DELETE FROM handover_requests WHERE reason = 'wants a person'`);
+  await q(ds, `DELETE FROM specialties WHERE id = $1`, [seed.specialtyId]);
+  await q(ds, `DELETE FROM cities WHERE id = $1`, [seed.cityId]);
+}
+
+/**
+ * Removes what an earlier `seedAuditClinics` call in THIS process (same `RUN`) left behind, so seeding
+ * twice — or after a teardown that failed — never trips `tenants.slug`, `specialties.slug` or
+ * `whatsapp_accounts.phone_number_id` uniqueness. Scoped by the RUN-suffixed slugs/names only; any
+ * other tenant (including production-like data in a shared database) is untouched.
+ */
+async function removeRunResidue(ds: DataSource): Promise<void> {
+  const rows: { id: string }[] = await q(ds, `SELECT id FROM tenants WHERE slug = ANY($1)`, [
+    [`audit-full-${RUN}`, `audit-empty-${RUN}`, `audit-b-${RUN}`],
+  ]);
+  await teardownTenants(ds, rows.map((r) => r.id));
+  await q(ds, `DELETE FROM specialties WHERE slug = $1`, [`audit-derm-${RUN}`]);
+  await q(ds, `DELETE FROM cities WHERE name_en = $1`, [`AuditCity-${RUN}`]);
 }

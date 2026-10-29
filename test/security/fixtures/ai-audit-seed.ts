@@ -36,6 +36,8 @@ import type { INestApplication } from '@nestjs/common';
 import type { DataSource } from 'typeorm';
 import type { Socket } from 'socket.io';
 
+import { teardownTenants } from '../../utils/tenant-teardown';
+
 import { Tenant } from '../../../src/entities/SaaS-Core/Tenant';
 import { Branch } from '../../../src/entities/SaaS-Core/Branch';
 import { Customer } from '../../../src/entities/CRM/Customer';
@@ -284,97 +286,31 @@ export async function seedAiAudit(
 }
 
 /**
- * FK-safe teardown, in reverse dependency order (children before parents).
- * Each statement is caught-and-continued individually — mirrors
- * `whatsapp-e2e-app.ts`'s `cleanupTenant` — so one unexpected failure (e.g. a
- * row a spec created outside this fixture) never hides the cleanup of
- * everything after it.
+ * FK-safe teardown of both synthetic tenants, in ONE transaction, in the order the database catalog
+ * dictates (`teardownTenants` — the same planner production offboarding uses).
  *
- * The two guest principals and the shared `__guest_discovery__` tenant are
- * NOT touched here: `GuestSessionService.resolveSession()` only signs a JWT
- * (no DB row per guest), and the discovery tenant is a memoized singleton
- * shared across every suite in the process — deleting it would break
- * concurrently running specs.
+ * This used to be a hand-ordered list of `DELETE`s, each caught-and-continued. Every table a spec
+ * touched that the list did not know (`conversations`, `whatsapp_accounts`, `payment_links`,
+ * `audit_logs`, ...) then blocked `customers`/`branches`/`users`/`tenants` — visible only as foreign-key
+ * errors in the Postgres log, with the tenant left behind. A failure is still reported here WITHOUT
+ * throwing (a teardown problem must not mask the test's own result), but it is no longer silent: the
+ * blocking constraint is printed.
+ *
+ * The two guest principals and the shared `__guest_discovery__` tenant are NOT touched:
+ * `GuestSessionService.resolveSession()` only signs a JWT (no DB row per guest), and the discovery
+ * tenant is a memoized singleton shared across every suite in the process — deleting it would break
+ * concurrently running specs. Guest AI conversations that point at a clinic conversation are removed
+ * by `teardownTenants` itself, because their foreign keys would otherwise block the clinic.
  */
 export async function teardownAiAuditSeed(
   dataSource: DataSource,
   seed: AiAuditSeed,
 ): Promise<void> {
-  const q = async (sql: string, params: unknown[]) => {
-    try {
-      await dataSource.query(sql, params);
-    } catch {
-      // catch-and-continue — see docstring above.
-    }
-  };
-
-  for (const tenant of [seed.tenantA, seed.tenantB]) {
-    // Children of ai_conversations first (FK), then everything else any spec
-    // that actually drove a turn through this tenant may have created —
-    // discovered the hard way: ai_cost_logs' FK to tenants blocked the
-    // `DELETE FROM tenants` below the first time a smoke test drove a real
-    // turn (T017). Every table here is tenant-scoped per its own entity
-    // (`ManyToOne(() => Tenant)` in src/entities/AI Agent/*.ts) or, for
-    // ai_tool_calls, the raw-SQL ledger migrated by
-    // 1730000600000-AiToolCalls.ts (snake_case tenant_id, not the TypeORM
-    // camelCase "tenantId" quoting the entity tables use).
-    // ai_messages.ai_conversation_id is `character varying`; ai_conversations.id
-    // is `uuid` — Postgres refuses to compare the two types directly (verified:
-    // "operator does not exist: character varying = uuid"), so both sides are
-    // cast to text.
-    await q(
-      `DELETE FROM ai_messages WHERE ai_conversation_id::text IN (SELECT id::text FROM ai_conversations WHERE "tenantId" = $1)`,
-      [tenant.id],
+  try {
+    await teardownTenants(dataSource, [seed.tenantA.id, seed.tenantB.id]);
+  } catch (error) {
+    console.warn(
+      `teardownAiAuditSeed: tenants ${seed.tenantA.id}, ${seed.tenantB.id} were NOT removed: ${(error as Error).message}`,
     );
-    await q(`DELETE FROM ai_tool_calls WHERE tenant_id = $1`, [tenant.id]);
-    // Raw-SQL ledger table from migration 1730003800000-AiFinopsHardening.ts —
-    // NOT the same as the ai_cost_logs TypeORM entity below; both are written
-    // to and both FK to tenants (verified: teardown failed on
-    // "ai_cost_entries_tenant_id_fkey" before this line was added).
-    await q(`DELETE FROM ai_cost_entries WHERE tenant_id = $1`, [tenant.id]);
-    await q(`DELETE FROM ai_request_executions WHERE tenant_id = $1`, [tenant.id]);
-    await q(`DELETE FROM ai_batch_items WHERE tenant_id = $1`, [tenant.id]);
-    await q(`DELETE FROM ai_batch_jobs WHERE tenant_id = $1`, [tenant.id]);
-    await q(`DELETE FROM ai_conversations WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM ai_cost_logs WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM ai_usage_logs WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM ai_execution_metrics WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM ai_memories WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM ai_prompts WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM ai_training_files WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM handover_requests WHERE "tenantId" = $1`, [tenant.id]);
-    // Inbox / WhatsApp rows a spec may have created for this tenant. Every FK below is NO ACTION by
-    // design (production must never lose a conversation or a template by deleting its parent), so the
-    // children go first: `messages` and `conversation_participants` cascade from `conversations`,
-    // which in turn blocked `customers`, `whatsapp_accounts` and `tenants`; templates and contacts
-    // blocked `whatsapp_accounts` and `customers`. Before this, each of those deletes failed (and was
-    // swallowed below), leaving the rows behind in the shared e2e database.
-    await q(`DELETE FROM ai_messages WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM conversations WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM whatsapp_templates WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM whatsapp_contacts WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM whatsapp_accounts WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM customer_tags WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM ai_kb_embeddings WHERE tenant_id = $1`, [tenant.id]); // pgvector sidecar (only present in pgvector-mode boots)
-    await q(`DELETE FROM tenant_settings WHERE tenant_id = $1`, [tenant.id]);
-    await q(`DELETE FROM ai_knowledge_bases WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM ai_agents WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM appointments WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM staff_profiles WHERE "tenantId" = $1`, [tenant.id]);
-    await q(
-      `DELETE FROM user_roles WHERE "userId" IN (SELECT id FROM users WHERE "tenantId" = $1)`,
-      [tenant.id],
-    );
-    // `audit_logs.userId` -> users is NO ACTION on purpose: audit history must outlive any attempt to
-    // delete its actor. This tenant is a disposable test tenant in an isolated database, so its OWN
-    // audit rows are removed first (same as `cleanupTenant` in utils/whatsapp-e2e-app.ts) — scoped to
-    // this tenant id, never to a user or to another tenant.
-    await q(`DELETE FROM audit_logs WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM users WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM roles WHERE "tenantId" = $1`, [tenant.id]); // tenant-defined roles only; system roles have no tenant
-    await q(`DELETE FROM customers WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM branches WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM api_logs WHERE "tenantId" = $1`, [tenant.id]);
-    await q(`DELETE FROM tenants WHERE id = $1`, [tenant.id]);
   }
 }
