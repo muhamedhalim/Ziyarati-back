@@ -1,5 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { PHONE_MESSAGE, PHONE_PATTERN } from '../../../common/utils/phone.util';
 
 /**
  * Upsert the customer's 1:1 profile (extended demographic / clinical info).
@@ -32,6 +33,7 @@ export class UpdateCustomerProfileDto {
   @IsOptional()
   @IsString()
   @MaxLength(20)
+  @Matches(PHONE_PATTERN, { message: PHONE_MESSAGE })
   emergency_contact_phone?: string;
 
   @ApiPropertyOptional({ description: 'Internal profile notes (free text).' })

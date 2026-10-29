@@ -73,10 +73,12 @@ export interface CustomerImportCommitResult {
  * spreadsheet into `CreateCustomerDto`-shaped rows and drives the existing
  * service, row by row, so a failure on one row can never affect another.
  *
- * `phone` is intentionally NEVER treated as a duplicate signal, matching
- * `Customer`'s documented schema (see `entities/CRM/Customer.ts`) — only
- * `email` and `national_id` are checked, both in-file and against the
- * tenant's existing live customers.
+ * `phone` ALONE is never treated as a duplicate signal, matching `Customer`'s
+ * documented schema (see `entities/CRM/Customer.ts`) — `email` and
+ * `national_id` are checked, both in-file and against the tenant's existing
+ * live customers. A row whose phone AND name match an existing patient is
+ * refused by `CustomerService.create` itself (CRM-DUP-01) and reported as that
+ * row's error, so re-importing the same sheet does not double every patient.
  */
 @Injectable()
 export class CustomerImportService {

@@ -9,10 +9,12 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   MaxLength,
   MinLength,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { PHONE_MESSAGE, PHONE_PATTERN } from '../../../common/utils/phone.util';
 
 /**
  * `POST /public/booking/session` — both fields optional, so a body-less call (every existing
@@ -98,6 +100,7 @@ export class ConfirmBookingDto {
   @IsString()
   @MinLength(4)
   @MaxLength(32)
+  @Matches(PHONE_PATTERN, { message: PHONE_MESSAGE })
   phone!: string;
 
   @ApiPropertyOptional()

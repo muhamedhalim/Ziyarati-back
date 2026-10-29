@@ -7,6 +7,13 @@ export interface JwtPayload {
   tenantId: string | null;
   email?: string | null;
   type: 'access';
+  /**
+   * The session (refresh-token family) this access token was issued for. Lets
+   * the API refuse an access token whose session was logged out, instead of
+   * honouring it until its natural expiry (SEC-02). Absent only on tokens
+   * minted before this claim existed — those simply expire on schedule.
+   */
+  sid?: string;
 }
 
 /**

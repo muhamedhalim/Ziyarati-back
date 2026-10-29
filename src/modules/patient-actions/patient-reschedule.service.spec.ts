@@ -134,7 +134,21 @@ describe('PatientRescheduleService', () => {
       fromDate: '2031-01-01',
       toDate: '2031-01-05',
       slotMinutes: 60,
+      notBefore: expect.any(Date),
     });
+  });
+
+  it('never offers a slot that has already started (passes "now" as the floor)', async () => {
+    const before = Date.now();
+    await service.getAvailability(
+      TENANT,
+      linkFor().appointment,
+      '2031-01-01',
+      '2031-01-05',
+    );
+    const { notBefore } = availability.publicWindows.mock.calls[0][1];
+    expect(notBefore.getTime()).toBeGreaterThanOrEqual(before);
+    expect(notBefore.getTime()).toBeLessThanOrEqual(Date.now());
   });
 
   // ── rescheduleViaLink ────────────────────────────────────────────────── //
@@ -182,6 +196,28 @@ describe('PatientRescheduleService', () => {
     expect(details).toHaveProperty('previousStartAt');
     expect(details).toHaveProperty('newStartAt');
   });
+
+  it.each([
+    ['disabled', { self_reschedule_enabled: false, cancellation_hours: 24 }],
+    ['never configured', null],
+  ])(
+    'BUG-03: refuses when the clinic has online rescheduling %s — the write enforces the opt-in, not just the GET',
+    async (_label, settings) => {
+      tenantSettings.findOne.mockResolvedValue(settings);
+      await expect(
+        service.rescheduleViaLink(
+          TENANT,
+          linkFor(),
+          '2031-02-01T10:00:00.000Z',
+        ),
+      ).rejects.toMatchObject({
+        code: 'FORBIDDEN',
+        publicContext: { blockedReason: 'DISABLED_BY_CLINIC' },
+      });
+      expect(appointments.reschedule).not.toHaveBeenCalled();
+      expect(links.consume).not.toHaveBeenCalled();
+    },
+  );
 
   it('refuses when the change window is closed — AppointmentsService.reschedule is never reached', async () => {
     const nearLink = linkFor({ start_at: new Date(Date.now() + 3600_000) }); // 1h away, inside 24h window

@@ -260,6 +260,8 @@ describe('PublicBookingFlowService.availability', () => {
       fromDate: '2026-09-01',
       toDate: '2026-09-02',
       slotMinutes: 35,
+      // A slot that has already started is never offered (confirm would refuse it).
+      notBefore: expect.any(Date),
     });
     expect(result).toEqual({
       timezone: 'Asia/Riyadh',
@@ -276,23 +278,29 @@ describe('PublicBookingFlowService.selectSlot', () => {
     ).rejects.toMatchObject({ code: 'UNPROCESSABLE_ENTITY' });
   });
 
-  it('records a valid timestamp', async () => {
+  it('records a valid future timestamp', async () => {
     const { service, bookingContext } = build();
     bookingContext.requireContext.mockResolvedValue({
       tenantId: TENANT,
       branchId: 'branch-1',
     });
+    const future = new Date(Date.now() + 24 * 60 * 60_000).toISOString();
 
-    await service.selectSlot(
-      TENANT,
-      CONV,
-      PRINCIPAL,
-      '2026-09-01T09:00:00.000Z',
-    );
+    await service.selectSlot(TENANT, CONV, PRINCIPAL, future);
 
     expect(bookingContext.patchSelection).toHaveBeenCalledWith(TENANT, CONV, {
-      selectedStartAt: '2026-09-01T09:00:00.000Z',
+      selectedStartAt: future,
     });
+  });
+
+  it('rejects a time that has already passed, before touching the session', async () => {
+    const { service, bookingContext } = build();
+    const past = new Date(Date.now() - 60_000).toISOString();
+
+    await expect(
+      service.selectSlot(TENANT, CONV, PRINCIPAL, past),
+    ).rejects.toMatchObject({ code: 'UNPROCESSABLE_ENTITY' });
+    expect(bookingContext.patchSelection).not.toHaveBeenCalled();
   });
 });
 

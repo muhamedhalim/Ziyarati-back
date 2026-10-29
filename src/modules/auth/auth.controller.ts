@@ -419,10 +419,11 @@ on other endpoints — it will be rejected (\`type !== "access"\`).
     description: `
 **Public endpoint — identifies the session via the refresh token.**
 
-Revokes the supplied refresh token so it can no longer be used to obtain
-new access tokens. The current access token remains technically valid
-until its natural expiry (there is no server-side access token revocation
-list — keep \`JWT_EXPIRES_IN\` short in production, e.g. 15 minutes).
+Ends this session: the supplied refresh token and every token rotated from
+it are revoked, so none can obtain new access tokens. Access tokens issued
+for this session are refused from the next request on (they carry the
+session id, checked on every request) instead of living until expiry.
+Other devices' sessions are not affected.
 
 To invalidate **all sessions** across all devices, use
 \`POST /auth/logout-all\` (requires a valid access token).

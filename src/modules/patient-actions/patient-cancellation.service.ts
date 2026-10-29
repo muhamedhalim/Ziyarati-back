@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
+import { AppError, ErrorCode } from '../../common/errors';
 import { PatientActionLink } from '../../entities/Calendar&Appointments/PatientActionLink';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import {
@@ -123,6 +124,19 @@ export class PatientCancellationService {
     reason?: string,
   ): Promise<Appointment> {
     const appointment = link.appointment;
+    // BUG-03 — the clinic's opt-in is enforced on the WRITE, not only in the
+    // GET's display-only eligibility: a clinic that never enabled online
+    // cancellation must not have its appointments cancelled by a direct POST
+    // to a link the page itself shows as "not available".
+    const settings = await this.tenantSettings.findOne({
+      where: { tenant: { id: tenantId } },
+    });
+    if (!settings?.self_cancellation_enabled) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: 'Online cancellation is not available for this clinic',
+        publicContext: { blockedReason: 'DISABLED_BY_CLINIC' },
+      });
+    }
     await this.assertCancellationAllowed(tenantId, appointment.start_at);
 
     const cancelled = await this.appointments.cancel(

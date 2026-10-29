@@ -141,7 +141,10 @@ describe('PatientCancellationService.cancelViaLink (T029/T030)', () => {
 
   beforeEach(async () => {
     tenantSettings = createMockRepository();
-    tenantSettings.findOne.mockResolvedValue({ cancellation_hours: 24 });
+    tenantSettings.findOne.mockResolvedValue({
+      self_cancellation_enabled: true,
+      cancellation_hours: 24,
+    });
     appointments = {
       cancel: jest
         .fn()
@@ -288,4 +291,22 @@ describe('PatientCancellationService.cancelViaLink (T029/T030)', () => {
     expect(appointments.cancel).not.toHaveBeenCalled();
     expect(links.consume).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['disabled', { self_cancellation_enabled: false, cancellation_hours: 24 }],
+    ['never configured', null],
+  ])(
+    'BUG-03: refuses when the clinic has online cancellation %s — the write enforces the opt-in, not just the GET',
+    async (_label, settings) => {
+      tenantSettings.findOne.mockResolvedValue(settings);
+      await expect(
+        service.cancelViaLink(TENANT, linkFor()),
+      ).rejects.toMatchObject({
+        code: 'FORBIDDEN',
+        publicContext: { blockedReason: 'DISABLED_BY_CLINIC' },
+      });
+      expect(appointments.cancel).not.toHaveBeenCalled();
+      expect(links.consume).not.toHaveBeenCalled();
+    },
+  );
 });

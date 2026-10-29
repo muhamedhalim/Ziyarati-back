@@ -1,10 +1,11 @@
 import { Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, ILike, In, Repository } from 'typeorm';
+import { FindOptionsWhere, ILike, In, Raw, Repository } from 'typeorm';
 
 import { Customer } from '../../entities/CRM/Customer';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
+import { phoneDigits } from '../../common/utils/phone.util';
 import { StaffScopeService } from '../../core/staff-scope/staff-scope.service';
 
 import { CreateCustomerDto } from './dto/create-customer.dto';
@@ -150,7 +151,25 @@ export class CustomerService {
       customer.marketing_opt_in_at = new Date();
       customer.marketing_opt_in_source = ctx.source ?? 'staff';
     }
-    const saved = await this.customers.save(customer);
+    // CRM-DUP-01 — the same identity rule the booking flows use: one phone
+    // may carry several patients (a household line), but the same phone AND
+    // the same name is the same patient, and a second record for them is
+    // refused with a pointer to the first. Check and insert run under a lock
+    // keyed on (tenant, phone digits), so two concurrent "Add patient" clicks
+    // cannot both pass the check.
+    const saved = await this.withPatientIdentityLock(
+      tenantId,
+      dto.phone,
+      async (repo) => {
+        await this.assertNotSamePatient(
+          repo,
+          tenantId,
+          dto.phone,
+          dto.full_name,
+        );
+        return repo.save(customer);
+      },
+    );
     if (saved.marketing_opt_in) {
       await this.auditConsent(
         tenantId,
@@ -201,17 +220,9 @@ export class CustomerService {
     input: { fullName?: string; phone: string; email?: string },
   ): Promise<Customer> {
     const phone = input.phone.trim();
-    const wanted = normalizePersonName(input.fullName);
 
-    const findSamePerson = async (): Promise<Customer | undefined> => {
-      if (!wanted) return undefined;
-      const sharing = await this.customers.find({
-        where: { tenant: { id: tenantId }, phone },
-        order: { created_at: 'ASC' },
-        take: SAME_PHONE_LOOKUP_LIMIT,
-      });
-      return sharing.find((c) => normalizePersonName(c.full_name) === wanted);
-    };
+    const findSamePerson = (): Promise<Customer | undefined> =>
+      this.findSamePatient(this.customers, tenantId, phone, input.fullName);
 
     const existing = await findSamePerson();
     if (existing) return existing;
@@ -330,6 +341,20 @@ export class CustomerService {
   ): Promise<Customer> {
     if (dto.national_id && dto.national_id !== customer.national_id) {
       await this.assertNationalIdUnique(tenantId, dto.national_id, id);
+    }
+    // CRM-DUP-01 — an edit may not turn this record into a second copy of
+    // another patient (same phone digits AND same name).
+    if (
+      (dto.phone !== undefined && dto.phone !== customer.phone) ||
+      (dto.full_name !== undefined && dto.full_name !== customer.full_name)
+    ) {
+      await this.assertNotSamePatient(
+        this.customers,
+        tenantId,
+        dto.phone ?? customer.phone,
+        dto.full_name ?? customer.full_name,
+        id,
+      );
     }
 
     const wasOptedIn = customer.marketing_opt_in === true;
@@ -610,6 +635,83 @@ export class CustomerService {
    * repository's default (non-`withDeleted`) scope, so a soft-deleted
    * customer's national_id never blocks this check.
    */
+  /**
+   * The live patient in `tenantId` who is the same person as (phone, name), if
+   * any: the phone's DIGITS match (so "050 000 0000" and "0500000000" are one
+   * number) and the normalised name matches. Tenant-scoped like every other
+   * read here — another clinic's patients are never consulted. An empty name
+   * or phone never matches anything.
+   */
+  private async findSamePatient(
+    repo: Repository<Customer>,
+    tenantId: string,
+    phone: string | null | undefined,
+    fullName: string | null | undefined,
+    excludeId?: string,
+  ): Promise<Customer | undefined> {
+    const wanted = normalizePersonName(fullName);
+    const digits = phoneDigits(phone);
+    if (!wanted || !digits) return undefined;
+    const sharing = await repo.find({
+      where: {
+        tenant: { id: tenantId },
+        phone: Raw(
+          (alias) => `regexp_replace(${alias}, '\\D', '', 'g') = :digits`,
+          {
+            digits,
+          },
+        ),
+      },
+      order: { created_at: 'ASC' },
+      take: SAME_PHONE_LOOKUP_LIMIT,
+    });
+    return sharing.find(
+      (c) => c.id !== excludeId && normalizePersonName(c.full_name) === wanted,
+    );
+  }
+
+  private async assertNotSamePatient(
+    repo: Repository<Customer>,
+    tenantId: string,
+    phone: string | null | undefined,
+    fullName: string | null | undefined,
+    excludeId?: string,
+  ): Promise<void> {
+    const existing = await this.findSamePatient(
+      repo,
+      tenantId,
+      phone,
+      fullName,
+      excludeId,
+    );
+    if (existing) {
+      throw new AppError(ErrorCode.DUPLICATE_PATIENT, {
+        // Same tenant only (findSamePatient is tenant-scoped): lets the UI
+        // open the existing record instead of creating a second one.
+        publicContext: { existingCustomerId: existing.id },
+      });
+    }
+  }
+
+  /**
+   * Runs `work` in a transaction holding a lock on (tenant, phone digits), so
+   * a same-patient check and the insert it guards are atomic with respect to
+   * any other create for the same number. Transaction-scoped advisory lock:
+   * released on commit/rollback, never leaks, and touches no rows.
+   */
+  private withPatientIdentityLock<T>(
+    tenantId: string,
+    phone: string | null | undefined,
+    work: (repo: Repository<Customer>) => Promise<T>,
+  ): Promise<T> {
+    return this.customers.manager.transaction(async (manager) => {
+      await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        `customer-identity:${tenantId}:${phoneDigits(phone)}`,
+      ]);
+      return work(manager.getRepository(Customer));
+    });
+  }
+
   private async assertNationalIdUnique(
     tenantId: string,
     nationalId: string,
