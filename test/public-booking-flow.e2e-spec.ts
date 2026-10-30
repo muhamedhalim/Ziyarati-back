@@ -51,6 +51,16 @@ import type { AuthenticatedUser } from '../src/modules/auth/interfaces/authentic
 
 const SUITE = `pbf-${randomUUID().slice(0, 8)}`;
 
+/**
+ * Phone-safe suffix. The public-booking DTO enforces the shared phone rule (CRM-PHONE-01: digits only after
+ * the optional +), so a slice of the hex suite id (which carries a-f) was refused with 400 in most runs.
+ * Digits only, padded so there are always enough.
+ */
+const phoneTail = (n: number): string =>
+  randomUUID().replace(/\D/g, '').padEnd(n, '0').slice(0, n);
+const SUITE_PHONE_TAIL = phoneTail(7);
+const HTTP_PHONE_TAIL = phoneTail(7);
+
 /** 15:00 Asia/Riyadh, comfortably inside the 08:00–20:00 schedule below. */
 const SLOT_START = '2027-03-15T12:00:00.000Z';
 
@@ -351,7 +361,7 @@ describe('Public AI booking — full anonymous cycle, real Postgres', () => {
     // 8. Patient details + insurance → booking
     const booked = (await call(AI_PUBLIC_TOOL.BOOK_PUBLIC_APPOINTMENT, {
       fullName: 'Anonymous Patient',
-      phone: `+96650${SUITE.slice(-7)}`,
+      phone: `+96650${SUITE_PHONE_TAIL}`,
       hasInsurance: false,
       notes: 'Booked by the public AI assistant',
     })) as any;
@@ -419,7 +429,7 @@ describe('Public AI booking — full anonymous cycle, real Postgres', () => {
 
     const retry = (await call(AI_PUBLIC_TOOL.BOOK_PUBLIC_APPOINTMENT, {
       fullName: 'Anonymous Patient',
-      phone: `+96650${SUITE.slice(-7)}`,
+      phone: `+96650${SUITE_PHONE_TAIL}`,
       hasInsurance: false,
     })) as any;
     // Replayed from the ai_tool_calls ledger rather than executed again.
@@ -687,7 +697,7 @@ describe('Public booking — deterministic HTTP path (T063, US4)', () => {
       .post(`${API}/public/booking/confirm`)
       .send({
         fullName: 'HTTP Anonymous Patient',
-        phone: `+96650${HTTP_SUITE.slice(-7)}`,
+        phone: `+96650${HTTP_PHONE_TAIL}`,
         hasInsurance: false,
         notes: 'Booked via the deterministic HTTP flow',
       })
@@ -756,7 +766,7 @@ describe('Public booking — deterministic HTTP path (T063, US4)', () => {
     // resource ids into the confirm body directly.
     const res = await client.post(`${API}/public/booking/confirm`).send({
       fullName: 'Attacker',
-      phone: `+96650${HTTP_SUITE.slice(-6)}9`,
+      phone: `+96650${HTTP_PHONE_TAIL.slice(-6)}9`,
       branchId: otherHttpClinic.branchId,
       staffId: otherHttpClinic.staffId,
       startAt: '2027-03-18T12:00:00.000Z',
@@ -811,11 +821,11 @@ describe('Public booking — deterministic HTTP path (T063, US4)', () => {
     const [resA, resB] = await Promise.all([
       clientA.post(`${API}/public/booking/confirm`).send({
         fullName: 'Racer A',
-        phone: `+96650${HTTP_SUITE.slice(-6)}1`,
+        phone: `+96650${HTTP_PHONE_TAIL.slice(-6)}1`,
       }),
       clientB.post(`${API}/public/booking/confirm`).send({
         fullName: 'Racer B',
-        phone: `+96650${HTTP_SUITE.slice(-6)}2`,
+        phone: `+96650${HTTP_PHONE_TAIL.slice(-6)}2`,
       }),
     ]);
 
