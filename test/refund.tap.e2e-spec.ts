@@ -332,7 +332,10 @@ describe('Refunds over Tap (Phase 5) — real Postgres + Redis', () => {
 
       const res = await refund(clinic.owner.token, payment.id).expect(422);
 
-      expect(JSON.stringify(res.body)).not.toContain('1161');
+      // `requestId` is a server-generated random UUID that can contain "1161" by chance (~1 in 1500 runs);
+      // it is not Tap's text, so it is the one field excluded from the no-leak check.
+      const forwarded = { ...res.body, requestId: undefined };
+      expect(JSON.stringify(forwarded)).not.toContain('1161');
       const [row] = await refundRows(payment.id);
       expect(row.status).toBe('FAILED');
     });
