@@ -659,27 +659,24 @@ describe('Authentication concurrency (real Postgres + Redis)', () => {
     }, 180_000);
 
     /**
-     * AUTH-004 — deliberately UNCHANGED, and pinned so the decision stays
-     * explicit. There is no access-token denylist; `auth.controller.ts`
-     * documents this and bounds it with a short `JWT_ACCESS_TTL`. Adding one
-     * would mean a Redis read on every authenticated request, which the audit
-     * judged not worth it at a 15-minute bound (§4, AUTH-004).
+     * AUTH-004, superseded by SEC-02 — the access token used to stay valid until expiry after logout (no
+     * denylist). Access tokens now carry their session (`sid`) and every authenticated request checks the
+     * session is still live (JwtStrategy), so logout ends the access token immediately as well as the
+     * refresh token. The old expectation (200 after logout) is the defect SEC-02 closed.
      */
-    it('C11 the access token remains valid until expiry after logout (documented, bounded by JWT_ACCESS_TTL)', async () => {
+    it('C11 logout ends the access token immediately (SEC-02) and the refresh token is refused', async () => {
       const user = await newUser('c11');
 
       const jar = await loginAndGetJar(e2e, user.email, user.password);
       expect((await meRequest(e2e, jar)()).status).toBe(200);
 
       expect((await logoutRequest(e2e, jar)()).status).toBe(204);
-      expect((await meRequest(e2e, jar)()).status).toBe(200);
+      expect((await meRequest(e2e, jar)()).status).toBe(401);
 
-      // The REFRESH token, which is the thing logout actually revokes, is dead.
       expect((await refreshRequest(e2e, jar)()).status).toBe(401);
 
-      const ttl = e2e.config.get<string>('JWT_ACCESS_TTL', '15m');
       observe(
-        `C11 access token still authenticates after logout (accepted design, window = JWT_ACCESS_TTL=${ttl}); refresh token correctly refused`,
+        'C11 access token refused right after logout (session revoked, SEC-02); refresh token refused',
       );
     }, 60_000);
   });
