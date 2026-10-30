@@ -64,7 +64,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     }
     // A signed, unexpired token is not enough: its session must not have been
     // logged out since it was issued (SEC-02). Run alongside the principal
-    // lookup so the check adds no round trip of latency.
+    // lookup so the check adds no round trip of latency
     const [{ principal, tenant }, sessionLive] = await Promise.all([
       this.authService.buildAuthenticatedUserWithTenant(payload.sub),
       payload.sid === undefined
