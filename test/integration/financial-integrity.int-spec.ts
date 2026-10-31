@@ -117,7 +117,7 @@ async function tenant(): Promise<World> {
 
 const insertPayment = (w: World, amount: number, refunded = 0) =>
   attempt(
-    `INSERT INTO payments (id, "tenantId", amount, refunded_amount, status) VALUES ($1,$2,$3,$4,'PAID')`,
+    `INSERT INTO payments (id, "tenantId", amount, refunded_amount, status, paid_at) VALUES ($1,$2,$3,$4,'PAID',now())`,
     [randomUUID(), w.get('tenants'), amount, refunded],
   );
 
@@ -137,6 +137,26 @@ describe('financial integrity constraints (FIN-X5)', () => {
     expect((await insertPayment(w, 10)).ok).toBe(true);
   });
 
+  runIf('refuses a captured payment without paid_at (PAY-008)', async () => {
+    const w = await tenant();
+    for (const status of ['PAID', 'PARTIALLY_REFUNDED']) {
+      expect(
+        await attempt(
+          `INSERT INTO payments (id, "tenantId", amount, status) VALUES ($1,$2,10,$3)`,
+          [randomUUID(), w.get('tenants'), status],
+        ),
+      ).toMatchObject({ ok: false, code: '23514', constraint: 'CHK_payments_paid_has_paid_at' });
+    }
+    expect(
+      (
+        await attempt(
+          `INSERT INTO payments (id, "tenantId", amount, status) VALUES ($1,$2,10,'PENDING')`,
+          [randomUUID(), w.get('tenants')],
+        )
+      ).ok,
+    ).toBe(true);
+  });
+
   runIf('keeps refunded_amount within 0..amount', async () => {
     const w = await tenant();
     expect((await insertPayment(w, 100, 100)).ok).toBe(true); // fully refunded
@@ -154,7 +174,7 @@ describe('financial integrity constraints (FIN-X5)', () => {
     const w = await tenant();
     const id = randomUUID();
     await ds.query(
-      `INSERT INTO payments (id, "tenantId", amount, status) VALUES ($1,$2,50,'PAID')`,
+      `INSERT INTO payments (id, "tenantId", amount, status, paid_at) VALUES ($1,$2,50,'PAID',now())`,
       [id, w.get('tenants')],
     );
     const r = await attempt(
@@ -177,7 +197,7 @@ describe('financial integrity constraints (FIN-X5)', () => {
     const w = await tenant();
     const paymentId = randomUUID();
     await ds.query(
-      `INSERT INTO payments (id, "tenantId", amount, status) VALUES ($1,$2,100,'PAID')`,
+      `INSERT INTO payments (id, "tenantId", amount, status, paid_at) VALUES ($1,$2,100,'PAID',now())`,
       [paymentId, w.get('tenants')],
     );
     const refund = (amount: number) =>
@@ -199,7 +219,7 @@ describe('financial integrity constraints (FIN-X5)', () => {
     const w = await tenant();
     const paymentId = randomUUID();
     await ds.query(
-      `INSERT INTO payments (id, "tenantId", amount, status) VALUES ($1,$2,100,'PAID')`,
+      `INSERT INTO payments (id, "tenantId", amount, status, paid_at) VALUES ($1,$2,100,'PAID',now())`,
       [paymentId, w.get('tenants')],
     );
     const s1 = await w.make('settlements');
@@ -241,7 +261,7 @@ describe('financial integrity constraints (FIN-X5)', () => {
     const w = await tenant();
     const badId = randomUUID();
     await ds.query(
-      `INSERT INTO payments (id, "tenantId", amount, status) VALUES ($1,$2,0,'PAID')`,
+      `INSERT INTO payments (id, "tenantId", amount, status, paid_at) VALUES ($1,$2,0,'PAID',now())`,
       [badId, w.get('tenants')],
     );
 

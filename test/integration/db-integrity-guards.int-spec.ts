@@ -217,7 +217,7 @@ describe('payments', () => {
     const outcomes = await Promise.all(
       Array.from({ length: BURST }, () =>
         attempt(
-          `INSERT INTO payments (id, "tenantId", amount, status, gateway_payment_id) VALUES ($1,$2,10,'PAID',$3)`,
+          `INSERT INTO payments (id, "tenantId", amount, status, gateway_payment_id, paid_at) VALUES ($1,$2,10,'PAID',$3,now())`,
           [randomUUID(), w.get('tenants'), gatewayId],
         ),
       ),
@@ -229,7 +229,7 @@ describe('payments', () => {
     // NULL gateway ids (manual / not-yet-charged payments) must not collide with each other.
     const nulls = await Promise.all(
       Array.from({ length: 3 }, () =>
-        attempt(`INSERT INTO payments (id, "tenantId", amount, status) VALUES ($1,$2,10,'PAID')`, [
+        attempt(`INSERT INTO payments (id, "tenantId", amount, status, paid_at) VALUES ($1,$2,10,'PAID',now())`, [
           randomUUID(),
           w.get('tenants'),
         ]),
