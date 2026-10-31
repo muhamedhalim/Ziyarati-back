@@ -93,24 +93,25 @@ export class TapOnboardingService {
       });
     }
 
-    const account = await this.merchants.getOrCreate(tenantId);
-    const onTap = account.provider === 'tap';
-    if (onTap && !STARTABLE_ON_TAP.includes(account.status)) {
-      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message:
-          account.status === S.APPROVED
-            ? 'Online payments are already set up for this clinic.'
-            : `Onboarding cannot be started while the account is "${account.status}".`,
-      });
-    }
+    // Cheap early refusal; authoritative only after the claim below.
+    const claimable = await this.merchants.getOrCreate(tenantId);
+    this.assertStartable(claimable);
 
-    if (!(await this.merchants.claimTapOnboarding(account.id))) {
+    if (!(await this.merchants.claimTapOnboarding(claimable.id))) {
       throw new AppError(ErrorCode.CONFLICT, {
         message: 'Onboarding is already being started. Try again in a moment.',
       });
     }
 
+    let account = claimable;
     try {
+      // Re-read now that this caller holds the claim. A request that read the
+      // row before a concurrent start finished, then claimed after that start
+      // released it, would otherwise see no lead id and create a SECOND lead
+      // (Tap has no idempotency key; one lead per legal entity).
+      account = await this.merchants.getOrCreate(tenantId);
+      this.assertStartable(account);
+      const onTap = account.provider === 'tap';
       let leadId = onTap ? account.provider_lead_id : undefined;
       if (!leadId) {
         leadId = await this.createLead(tenantId, userId);
@@ -138,6 +139,20 @@ export class TapOnboardingService {
         .releaseTapOnboardingClaim(account.id)
         .catch(() => undefined);
       throw err;
+    }
+  }
+
+  private assertStartable(account: { provider: string; status: string }): void {
+    if (
+      account.provider === 'tap' &&
+      !STARTABLE_ON_TAP.includes(account.status)
+    ) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message:
+          account.status === S.APPROVED
+            ? 'Online payments are already set up for this clinic.'
+            : `Onboarding cannot be started while the account is "${account.status}".`,
+      });
     }
   }
 

@@ -174,6 +174,25 @@ describe('TapOnboardingService.start', () => {
       expect(client.createLead).not.toHaveBeenCalled();
       expect(client.createConnect).not.toHaveBeenCalled();
     });
+
+    it('a start that read the account BEFORE a concurrent start finished reuses the lead the other start stored instead of creating a second one', async () => {
+      const { service, client, merchants, account } = build();
+      // First read (pre-claim) is the stale snapshot with no lead; the claim is
+      // only won after the other request stored its lead and released the claim,
+      // so the re-read sees the lead.
+      merchants.getOrCreate
+        .mockResolvedValueOnce({ ...account })
+        .mockResolvedValueOnce({
+          ...account,
+          provider_lead_id: 'led_from_other_request',
+          status: S.PENDING_DOCUMENTS,
+        });
+      await service.start(TENANT, USER);
+      expect(client.createLead).not.toHaveBeenCalled();
+      expect(client.createConnect.mock.calls[0][0]).toMatchObject({
+        lead: { id: 'led_from_other_request' },
+      });
+    });
   });
 
   describe('the happy path', () => {
