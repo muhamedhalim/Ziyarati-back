@@ -4,7 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'node:crypto';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 
 import { AppError } from '../../../common/errors/app-error';
 import { ErrorCode } from '../../../common/errors/error-code';
@@ -13,6 +13,8 @@ import { AuditLog } from '../../../entities/Auth&RBAC/AuditLog';
 import { User } from '../../../entities/Auth&RBAC/User';
 import { UserMfa } from '../../../entities/Auth&RBAC/UserMfa';
 import { UserMfaRecoveryCode } from '../../../entities/Auth&RBAC/UserMfaRecoveryCode';
+import { RefreshToken } from '../../../entities/Auth&RBAC/RefreshToken';
+import { enforcementKey, mfaTier, type MfaPrincipal } from './mfa-policy';
 import { generateSecret, matchStep, otpauthUri } from './totp';
 
 export type MfaChallengePurpose = 'mfa_verify' | 'mfa_enroll';
@@ -40,6 +42,8 @@ export class MfaService {
     @InjectRepository(UserMfaRecoveryCode)
     private readonly recovery: Repository<UserMfaRecoveryCode>,
     @InjectRepository(AuditLog) private readonly audit: Repository<AuditLog>,
+    @InjectRepository(RefreshToken)
+    private readonly sessions: Repository<RefreshToken>,
     private readonly crypto: EncryptionService,
     private readonly jwt: JwtService,
     @Optional() private readonly config?: ConfigService,
@@ -53,17 +57,34 @@ export class MfaService {
     return !!row?.enabled;
   }
 
-  /** True when this principal must have a factor and has none (enforcement date passed). */
-  async enrolmentRequired(
-    userId: string,
-    tenantId: string | null,
-  ): Promise<boolean> {
-    if (tenantId !== null) return false;
-    const from = this.config?.get<string>('MFA_ENFORCE_FROM');
+  /**
+   * True when this principal's tier is under enforcement (its date has passed).
+   * Unset or unparsable date = never enforced, so a typo cannot lock anyone out.
+   */
+  isMandatory(principal: MfaPrincipal): boolean {
+    const key = enforcementKey(mfaTier(principal));
+    if (!key) return false;
+    const from = this.config?.get<string>(key);
     if (!from) return false;
     const at = Date.parse(from);
-    if (Number.isNaN(at) || Date.now() < at) return false;
+    return !Number.isNaN(at) && Date.now() >= at;
+  }
+
+  /** True when this principal must have a factor and has none. */
+  async enrolmentRequired(
+    userId: string,
+    principal: MfaPrincipal,
+  ): Promise<boolean> {
+    if (!this.isMandatory(principal)) return false;
     return !(await this.isEnabled(userId));
+  }
+
+  /** Ends every session of the user. Called whenever the second-factor state changes. */
+  async revokeSessions(userId: string): Promise<void> {
+    await this.sessions.update(
+      { user: { id: userId }, revoked_at: IsNull() },
+      { revoked_at: new Date() },
+    );
   }
 
   // ── challenge tokens (not sessions; rejected by the access-token strategy) ──
@@ -148,6 +169,8 @@ export class MfaService {
       },
     );
     const codes = await this.regenerateRecoveryCodes(userId);
+    // A session opened before the factor existed must not outlive enrolment.
+    await this.revokeSessions(userId);
     this.logger.log({ event: 'auth.mfa.enrolled', user_id: userId });
     return codes;
   }
@@ -226,7 +249,11 @@ export class MfaService {
             : null,
         },
       );
-      this.logger.warn({ event: 'auth.mfa.failed', user_id: userId, locked: lock });
+      this.logger.warn({
+        event: 'auth.mfa.failed',
+        user_id: userId,
+        locked: lock,
+      });
       throw new AppError(ErrorCode.INVALID_CREDENTIALS, {
         message: 'Invalid verification code.',
       });
@@ -269,6 +296,7 @@ export class MfaService {
   async disable(userId: string, code: string): Promise<void> {
     await this.verify(userId, { code });
     await this.clear(userId);
+    await this.revokeSessions(userId);
   }
 
   /** Admin-initiated reset by ANOTHER super-admin; audited. No self-bypass path. */
@@ -279,6 +307,7 @@ export class MfaService {
       });
     }
     await this.clear(targetUserId);
+    await this.revokeSessions(targetUserId);
     await this.audit.save(
       this.audit.create({
         user: { id: actorUserId } as User,

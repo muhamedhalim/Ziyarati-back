@@ -1017,6 +1017,43 @@ describe('AuthService', () => {
       expect(refreshTokens.createQueryBuilder).toHaveBeenCalled();
     });
 
+    describe('MFA enforcement on refresh', () => {
+      const withEnforcement = (enrolmentRequired: boolean) => {
+        (config.get as jest.Mock).mockImplementation((key: string, def?: unknown) =>
+          key === 'MFA_ENFORCE_FROM' ? '2000-01-01' : def,
+        );
+        const mfa = { enrolmentRequired: jest.fn().mockResolvedValue(enrolmentRequired) };
+        (service as unknown as { mfa: unknown }).mfa = mfa;
+        return mfa;
+      };
+
+      it('refuses to rotate a session whose owner must now hold a factor and has none', async () => {
+        jwt.verifyAsync.mockResolvedValueOnce(validPayload);
+        claimWins();
+        mockPrincipal(users, principalRow());
+        const mfa = withEnforcement(true);
+        const revoke = jest.spyOn(service, 'revokeFamily').mockResolvedValue(undefined);
+
+        await expect(service.refresh('rt')).rejects.toMatchObject({
+          code: ErrorCode.INVALID_REFRESH_TOKEN,
+        });
+        expect(mfa.enrolmentRequired).toHaveBeenCalled();
+        expect(revoke).toHaveBeenCalledWith(FAMILY);
+        expect(jwt.signAsync).not.toHaveBeenCalled(); // no new access token was minted
+      });
+
+      it('still rotates for a user the policy does not require (or who has enrolled)', async () => {
+        jwt.verifyAsync.mockResolvedValueOnce(validPayload);
+        claimWins();
+        mockPrincipal(users, principalRow()); // policy check
+        mockPrincipal(users, principalRow()); // session issue
+        withEnforcement(false);
+
+        const result = await service.refresh('rt');
+        expect(result.user).toEqual(expectedPrincipal);
+      });
+    });
+
     it('throws INVALID_REFRESH_TOKEN when verification fails', async () => {
       jwt.verifyAsync.mockRejectedValueOnce(new Error('bad sig'));
       await expect(service.refresh('rt')).rejects.toMatchObject({

@@ -1,4 +1,9 @@
-import { CanActivate, ExecutionContext, Injectable, Logger } from '@nestjs/common';
+import {
+  CanActivate,
+  ExecutionContext,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
 
@@ -44,7 +49,17 @@ export class MfaStepUpGuard implements CanActivate {
     if (!user?.id) throw new AppError(ErrorCode.PERMISSION_DENIED);
 
     const mfa = this.moduleRef.get(MfaService, { strict: false });
-    if (!(await mfa.isEnabled(user.id))) return true;
+    if (!(await mfa.isEnabled(user.id))) {
+      // Fail closed: someone whose role must hold a factor but has none (a session that
+      // slipped past enforcement) cannot confirm a money-moving action.
+      if (mfa.isMandatory(user)) {
+        throw new AppError(ErrorCode.FORBIDDEN, {
+          message:
+            'Two-factor authentication must be set up before this action.',
+        });
+      }
+      return true;
+    }
 
     const raw = request.headers?.[MFA_STEP_UP_HEADER];
     const code = (Array.isArray(raw) ? raw[0] : raw)?.toString().trim();
@@ -66,6 +81,11 @@ export class MfaStepUpGuard implements CanActivate {
 
   private enabled(): boolean {
     const raw = this.config.get<string | boolean>('MFA_STEP_UP_ENABLED');
-    return raw === true || String(raw ?? '').trim().toLowerCase() === 'true';
+    return (
+      raw === true ||
+      String(raw ?? '')
+        .trim()
+        .toLowerCase() === 'true'
+    );
   }
 }

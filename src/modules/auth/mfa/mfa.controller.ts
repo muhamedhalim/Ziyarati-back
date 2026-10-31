@@ -82,7 +82,10 @@ export class MfaController {
         message: 'A verification code or recovery code is required.',
       });
     }
-    const userId = await this.mfa.parseChallenge(dto.challengeToken, 'mfa_verify');
+    const userId = await this.mfa.parseChallenge(
+      dto.challengeToken,
+      'mfa_verify',
+    );
     await this.mfa.verify(userId, {
       code: dto.code,
       recoveryCode: dto.recoveryCode,
@@ -95,7 +98,10 @@ export class MfaController {
   @Post('enroll/start')
   @HttpCode(HttpStatus.OK)
   async enrollStart(@Body() dto: MfaChallengeDto) {
-    const userId = await this.mfa.parseChallenge(dto.challengeToken, 'mfa_enroll');
+    const userId = await this.mfa.parseChallenge(
+      dto.challengeToken,
+      'mfa_enroll',
+    );
     const principal = await this.auth.buildAuthenticatedUser(userId);
     return this.mfa.startSetup(userId, principal.email ?? userId);
   }
@@ -109,7 +115,10 @@ export class MfaController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const userId = await this.mfa.parseChallenge(dto.challengeToken, 'mfa_enroll');
+    const userId = await this.mfa.parseChallenge(
+      dto.challengeToken,
+      'mfa_enroll',
+    );
     const recoveryCodes = await this.mfa.confirmSetup(userId, dto.code);
     return { user: await this.login(userId, req, res), recoveryCodes };
   }
@@ -127,7 +136,10 @@ export class MfaController {
   @ApiBearerAuth('JWT-auth')
   @Post('setup/confirm')
   @HttpCode(HttpStatus.OK)
-  async setupConfirm(@CurrentUser('id') userId: string, @Body() dto: MfaCodeDto) {
+  async setupConfirm(
+    @CurrentUser('id') userId: string,
+    @Body() dto: MfaCodeDto,
+  ) {
     return { recoveryCodes: await this.mfa.confirmSetup(userId, dto.code) };
   }
 
@@ -135,6 +147,15 @@ export class MfaController {
   @Post('disable')
   @HttpCode(HttpStatus.NO_CONTENT)
   async disable(@CurrentUser('id') userId: string, @Body() dto: MfaCodeDto) {
+    // A user whose tier is under enforcement cannot remove the factor: they would only
+    // be forced to re-enrol at the next login, and a stolen session could strip it.
+    const principal = await this.auth.buildAuthenticatedUser(userId);
+    if (this.mfa.isMandatory(principal)) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message:
+          'Two-factor authentication is required for your role and cannot be disabled.',
+      });
+    }
     await this.mfa.disable(userId, dto.code);
   }
 

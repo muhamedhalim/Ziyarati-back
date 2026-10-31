@@ -108,6 +108,14 @@ app_environment = {
   AI_MINIMIZER_ENABLED = "true"
   AI_VISION_ENABLED    = "false"
 
+  # MFA rollout (approved policy). NOT ENFORCED while these are commented out.
+  # Uncomment ONLY after infra/runbooks/mfa-rollout.md preconditions 1-5 are verified, then
+  # Review the plan first - a bare ECS target also pulls in RDS and Tap changes (see the runbook).
+  # Tier 1 (super admin, platform staff, clinic owner/manager/branch manager): MFA_ENFORCE_FROM.
+  # Tier 2 (doctors, nurses, anyone with clinical-records access): MFA_ENFORCE_CLINICAL_FROM.
+  # Removing the line and re-applying is the rollback. ISO 8601, UTC.
+  # MFA_ENFORCE_FROM = "2026-11-08T00:00:00Z"
+
   # Tap — production boots only with the credentials below (env.validation.ts fails closed).
   # Follow the checklist in infra/runbooks/tap-payments-rollout.md §5 before the first deploy.
   # The two flags stay "false" until their own rollout step (runbook §5 steps 6 and 8).

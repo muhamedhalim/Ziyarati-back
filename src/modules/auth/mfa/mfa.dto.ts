@@ -1,4 +1,10 @@
-import { IsOptional, IsString, Length, Matches, MaxLength } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  Length,
+  Matches,
+  MaxLength,
+} from 'class-validator';
 
 export class MfaVerifyDto {
   @IsString()

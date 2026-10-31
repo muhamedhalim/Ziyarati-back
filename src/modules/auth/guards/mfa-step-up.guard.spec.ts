@@ -6,14 +6,27 @@ import { AppError } from '../../../common/errors';
 import { MFA_STEP_UP_HEADER, MfaStepUpGuard } from './mfa-step-up.guard';
 
 describe('MfaStepUpGuard (PAY-012)', () => {
-  const USER = { id: 'u1', tenantId: null, roles: ['super_admin'], permissions: [] };
+  const USER = {
+    id: 'u1',
+    tenantId: null,
+    roles: ['super_admin'],
+    permissions: [],
+  };
 
-  function build(opts: { flag?: string; enabled?: boolean; verify?: jest.Mock }) {
+  function build(opts: {
+    flag?: string;
+    enabled?: boolean;
+    verify?: jest.Mock;
+    mandatory?: boolean;
+  }) {
     const mfa = {
       isEnabled: jest.fn().mockResolvedValue(opts.enabled ?? true),
+      isMandatory: jest.fn().mockReturnValue(opts.mandatory ?? false),
       verify: opts.verify ?? jest.fn().mockResolvedValue(undefined),
     };
-    const moduleRef = { get: jest.fn().mockReturnValue(mfa) } as unknown as ModuleRef;
+    const moduleRef = {
+      get: jest.fn().mockReturnValue(mfa),
+    } as unknown as ModuleRef;
     const config = {
       get: jest.fn().mockReturnValue(opts.flag),
     } as unknown as ConfigService;
@@ -37,6 +50,16 @@ describe('MfaStepUpGuard (PAY-012)', () => {
     expect(mfa.verify).not.toHaveBeenCalled();
   });
 
+  it('fails closed for a mandatory-MFA user who has no factor', async () => {
+    const { guard, mfa } = build({
+      flag: 'true',
+      enabled: false,
+      mandatory: true,
+    });
+    await expect(guard.canActivate(ctx())).rejects.toBeInstanceOf(AppError);
+    expect(mfa.verify).not.toHaveBeenCalled();
+  });
+
   it('answers 403 with mfaStepUp=true when a user with a factor sends no code', async () => {
     const { guard } = build({ flag: 'true' });
     const err = await guard.canActivate(ctx()).catch((e) => e);
@@ -55,11 +78,15 @@ describe('MfaStepUpGuard (PAY-012)', () => {
   it('treats any other value as a recovery code', async () => {
     const { guard, mfa } = build({ flag: 'true' });
     await guard.canActivate(ctx({ [MFA_STEP_UP_HEADER]: 'abcd-efgh' }));
-    expect(mfa.verify).toHaveBeenCalledWith('u1', { recoveryCode: 'abcd-efgh' });
+    expect(mfa.verify).toHaveBeenCalledWith('u1', {
+      recoveryCode: 'abcd-efgh',
+    });
   });
 
   it('rejects when verification fails, so the route never runs', async () => {
-    const verify = jest.fn().mockRejectedValue(new Error('Invalid verification code.'));
+    const verify = jest
+      .fn()
+      .mockRejectedValue(new Error('Invalid verification code.'));
     const { guard } = build({ flag: 'true', verify });
     await expect(
       guard.canActivate(ctx({ [MFA_STEP_UP_HEADER]: '000000' })),
@@ -68,6 +95,8 @@ describe('MfaStepUpGuard (PAY-012)', () => {
 
   it('refuses a request with no authenticated user when enabled', async () => {
     const { guard } = build({ flag: 'true' });
-    await expect(guard.canActivate(ctx({}, undefined))).rejects.toBeInstanceOf(AppError);
+    await expect(guard.canActivate(ctx({}, undefined))).rejects.toBeInstanceOf(
+      AppError,
+    );
   });
 });

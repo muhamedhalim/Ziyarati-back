@@ -8,19 +8,52 @@ function build() {
   const rows: any[] = [];
   const recov: any[] = [];
   const mfaRepo: any = {
-    findOne: jest.fn(async ({ where }: any) => rows.find((r) => r.user_id === where.user_id) ?? null),
-    create: (x: any) => ({ id: `m${rows.length + 1}`, failed_attempts: 0, locked_until: null, last_used_step: null, enabled: false, ...x }),
-    save: jest.fn(async (x: any) => { rows.push(x); return x; }),
-    update: jest.fn(async (w: any, v: any) => { Object.assign(rows.find((r) => r.id === w.id) ?? {}, v); }),
-    delete: jest.fn(async (w: any) => { const i = rows.findIndex((r) => r.user_id === w.user_id); if (i >= 0) rows.splice(i, 1); }),
+    findOne: jest.fn(
+      async ({ where }: any) =>
+        rows.find((r) => r.user_id === where.user_id) ?? null,
+    ),
+    create: (x: any) => ({
+      id: `m${rows.length + 1}`,
+      failed_attempts: 0,
+      locked_until: null,
+      last_used_step: null,
+      enabled: false,
+      ...x,
+    }),
+    save: jest.fn(async (x: any) => {
+      rows.push(x);
+      return x;
+    }),
+    update: jest.fn(async (w: any, v: any) => {
+      Object.assign(rows.find((r) => r.id === w.id) ?? {}, v);
+    }),
+    delete: jest.fn(async (w: any) => {
+      const i = rows.findIndex((r) => r.user_id === w.user_id);
+      if (i >= 0) rows.splice(i, 1);
+    }),
     createQueryBuilder: () => {
-      let set: any; let params: any;
+      let set: any;
+      let params: any;
       const qb: any = {
-        update: () => qb, set: (s: any) => { set = s; return qb; },
-        where: (_: string, p: any) => { params = p; return qb; },
+        update: () => qb,
+        set: (s: any) => {
+          set = s;
+          return qb;
+        },
+        where: (_: string, p: any) => {
+          params = p;
+          return qb;
+        },
         execute: async () => {
           const r = rows.find((x) => x.id === params.id);
-          if (r && (r.last_used_step === null || Number(r.last_used_step) < params.step)) { Object.assign(r, set); return { affected: 1 }; }
+          if (
+            r &&
+            (r.last_used_step === null ||
+              Number(r.last_used_step) < params.step)
+          ) {
+            Object.assign(r, set);
+            return { affected: 1 };
+          }
           return { affected: 0 };
         },
       };
@@ -28,27 +61,68 @@ function build() {
     },
   };
   const recovRepo: any = {
-    find: jest.fn(async ({ where }: any) => recov.filter((r) => r.user_id === where.user_id)),
+    find: jest.fn(async ({ where }: any) =>
+      recov.filter((r) => r.user_id === where.user_id),
+    ),
     create: (x: any) => ({ id: `r${recov.length + 1}`, used_at: null, ...x }),
-    save: jest.fn(async (x: any) => { recov.push(x); return x; }),
-    delete: jest.fn(async (w: any) => { for (let i = recov.length - 1; i >= 0; i--) if (recov[i].user_id === w.user_id) recov.splice(i, 1); }),
+    save: jest.fn(async (x: any) => {
+      recov.push(x);
+      return x;
+    }),
+    delete: jest.fn(async (w: any) => {
+      for (let i = recov.length - 1; i >= 0; i--)
+        if (recov[i].user_id === w.user_id) recov.splice(i, 1);
+    }),
     createQueryBuilder: () => {
       let params: any;
-      const qb: any = { update: () => qb, set: () => qb, where: (_: string, p: any) => { params = p; return qb; },
-        execute: async () => { const r = recov.find((x) => x.id === params.id && !x.used_at); if (r) { r.used_at = new Date(); return { affected: 1 }; } return { affected: 0 }; } };
+      const qb: any = {
+        update: () => qb,
+        set: () => qb,
+        where: (_: string, p: any) => {
+          params = p;
+          return qb;
+        },
+        execute: async () => {
+          const r = recov.find((x) => x.id === params.id && !x.used_at);
+          if (r) {
+            r.used_at = new Date();
+            return { affected: 1 };
+          }
+          return { affected: 0 };
+        },
+      };
       return qb;
     },
   };
   const audit: any = { create: (x: any) => x, save: jest.fn() };
-  const crypto: any = { encrypt: (s: string) => `enc:${s}`, decrypt: (s: string) => s.replace(/^enc:/, '') };
+  const crypto: any = {
+    encrypt: (s: string) => `enc:${s}`,
+    decrypt: (s: string) => s.replace(/^enc:/, ''),
+  };
   const jwtStore = new Map<string, any>();
   const jwt: any = {
-    signAsync: jest.fn(async (p: any) => { const t = `tok${jwtStore.size}`; jwtStore.set(t, p); return t; }),
-    verifyAsync: jest.fn(async (t: string) => { if (!jwtStore.has(t)) throw new Error('bad'); return jwtStore.get(t); }),
+    signAsync: jest.fn(async (p: any) => {
+      const t = `tok${jwtStore.size}`;
+      jwtStore.set(t, p);
+      return t;
+    }),
+    verifyAsync: jest.fn(async (t: string) => {
+      if (!jwtStore.has(t)) throw new Error('bad');
+      return jwtStore.get(t);
+    }),
   };
   const config: any = { get: jest.fn(), getOrThrow: () => 'secret' };
-  const svc = new MfaService(mfaRepo, recovRepo, audit, crypto, jwt, config);
-  return { svc, rows, recov, audit, config };
+  const sessions: any = { update: jest.fn(async () => undefined) };
+  const svc = new MfaService(
+    mfaRepo,
+    recovRepo,
+    audit,
+    sessions,
+    crypto,
+    jwt,
+    config,
+  );
+  return { svc, rows, recov, audit, config, sessions };
 }
 
 describe('MfaService', () => {
@@ -60,11 +134,16 @@ describe('MfaService', () => {
     expect(codes).toHaveLength(10);
     expect(rows[0].enabled).toBe(true);
     // the enrolment code's step is spent: replay refused
-    await expect(svc.verify('u1', { code: totpAt(secret, step) })).rejects.toThrow();
+    await expect(
+      svc.verify('u1', { code: totpAt(secret, step) }),
+    ).rejects.toThrow();
     // a later step is accepted
     await svc.verify('u1', { code: totpAt(secret, step + 1) });
-    for (let i = 0; i < 5; i++) await expect(svc.verify('u1', { code: '000000' })).rejects.toThrow();
-    await expect(svc.verify('u1', { code: totpAt(secret, step + 1) })).rejects.toThrow(/Too many/);
+    for (let i = 0; i < 5; i++)
+      await expect(svc.verify('u1', { code: '000000' })).rejects.toThrow();
+    await expect(
+      svc.verify('u1', { code: totpAt(secret, step + 1) }),
+    ).rejects.toThrow(/Too many/);
   });
 
   it('recovery codes work once and are stored hashed', async () => {
@@ -74,7 +153,9 @@ describe('MfaService', () => {
     expect(recov.every((r) => r.code_hash.startsWith('$2'))).toBe(true);
     expect(JSON.stringify(recov)).not.toContain(codes[0]);
     await svc.verify('u2', { recoveryCode: codes[0] });
-    await expect(svc.verify('u2', { recoveryCode: codes[0] })).rejects.toThrow();
+    await expect(
+      svc.verify('u2', { recoveryCode: codes[0] }),
+    ).rejects.toThrow();
   });
 
   it('a verify challenge cannot be used as an enrolment challenge', async () => {
@@ -85,14 +166,58 @@ describe('MfaService', () => {
     await expect(svc.parseChallenge('garbage', 'mfa_verify')).rejects.toThrow();
   });
 
-  it('enforcement only applies to platform users after MFA_ENFORCE_FROM', async () => {
+  const platformAdmin = {
+    tenantId: null,
+    roles: ['super_admin'],
+    permissions: [],
+  };
+  const owner = { tenantId: 't1', roles: ['owner'], permissions: [] };
+  const doctor = {
+    tenantId: 't1',
+    roles: ['doctor'],
+    permissions: ['clinical.records.read'],
+  };
+  const patient = { tenantId: 't1', roles: ['customer'], permissions: [] };
+
+  it('privileged tier is enforced from MFA_ENFORCE_FROM, clinical tier from its own date', async () => {
     const { svc, config } = build();
-    expect(await svc.enrolmentRequired('p1', null)).toBe(false); // unset
-    config.get.mockReturnValue('2000-01-01');
-    expect(await svc.enrolmentRequired('p1', null)).toBe(true);
-    expect(await svc.enrolmentRequired('c1', 'tenant-1')).toBe(false); // clinic user
-    config.get.mockReturnValue('2999-01-01');
-    expect(await svc.enrolmentRequired('p1', null)).toBe(false);
+    const dates: Record<string, string> = {};
+    config.get.mockImplementation((k: string) => dates[k]);
+    expect(await svc.enrolmentRequired('p1', platformAdmin)).toBe(false); // unset
+    dates.MFA_ENFORCE_FROM = '2000-01-01';
+    expect(await svc.enrolmentRequired('p1', platformAdmin)).toBe(true);
+    expect(await svc.enrolmentRequired('o1', owner)).toBe(true);
+    expect(await svc.enrolmentRequired('d1', doctor)).toBe(false); // clinical date not set
+    dates.MFA_ENFORCE_CLINICAL_FROM = '2000-01-01';
+    expect(await svc.enrolmentRequired('d1', doctor)).toBe(true);
+    expect(await svc.enrolmentRequired('x1', patient)).toBe(false); // patients never forced
+    dates.MFA_ENFORCE_FROM = '2999-01-01';
+    expect(await svc.enrolmentRequired('p1', platformAdmin)).toBe(false); // future date
+    dates.MFA_ENFORCE_FROM = 'not-a-date';
+    expect(await svc.enrolmentRequired('p1', platformAdmin)).toBe(false); // typo cannot lock out
+  });
+
+  it('an enrolled mandatory user is no longer "enrolment required"', async () => {
+    const { svc, config } = build();
+    config.get.mockImplementation((k: string) =>
+      k === 'MFA_ENFORCE_FROM' ? '2000-01-01' : undefined,
+    );
+    const { secret } = await svc.startSetup('p1', 'a@b.c');
+    await svc.confirmSetup('p1', totpAt(secret, currentStep()));
+    expect(await svc.enrolmentRequired('p1', platformAdmin)).toBe(false);
+  });
+
+  it('enrolment, admin reset and disable all end every session of the user', async () => {
+    const { svc, sessions } = build();
+    const { secret } = await svc.startSetup('u9', 'a@b.c');
+    await svc.confirmSetup('u9', totpAt(secret, currentStep()));
+    expect(sessions.update).toHaveBeenCalledTimes(1);
+    await svc.adminReset('u9', 'actor');
+    expect(sessions.update).toHaveBeenCalledTimes(2);
+    const s2 = await svc.startSetup('u10', 'a@b.c');
+    await svc.confirmSetup('u10', totpAt(s2.secret, currentStep()));
+    await svc.disable('u10', totpAt(s2.secret, currentStep() + 1));
+    expect(sessions.update).toHaveBeenCalledTimes(4);
   });
 
   it('admin cannot reset their own factor; a reset is audited', async () => {
@@ -102,5 +227,7 @@ describe('MfaService', () => {
     expect(audit.save).toHaveBeenCalled();
   });
 
-  it('unused import guard', () => { expect(bcrypt).toBeDefined(); });
+  it('unused import guard', () => {
+    expect(bcrypt).toBeDefined();
+  });
 });

@@ -452,9 +452,9 @@ export class AuthService {
           challengeToken: await this.mfa.issueChallenge(user.id, 'mfa_verify'),
         };
       }
-      if (this.config.get<string>('MFA_ENFORCE_FROM')) {
+      if (this.mfaEnforcementConfigured()) {
         const principal = await this.buildAuthenticatedUser(user.id);
-        if (await this.mfa.enrolmentRequired(user.id, principal.tenantId)) {
+        if (await this.mfa.enrolmentRequired(user.id, principal)) {
           return {
             mfaEnrollmentRequired: true,
             challengeToken: await this.mfa.issueChallenge(user.id, 'mfa_enroll'),
@@ -463,6 +463,38 @@ export class AuthService {
       }
     }
     return this.finishLogin(user.id, context);
+  }
+
+  /** True when any MFA enforcement date is configured (skips the principal lookup otherwise). */
+  private mfaEnforcementConfigured(): boolean {
+    return !!(
+      this.config.get<string>('MFA_ENFORCE_FROM') ||
+      this.config.get<string>('MFA_ENFORCE_CLINICAL_FROM')
+    );
+  }
+
+  /**
+   * Refresh must not outlive a newly enforced MFA policy: a session opened before
+   * the policy (or before enrolment) cannot rotate into a fresh one while its owner
+   * is required to hold a factor and has none. The whole token family is revoked so
+   * the client falls back to login, which then walks the user through enrolment.
+   */
+  private async assertRefreshAllowedByMfa(
+    userId: string,
+    familyId: string,
+  ): Promise<void> {
+    if (!this.mfa || !this.mfaEnforcementConfigured()) return;
+    const principal = await this.buildAuthenticatedUser(userId);
+    if (await this.mfa.enrolmentRequired(userId, principal)) {
+      await this.revokeFamily(familyId);
+      this.logger.warn({
+        event: 'auth.refresh.mfa_enrolment_required',
+        user_id: userId,
+      });
+      throw new AppError(ErrorCode.INVALID_REFRESH_TOKEN, {
+        message: 'Two-factor authentication is required. Please sign in again.',
+      });
+    }
   }
 
   /** Completes a login whose password (and, if required, second factor) is proven. */
@@ -688,6 +720,7 @@ export class AuthService {
       tokenHash,
     );
     if (claimed) {
+      await this.assertRefreshAllowedByMfa(claimed.userId, claimed.familyId);
       return this.issueAuthResult(claimed.userId, context, {
         jti: childJti,
         familyId: claimed.familyId,
