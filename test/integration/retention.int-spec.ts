@@ -167,7 +167,10 @@ async function seed(): Promise<Seed> {
   await w.make('scheduled_notifications', {
     ...t,
     status: 'SENT',
-    created_at: ago(60),
+    // Distinct from the PENDING row below: the later assertion orders by created_at, and a
+    // same-millisecond tie made the order depend on physical row position (the scrub UPDATE
+    // moves this row after the PENDING one).
+    created_at: ago(61),
     variables: { name: 'Sara' },
     failure_reason: 'x',
   });
