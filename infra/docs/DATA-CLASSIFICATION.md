@@ -30,7 +30,7 @@ A table is classified by what it **can** contain, not by what a typical row does
 ## Summary
 
 <!-- BEGIN GENERATED: classification-summary -->
-Tables classified: 161. A table counts under every class it can hold.
+Tables classified: 163. A table counts under every class it can hold.
 
 | Class | Tables |
 | --- | --- |
@@ -40,7 +40,7 @@ Tables classified: 161. A table counts under every class it can hold.
 | D3 | 1 |
 | D4 | 19 |
 | D5 | 18 |
-| D6 | 14 |
+| D6 | 16 |
 | D7 | 5 |
 | D8 | 9 |
 
@@ -95,6 +95,8 @@ Generated from `data-classification.ts`; regenerate with `UPDATE_COMPLIANCE_DOCS
 | `user_roles` | D1 | - | User to role mapping |
 | `refresh_tokens` | D6 | staff | Hashed refresh tokens |
 | `password_resets` | D6 | staff | Hashed password-reset tokens |
+| `user_mfa` | D6 | staff | Encrypted TOTP seed and lockout state for staff MFA |
+| `user_mfa_recovery_codes` | D6 | staff | Hashed single-use MFA recovery codes |
 | `api_keys` | D6 | clinic | Hashed integration API keys |
 | `api_logs` | D8 | staff | API request log; stores client IP |
 | `data_subject_requests` | D7 | patient, staff | Data-subject request trail: ids, type, status, counts (no personal data in the row) |

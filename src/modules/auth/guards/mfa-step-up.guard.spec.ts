@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
 
 import { AppError } from '../../../common/errors';
-import { MfaService } from '../mfa/mfa.service';
 import { MFA_STEP_UP_HEADER, MfaStepUpGuard } from './mfa-step-up.guard';
 
 describe('MfaStepUpGuard (PAY-012)', () => {

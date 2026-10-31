@@ -95,6 +95,8 @@ const ROWS: Row[] = [
   ['user_roles', 'D1', '', 'User to role mapping'],
   ['refresh_tokens', 'D6', S, 'Hashed refresh tokens'],
   ['password_resets', 'D6', S, 'Hashed password-reset tokens'],
+  ['user_mfa', 'D6', S, 'Encrypted TOTP seed and lockout state for staff MFA'],
+  ['user_mfa_recovery_codes', 'D6', S, 'Hashed single-use MFA recovery codes'],
   ['api_keys', 'D6', C, 'Hashed integration API keys'],
   ['api_logs', 'D8', S, 'API request log; stores client IP'],
   // ── Audit ───────────────────────────────────────────────────────────────
