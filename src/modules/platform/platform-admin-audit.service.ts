@@ -69,6 +69,8 @@ export const PLATFORM_ADMIN_AUDIT_ACTION = {
   SUPPORT_NOTIFICATION_RETRY_REJECTED:
     'platform_support.notification_retry_rejected',
   SUPPORT_INTEGRATION_RECHECKED: 'platform_support.integration_rechecked',
+  // TSF-09: every Support diagnostic READ (cross-tenant by design) leaves a trail.
+  SUPPORT_CLINIC_READ: 'platform_support.clinic_read',
   // Sales Staff Management. `platform_admin.%` so they surface in the Super
   // Admin activity feed automatically; deliberately NOT added to the support
   // desk's allow-list. `tenantId` on the assignment rows is the CLINIC.

@@ -1,18 +1,97 @@
 [
-  { "method": "POST", "path": "/auth/change-password", "reason": "Self-service: the caller changes their OWN password; the current password is required and re-verified, and it acts on the authenticated principal only." },
-  { "method": "GET", "path": "/auth/me", "reason": "Self-service: returns the caller's own profile, roles and permissions; every signed-in user needs it to render the app." },
-  { "method": "POST", "path": "/auth/logout-all", "reason": "Self-service: revokes the caller's OWN sessions across devices; no other principal's sessions can be addressed." },
-  { "method": "GET", "path": "/tenants/me", "reason": "Self-service: the caller's own clinic summary, resolved from the authenticated tenant context (no id parameter), needed by every staff role to render the shell." },
-  { "method": "GET", "path": "/tenants/me/settings", "reason": "Self-service: the caller's own clinic settings, resolved from the authenticated tenant context; read-only and needed by every staff role (booking rules, currency, locale)." },
-  { "method": "GET", "path": "/branches", "reason": "Clinic reference data every staff role needs to pick a branch; tenant-scoped from the principal, ActiveTenantGuard enforced, and branch-restricted roles are narrowed by the branch-scope service." },
-  { "method": "GET", "path": "/branches/:id", "reason": "Same reference data as the list: one branch of the caller's OWN clinic (foreign ids answer 404), needed by every staff role." },
-  { "method": "GET", "path": "/analytics/metrics/definitions", "reason": "The static metric registry (labels and prose definitions); exposes no tenant data, so there is nothing to authorise per caller." },
-  { "method": "GET", "path": "/notifications/inbox", "reason": "Self-service: the caller's OWN in-app inbox, keyed by the authenticated user id." },
-  { "method": "GET", "path": "/notifications/inbox/unread-count", "reason": "Self-service: unread count of the caller's OWN inbox." },
-  { "method": "GET", "path": "/notifications/inbox/preferences", "reason": "Self-service: the caller's OWN notification preferences." },
-  { "method": "PUT", "path": "/notifications/inbox/preferences", "reason": "Self-service: updates the caller's OWN notification preferences only." },
-  { "method": "POST", "path": "/notifications/inbox/:id/read", "reason": "Self-service: marks one of the caller's OWN inbox items read; another user's item answers 404." },
-  { "method": "POST", "path": "/notifications/inbox/read-all", "reason": "Self-service: marks the caller's OWN inbox read." },
-  { "method": "POST", "path": "/public/guest/convert", "reason": "Self-service: an authenticated user claims the anonymous chat their own guest token created; it requires both identities and moves nothing between tenants." },
-  { "method": "GET", "path": "/dashboard/summary", "reason": "Per-metric gating inside the service: each figure is included only if the caller holds the permission that governs it, and the cache is keyed by that permission scope (see dashboard-summary cacheSuffix)." }
+  {
+    "method": "POST",
+    "path": "/auth/change-password",
+    "reason": "Self-service: the caller changes their OWN password; the current password is required and re-verified, and it acts on the authenticated principal only."
+  },
+  {
+    "method": "GET",
+    "path": "/auth/me",
+    "reason": "Self-service: returns the caller's own profile, roles and permissions; every signed-in user needs it to render the app."
+  },
+  {
+    "method": "POST",
+    "path": "/auth/logout-all",
+    "reason": "Self-service: revokes the caller's OWN sessions across devices; no other principal's sessions can be addressed."
+  },
+  {
+    "method": "GET",
+    "path": "/tenants/me",
+    "reason": "Self-service: the caller's own clinic summary, resolved from the authenticated tenant context (no id parameter), needed by every staff role to render the shell."
+  },
+  {
+    "method": "GET",
+    "path": "/tenants/me/settings",
+    "reason": "Self-service: the caller's own clinic settings, resolved from the authenticated tenant context; read-only and needed by every staff role (booking rules, currency, locale)."
+  },
+  {
+    "method": "GET",
+    "path": "/branches",
+    "reason": "Clinic reference data every staff role needs to pick a branch; tenant-scoped from the principal, ActiveTenantGuard enforced, and branch-restricted roles are narrowed by the branch-scope service."
+  },
+  {
+    "method": "GET",
+    "path": "/branches/:id",
+    "reason": "Same reference data as the list: one branch of the caller's OWN clinic (foreign ids answer 404), needed by every staff role."
+  },
+  {
+    "method": "GET",
+    "path": "/analytics/metrics/definitions",
+    "reason": "The static metric registry (labels and prose definitions); exposes no tenant data, so there is nothing to authorise per caller."
+  },
+  {
+    "method": "GET",
+    "path": "/notifications/inbox",
+    "reason": "Self-service: the caller's OWN in-app inbox, keyed by the authenticated user id."
+  },
+  {
+    "method": "GET",
+    "path": "/notifications/inbox/unread-count",
+    "reason": "Self-service: unread count of the caller's OWN inbox."
+  },
+  {
+    "method": "GET",
+    "path": "/notifications/inbox/preferences",
+    "reason": "Self-service: the caller's OWN notification preferences."
+  },
+  {
+    "method": "PUT",
+    "path": "/notifications/inbox/preferences",
+    "reason": "Self-service: updates the caller's OWN notification preferences only."
+  },
+  {
+    "method": "POST",
+    "path": "/notifications/inbox/:id/read",
+    "reason": "Self-service: marks one of the caller's OWN inbox items read; another user's item answers 404."
+  },
+  {
+    "method": "POST",
+    "path": "/notifications/inbox/read-all",
+    "reason": "Self-service: marks the caller's OWN inbox read."
+  },
+  {
+    "method": "POST",
+    "path": "/public/guest/convert",
+    "reason": "Self-service: an authenticated user claims the anonymous chat their own guest token created; it requires both identities and moves nothing between tenants."
+  },
+  {
+    "method": "GET",
+    "path": "/dashboard/summary",
+    "reason": "Per-metric gating inside the service: each figure is included only if the caller holds the permission that governs it, and the cache is keyed by that permission scope (see dashboard-summary cacheSuffix)."
+  },
+  {
+    "method": "POST",
+    "path": "/auth/mfa/setup/start",
+    "reason": "Self-service: starts enrolment of the caller's OWN second factor; acts only on the authenticated principal."
+  },
+  {
+    "method": "POST",
+    "path": "/auth/mfa/setup/confirm",
+    "reason": "Self-service: confirms the caller's OWN pending factor with a valid TOTP code."
+  },
+  {
+    "method": "POST",
+    "path": "/auth/mfa/disable",
+    "reason": "Self-service: removes the caller's OWN factor; requires a currently valid code."
+  }
 ]

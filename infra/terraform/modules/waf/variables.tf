@@ -19,6 +19,12 @@ variable "mode" {
   }
 }
 
+variable "rate_rules_block" {
+  description = "When mode = \"block\", also enforce the rate-based rules. false keeps them COUNT (managed groups still follow mode)."
+  type        = bool
+  default     = true
+}
+
 variable "rate_limit_auth_per_5min" {
   description = "Requests per 5 min per forwarded client IP on /api/v1/auth/*"
   type        = number

@@ -173,3 +173,9 @@ variable "enable_log_data_protection" {
   type        = bool
   default     = true
 }
+
+variable "waf_rate_rules_block" {
+  description = "With waf_mode = block, also enforce the rate rules. false keeps them COUNT."
+  type        = bool
+  default     = true
+}

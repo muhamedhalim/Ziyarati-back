@@ -127,6 +127,7 @@ module "waf" {
   name                          = local.name
   alb_arn                       = module.alb.alb_arn
   mode                          = var.waf_mode
+  rate_rules_block              = var.waf_rate_rules_block
   edge_proxy_token              = var.edge_proxy_token
   rate_limit_auth_per_5min      = var.waf_rate_limits.auth
   rate_limit_public_per_5min    = var.waf_rate_limits.public
@@ -280,7 +281,7 @@ module "monitoring" {
   nat_gateway_ids              = module.network.nat_gateway_ids
   api_domain                   = local.api_domain
   enable_external_health_check = var.enable_external_health_check
-  waf_mode                     = var.waf_mode
+  waf_mode                     = var.waf_rate_rules_block ? var.waf_mode : "count" # alarms track the rate rules
   tags                         = local.tags
 }
 

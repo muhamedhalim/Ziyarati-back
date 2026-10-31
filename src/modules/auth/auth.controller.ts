@@ -26,7 +26,7 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 
-import { AuthService, TokenContext } from './auth.service';
+import { AuthService, TokenContext, isMfaPending } from './auth.service';
 import { RegisterOwnerDto } from './dto/register-owner.dto';
 import { RegisterUserDto } from './dto/register-user.dto';
 import { LoginDto } from './dto/login.dto';
@@ -341,6 +341,8 @@ token row for security audit purposes.
     @Res({ passthrough: true }) res: Response,
   ) {
     const result = await this.authService.login(dto, this.tokenContext(req));
+    // P0.5: password proven but a second factor is still owed — no cookies yet.
+    if (isMfaPending(result)) return result;
     // Set HttpOnly auth cookies + the readable CSRF token. Tokens are NEVER
     // returned in the JSON body.
     this.cookies.setAuthCookies(res, result);

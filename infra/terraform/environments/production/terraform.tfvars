@@ -76,8 +76,15 @@ redis = {
 # with acceptable counts (see docs/RATE-LIMITING-DOS-AUDIT.md G.9 step 5).
 # Already in place for block mode: NoUserAgent_HEADER pinned to COUNT, and
 # /api/v1/integrations/* exempt from ip-reputation.
-waf_mode  = "count"
-dmarc_rua = "dmarc@ziyaratech.com"
+# P0.6 (2026-10-31): PROPOSED flip, NOT APPLIED. 7-day Logs Insights review
+# (docs/security-compliance/assessment/P0-6-WAF-OBSERVATION.md) found the only
+# counted traffic was scanner noise; no real route, webhook or clinic hit.
+# Rollback = set back to "count". rate-source-ip-flood stays COUNT while the
+# edge token is unset (module logic); SizeRestrictions_BODY stays COUNT.
+waf_mode = "block"
+# Rate rules stay COUNT in the first apply; flip to true after thresholds are reviewed.
+waf_rate_rules_block = false
+dmarc_rua            = "dmarc@ziyaratech.com"
 
 # Non-secret application config. Fixed platform keys (NODE_ENV, DB_SSL_CA,
 # STORAGE_PROVIDER, S3_BUCKET, SES_CONFIGURATION_SET, ...) are set by the platform module.
@@ -94,6 +101,12 @@ app_environment = {
   ENABLE_API_DOCS          = "false"
   ENABLE_INTEGRATION_DOCS  = "false"
   PLATFORM_API_LOG_ENABLED = "false"
+
+  # P0.9 (2026-10-31, PROPOSED, not applied): pin the AI privacy flags to the
+  # values the code already defaults to, so a missing variable can never loosen
+  # them. AI_DATA_RESIDENCY_ENABLED is deliberately NOT pinned - owner decision (G-D).
+  AI_MINIMIZER_ENABLED = "true"
+  AI_VISION_ENABLED    = "false"
 
   # Tap — production boots only with the credentials below (env.validation.ts fails closed).
   # Follow the checklist in infra/runbooks/tap-payments-rollout.md §5 before the first deploy.

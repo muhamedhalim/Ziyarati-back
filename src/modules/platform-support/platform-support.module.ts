@@ -27,6 +27,7 @@ import { SupportActivityService } from './support-activity.service';
 import { SupportBookingService } from './support-booking.service';
 import { SupportAiService } from './support-ai.service';
 import { SupportJobsService } from './support-jobs.service';
+import { SupportReadAuditInterceptor } from './support-read-audit.interceptor';
 
 /**
  * ============================================================================
@@ -85,6 +86,7 @@ import { SupportJobsService } from './support-jobs.service';
     PlatformSupportActionsController,
   ],
   providers: [
+    SupportReadAuditInterceptor,
     SupportClinicResolver,
     SupportClinicDirectoryService,
     ClinicSupportProfileService,

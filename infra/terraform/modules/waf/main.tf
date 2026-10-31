@@ -17,6 +17,8 @@
 locals {
   tags     = merge(var.tags, { Component = "waf" })
   blocking = var.mode == "block"
+  # P0.6: managed groups can enforce while the rate rules stay COUNT.
+  rate_blocking = local.blocking && var.rate_rules_block
 
   # RL-01/RL-02: header-aware rules only once the edge token exists. Whether it
   # is set is not secret, so it may drive dynamic blocks.
@@ -226,11 +228,11 @@ resource "aws_wafv2_web_acl" "this" {
 
     action {
       dynamic "block" {
-        for_each = local.blocking ? [1] : []
+        for_each = local.rate_blocking ? [1] : []
         content {}
       }
       dynamic "count" {
-        for_each = local.blocking ? [] : [1]
+        for_each = local.rate_blocking ? [] : [1]
         content {}
       }
     }
@@ -315,11 +317,11 @@ resource "aws_wafv2_web_acl" "this" {
 
     action {
       dynamic "block" {
-        for_each = local.blocking ? [1] : []
+        for_each = local.rate_blocking ? [1] : []
         content {}
       }
       dynamic "count" {
-        for_each = local.blocking ? [] : [1]
+        for_each = local.rate_blocking ? [] : [1]
         content {}
       }
     }
@@ -400,11 +402,11 @@ resource "aws_wafv2_web_acl" "this" {
 
     action {
       dynamic "block" {
-        for_each = local.blocking ? [1] : []
+        for_each = local.rate_blocking ? [1] : []
         content {}
       }
       dynamic "count" {
-        for_each = local.blocking ? [] : [1]
+        for_each = local.rate_blocking ? [] : [1]
         content {}
       }
     }
@@ -490,11 +492,11 @@ resource "aws_wafv2_web_acl" "this" {
 
       action {
         dynamic "block" {
-          for_each = local.blocking ? [1] : []
+          for_each = local.rate_blocking ? [1] : []
           content {}
         }
         dynamic "count" {
-          for_each = local.blocking ? [] : [1]
+          for_each = local.rate_blocking ? [] : [1]
           content {}
         }
       }
@@ -559,11 +561,11 @@ resource "aws_wafv2_web_acl" "this" {
 
     action {
       dynamic "block" {
-        for_each = local.blocking ? [1] : []
+        for_each = local.rate_blocking ? [1] : []
         content {}
       }
       dynamic "count" {
-        for_each = local.blocking ? [] : [1]
+        for_each = local.rate_blocking ? [] : [1]
         content {}
       }
     }
@@ -604,11 +606,11 @@ resource "aws_wafv2_web_acl" "this" {
 
     action {
       dynamic "block" {
-        for_each = local.blocking ? [1] : []
+        for_each = local.rate_blocking ? [1] : []
         content {}
       }
       dynamic "count" {
-        for_each = local.blocking ? [] : [1]
+        for_each = local.rate_blocking ? [] : [1]
         content {}
       }
     }
@@ -664,11 +666,11 @@ resource "aws_wafv2_web_acl" "this" {
 
     action {
       dynamic "block" {
-        for_each = local.blocking && local.edge_aware ? [1] : []
+        for_each = local.rate_blocking && local.edge_aware ? [1] : []
         content {}
       }
       dynamic "count" {
-        for_each = local.blocking && local.edge_aware ? [] : [1]
+        for_each = local.rate_blocking && local.edge_aware ? [] : [1]
         content {}
       }
     }

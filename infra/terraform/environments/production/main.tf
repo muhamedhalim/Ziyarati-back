@@ -95,9 +95,10 @@ module "platform" {
   db    = var.db
   redis = var.redis
 
-  waf_mode         = var.waf_mode
-  edge_proxy_token = var.edge_proxy_token
-  dmarc_rua        = var.dmarc_rua
+  waf_mode             = var.waf_mode
+  waf_rate_rules_block = var.waf_rate_rules_block
+  edge_proxy_token     = var.edge_proxy_token
+  dmarc_rua            = var.dmarc_rua
 
   alert_emails       = var.alert_emails
   monthly_budget_usd = var.monthly_budget_usd

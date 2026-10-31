@@ -5,6 +5,7 @@ import {
   ParseUUIDPipe,
   Query,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -31,6 +32,7 @@ import {
   QuerySupportDiagnosticsDto,
 } from './dto/query-support-diagnostics.dto';
 import { QuerySupportClinicsDto } from './dto/query-support-clinics.dto';
+import { SupportReadAuditInterceptor } from './support-read-audit.interceptor';
 
 /**
  * ============================================================================
@@ -63,6 +65,7 @@ import { QuerySupportClinicsDto } from './dto/query-support-clinics.dto';
 @ApiBearerAuth('JWT-auth')
 @Controller('platform/support/clinics')
 @UseGuards(PermissionsGuard)
+@UseInterceptors(SupportReadAuditInterceptor)
 export class PlatformSupportClinicController {
   constructor(
     private readonly directory: SupportClinicDirectoryService,

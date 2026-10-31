@@ -1,3 +1,4 @@
+import type { AuthResult } from './interfaces/auth-tokens.interface';
 import { Test, TestingModule } from '@nestjs/testing';
 import { Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -615,7 +616,7 @@ describe('AuthService', () => {
       const result = await service.login({
         email: 'owner@clinic.com',
         password: 'pw',
-      } as any);
+      } as any) as AuthResult;
 
       // P1.2 — a targeted UPDATE of last_login_at, not a full-entity save
       // (which would re-write the password_hash validateCredentials just
@@ -1951,7 +1952,7 @@ describe('AuthService', () => {
       const result = await svc.login({
         email: 'a@b.com',
         password: 'pw',
-      } as any);
+      } as any) as AuthResult;
       // 900s → 900_000ms base, jittered ±10% (P1.2 / MS-008 — de-synchronizes
       // a cohort's token expiry so a mass session-expiry event doesn't
       // produce a mass-reauth burst). Exact 900 is no longer expected.
@@ -1971,7 +1972,7 @@ describe('AuthService', () => {
         const result = await svc.login({
           email: 'a@b.com',
           password: 'pw',
-        } as any);
+        } as any) as AuthResult;
         seen.add(result.expiresIn);
       }
       // Overwhelmingly unlikely to collapse to a single value across 20
@@ -1989,7 +1990,7 @@ describe('AuthService', () => {
       const result = await svc.login({
         email: 'a@b.com',
         password: 'pw',
-      } as any);
+      } as any) as AuthResult;
       expect(result.expiresIn).toBe(0);
     });
   });

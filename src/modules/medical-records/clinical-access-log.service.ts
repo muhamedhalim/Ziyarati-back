@@ -68,7 +68,7 @@ export class ClinicalAccessLogService {
       );
     } catch (err) {
       this.logger.error(
-        `Clinical access log write FAILED (tenant=${tenantId}, customer=${customerId}, ` +
+        `CLINICAL_ACCESS_LOG_WRITE_FAILED: Clinical access log write FAILED (tenant=${tenantId}, customer=${customerId}, ` +
           `user=${userId}, scope=${scope}): ${(err as Error)?.message}`,
       );
     }

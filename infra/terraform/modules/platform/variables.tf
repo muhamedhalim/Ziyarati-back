@@ -225,6 +225,12 @@ variable "waf_mode" {
   default     = "count"
 }
 
+variable "waf_rate_rules_block" {
+  description = "With waf_mode = block, also enforce the WAF rate rules (false = rate rules stay COUNT)."
+  type        = bool
+  default     = true
+}
+
 variable "edge_proxy_token" {
   description = "RL-01/RL-02: shared secret between the Vercel proxy, the WAF and the API (EDGE_PROXY_TOKEN). From TF_VAR_edge_proxy_token, sourced from Secrets Manager. null = header-blind WAF (pre-RL-02)."
   type        = string

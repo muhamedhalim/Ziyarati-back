@@ -1,6 +1,12 @@
-import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, JwtSignOptions } from '@nestjs/jwt';
+import { MfaService } from './mfa/mfa.service';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import * as bcrypt from 'bcrypt';
@@ -59,6 +65,14 @@ const BCRYPT_ROUNDS = 12;
 const DUMMY_PASSWORD_HASH =
   '$2b$12$MHyGgAC.atV2OacDBMUA.eLCmKAdp.uvTRhtGwWIMhkYjOf3k8TIi';
 
+export type MfaPending =
+  | { mfaRequired: true; challengeToken: string }
+  | { mfaEnrollmentRequired: true; challengeToken: string };
+
+export function isMfaPending(r: AuthResult | MfaPending): r is MfaPending {
+  return 'challengeToken' in r;
+}
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -81,6 +95,7 @@ export class AuthService {
     private readonly loginProtection: LoginProtectionService,
     private readonly limiter: FixedWindowLimiterService,
     private readonly metrics: MetricsService,
+    @Optional() private readonly mfa?: MfaService,
   ) {}
 
   /** Base URL for links embedded in emails (APP_URL, else first FRONTEND_ORIGIN). */
@@ -375,7 +390,10 @@ export class AuthService {
    *     uniformly, exactly as it must.
    *  3. A successful login fully clears the failure state.
    */
-  async login(dto: LoginDto, context?: TokenContext): Promise<AuthResult> {
+  async login(
+    dto: LoginDto,
+    context?: TokenContext,
+  ): Promise<AuthResult | MfaPending> {
     const identity = this.normalizeEmail(dto.email);
     // RL-05: the trusted-proxy-resolved address (req.ip), so a lock earned
     // from one address does not refuse the owner on another.
@@ -424,9 +442,34 @@ export class AuthService {
     // every mapped column back, re-writing the hash it just read for no
     // reason). `issueAuthResult` below only ever needs `user.id`, which this
     // never touches.
-    await this.users.update({ id: user.id }, { last_login_at: new Date() });
+    // P0.5 (TSF-03): second factor. Password is proven; NO session is issued
+    // until the code is verified (or, for a mandatory-but-unenrolled platform
+    // user, the factor is enrolled).
+    if (this.mfa) {
+      if (await this.mfa.isEnabled(user.id)) {
+        return {
+          mfaRequired: true,
+          challengeToken: await this.mfa.issueChallenge(user.id, 'mfa_verify'),
+        };
+      }
+      if (this.config.get<string>('MFA_ENFORCE_FROM')) {
+        const principal = await this.buildAuthenticatedUser(user.id);
+        if (await this.mfa.enrolmentRequired(user.id, principal.tenantId)) {
+          return {
+            mfaEnrollmentRequired: true,
+            challengeToken: await this.mfa.issueChallenge(user.id, 'mfa_enroll'),
+          };
+        }
+      }
+    }
+    return this.finishLogin(user.id, context);
+  }
 
-    const result = await this.issueAuthResult(user.id, context);
+  /** Completes a login whose password (and, if required, second factor) is proven. */
+  async finishLogin(userId: string, context?: TokenContext): Promise<AuthResult> {
+    await this.users.update({ id: userId }, { last_login_at: new Date() });
+
+    const result = await this.issueAuthResult(userId, context);
     // Ids only — never the email, password or any token material. Failures are
     // logged by AllExceptionsFilter (`auth.login.failed`, uniform reason).
     this.logger.log({

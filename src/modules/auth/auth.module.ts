@@ -14,6 +14,10 @@ import { PasswordReset } from '../../entities/Auth&RBAC/PasswordReset';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { Patient } from '../../entities/Patients/Patient';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
+import { UserMfa } from '../../entities/Auth&RBAC/UserMfa';
+import { UserMfaRecoveryCode } from '../../entities/Auth&RBAC/UserMfaRecoveryCode';
+import { MfaService } from './mfa/mfa.service';
+import { MfaController } from './mfa/mfa.controller';
 
 import { AuthService } from './auth.service';
 import { RolesService } from './roles.service';
@@ -47,6 +51,8 @@ import { PlatformModule } from '../platform/platform.module';
       Tenant,
       Patient,
       AuditLog,
+      UserMfa,
+      UserMfaRecoveryCode,
     ]),
     PassportModule,
     // Per-operation secrets/TTLs are passed explicitly when signing (access vs
@@ -61,9 +67,10 @@ import { PlatformModule } from '../platform/platform.module';
     // Provides SystemSettingService for registration gate (allow_tenant_registration).
     PlatformModule,
   ],
-  controllers: [AuthController, RolesController, PermissionsController],
+  controllers: [AuthController, MfaController, RolesController, PermissionsController],
   providers: [
     AuthService,
+    MfaService,
     RolesService,
     PermissionsService,
     PatientService,

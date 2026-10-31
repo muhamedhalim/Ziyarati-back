@@ -268,5 +268,20 @@
     "method": "POST",
     "path": "/public/contact",
     "reason": "Marketing-site Contact Us form: an anonymous prospect leaves a name, email and message. Writes one contact_leads row (not tenant data) and sends a best-effort notification to the platform sales inbox; returns only {received:true}, no lookup or disclosure of any account. Validated DTO (length caps, email, subject enum), identical re-submits inside 10 minutes are ignored, strict per-IP @Throttle (PUBLIC_CONTACT_THROTTLE). @SkipCsrf because the route reads no session and a signed-in staff member with a stale cookie must still be able to submit it."
+  },
+  {
+    "method": "POST",
+    "path": "/auth/mfa/verify",
+    "reason": "Login step 2: no session exists yet; authenticated by the short-lived challenge token minted after the password was proven, plus a TOTP/recovery code with attempt lockout."
+  },
+  {
+    "method": "POST",
+    "path": "/auth/mfa/enroll/start",
+    "reason": "Login-time enrolment for a mandatory-MFA platform user: authenticated by the mfa_enroll challenge token only."
+  },
+  {
+    "method": "POST",
+    "path": "/auth/mfa/enroll/confirm",
+    "reason": "Login-time enrolment confirmation: mfa_enroll challenge token plus a valid TOTP code; issues the session only on success."
   }
 ]
