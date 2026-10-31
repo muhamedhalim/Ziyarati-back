@@ -203,10 +203,10 @@ idempotency_key?: string;
   })
   paid_at?: Date;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   created_at!: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updated_at?: Date;
 
   @DeleteDateColumn()

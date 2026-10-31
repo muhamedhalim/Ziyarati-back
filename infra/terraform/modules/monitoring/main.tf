@@ -88,6 +88,10 @@ locals {
     # while rows are parked FAILED (src/worker/outbox-relay.service.ts, CR-09). Payment outcomes,
     # reminders and webhooks all travel through the outbox.
     outbox_failed = { pattern = "\"OUTBOX_FAILED_ROWS\"", metric = "OutboxFailedRows" }
+    # PAY-017: the worker logs this summary at the end of every Tap provider reconciliation (daily 3-day
+    # window; the weekly 30-day run logs the same prefix) (src/modules/payments/reconciliation/provider-reconciliation.service.ts). It is
+    # a heartbeat: a run that never happens is invisible otherwise, because a healthy run is quiet.
+    reconcile_ran = { pattern = "\"provider reconcile (\"", metric = "ProviderReconcileRuns" }
   }
 
   payment_log_filters = merge([
@@ -337,6 +341,15 @@ locals {
         ns   = "AWS/CertificateManager", metric = "DaysToExpiry", stat = "Minimum", dims = { CertificateArn = var.certificate_arn }
         op   = "LessThanThreshold", threshold = 21, period = 86400, evals = 1, missing = "notBreaching"
         desc = "API TLS certificate expires in < 21 days — ACM could not renew; is the DNS validation CNAME (Vercel DNS) still present?"
+      }
+    },
+    # PAY-017: the daily Tap provider reconciliation (03:00 UTC) did not log its summary for 24 h.
+    # Only where Tap is the live provider (the sweep logs nothing when Tap is not active).
+    !var.enable_provider_reconcile_alarm ? {} : {
+      "critical-provider-reconcile-missing" = {
+        ns   = "ZiyaraTech/${var.environment}", metric = "ProviderReconcileRuns", stat = "Sum", dims = {}
+        op   = "LessThanThreshold", threshold = 1, period = 86400, evals = 1, missing = "breaching"
+        desc = "PAY-017: the daily Tap provider reconciliation did not run in the last 24 h - fees, payouts and discrepancies are not being compared with Tap. Check the worker, the payments queue and Redis, then re-run payments.providerReconcile"
       }
     },
     !var.enable_ses_queue_alarm ? {} : {

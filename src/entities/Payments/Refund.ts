@@ -67,6 +67,6 @@ export class Refund {
   })
   processed_by?: User;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   created_at!: Date;
 }

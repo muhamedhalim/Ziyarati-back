@@ -761,7 +761,7 @@ export class PlatformDashboardService {
   private async currenciesInRange(r: ResolvedRange): Promise<string[]> {
     const rows = await this.dataSource.query(
       `SELECT DISTINCT currency FROM payments
-        WHERE status = 'PAID' AND purpose = ANY($3) AND currency IS NOT NULL
+        WHERE status IN ('PAID', 'PARTIALLY_REFUNDED') AND purpose = ANY($3) AND currency IS NOT NULL
           AND paid_at >= $1 AND paid_at < $2
         ORDER BY currency`,
       [r.from, r.to, [...CLINIC_REVENUE_PURPOSES]],

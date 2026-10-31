@@ -22,6 +22,8 @@ import { CurrentUser } from '../decorators/current-user.decorator';
 import { Public } from '../decorators/public.decorator';
 import { Roles } from '../decorators/roles.decorator';
 import { RolesGuard } from '../guards/roles.guard';
+import { NoEntitlementRequired } from '../../subscription-billing/decorators/no-entitlement-required.decorator';
+import { FeatureKey } from '../../subscription-billing/feature-registry';
 import { ROLE } from '../../../rbac/rbac.constants';
 import { SkipCsrf } from '../decorators/skip-csrf.decorator';
 import {
@@ -40,6 +42,8 @@ import { MfaService } from './mfa.service';
  * `setup/*` and `disable` are ordinary authenticated routes (CSRF applies).
  */
 @ApiTags('Auth — MFA')
+// A user's own sign-in security is never gated by the clinic's billing state.
+@NoEntitlementRequired(FeatureKey.CORE_WORKSPACE)
 @Controller('auth/mfa')
 export class MfaController {
   constructor(

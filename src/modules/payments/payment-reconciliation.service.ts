@@ -295,6 +295,16 @@ export class PaymentReconciliationService {
         .catch(() => null);
       if (!found || found.status !== 'found' || !found.result.gatewayPaymentId)
         continue;
+      if (
+        payment.sub_merchant_id &&
+        found.result.merchantId !== undefined &&
+        found.result.merchantId !== payment.sub_merchant_id
+      ) {
+        this.logger.error(
+          `ALERT: Payment ${payment.id}: the gateway's charge ${found.result.gatewayPaymentId} belongs to a different merchant — not attached`,
+        );
+        continue;
+      }
 
       let affected = 0;
       try {
@@ -342,6 +352,23 @@ export class PaymentReconciliationService {
     // Amount/currency reconciliation BEFORE booking paid (anti under/over-payment).
     if (verify.status === 'paid') {
       const expectedC = Math.round(Number(payment.amount) * 100);
+      // PAY-001: strict mode only (verify.merchantId is undefined otherwise).
+      if (
+        payment.sub_merchant_id &&
+        verify.merchantId !== undefined &&
+        verify.merchantId !== payment.sub_merchant_id
+      ) {
+        this.logger.error(
+          `ALERT: Payment ${payment.id}: charge merchant does not match the clinic it was routed to — left PENDING for manual review`,
+        );
+        await this.raiseMismatch(
+          payment,
+          verify.capturedMinorUnits,
+          verify.capturedCurrency,
+          expectedC,
+        );
+        return 'mismatch';
+      }
       if (
         verify.capturedMinorUnits != null &&
         verify.capturedMinorUnits !== expectedC

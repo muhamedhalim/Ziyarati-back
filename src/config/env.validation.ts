@@ -1418,6 +1418,23 @@ export const validate = (config: Record<string, unknown>) => {
       }
     }
 
+    // PAY-011: every Tap call carries `Authorization: Bearer <secret key>` to TAP_API_BASE.
+    // With the LIVE key in production, a changed value would hand that key to another host,
+    // so only Tap's own API (or nothing, the default) is accepted. Sandbox/lab stubs keep working.
+    const tapApiBase = String(value.TAP_API_BASE ?? '')
+      .trim()
+      .replace(/\/+$/, '');
+    if (
+      value.NODE_ENV === 'production' &&
+      value.TAP_ENV === 'live' &&
+      tapApiBase &&
+      tapApiBase !== 'https://api.tap.company'
+    ) {
+      tapProblems.push(
+        'TAP_API_BASE must be unset or https://api.tap.company when TAP_ENV=live in production',
+      );
+    }
+
     if (tapProblems.length > 0) {
       throw new Error(
         `❌ Env validation error: ${tapProblems.join('; ')}. ` +

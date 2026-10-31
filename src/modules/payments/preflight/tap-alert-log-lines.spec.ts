@@ -66,6 +66,8 @@ describe('Tap CloudWatch alarm log-line contract', () => {
         'no_key',
         // Not Tap-specific: the worker's outbox relay (CR-09) shares this mechanism.
         'outbox_failed',
+        // PAY-017: the daily provider reconciliation's own summary line is its heartbeat.
+        'reconcile_ran',
         'refetch_fail',
         'timeout',
         'unreachable',
@@ -80,6 +82,7 @@ describe('Tap CloudWatch alarm log-line contract', () => {
     'misrouted',
     'no_key',
     'outbox_failed',
+    'reconcile_ran',
     'refetch_fail',
     'timeout',
     'unreachable',

@@ -23,6 +23,7 @@ import { ReviewMerchantAccountDto } from './dto/review-merchant-account.dto';
 
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { MfaStepUpGuard } from '../auth/guards/mfa-step-up.guard';
 import { ROLE } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 
@@ -120,6 +121,7 @@ export class MerchantAccountAdminController {
     schema: S_ERROR,
   })
   @Patch(':tenantId/review')
+  @UseGuards(MfaStepUpGuard)
   review(
     @Param('tenantId', ParseUUIDPipe) tenantId: string,
     @Body() dto: ReviewMerchantAccountDto,

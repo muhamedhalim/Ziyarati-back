@@ -108,9 +108,9 @@ export class Settlement {
   @Column({ type: 'varchar', length: 64, nullable: true })
   bank_reference?: string | null;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   created_at!: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updated_at?: Date;
 }

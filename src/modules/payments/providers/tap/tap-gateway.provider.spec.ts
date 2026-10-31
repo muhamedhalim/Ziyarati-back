@@ -415,6 +415,16 @@ describe('TapGatewayProvider', () => {
   });
 
   describe('verifyPayment', () => {
+    it('PAY-001: reports the charge merchant only in strict mode (empty string when Tap names none)', async () => {
+      const charge = { id: 'chg_1', status: 'CAPTURED', amount: 10, currency: 'SAR', merchant: { id: 'merchant_CLINIC' } };
+      client.getCharge.mockResolvedValue(ok(charge));
+      expect((await build().verifyPayment('chg_1')).merchantId).toBeUndefined();
+      cfg.tapStrictMerchantEcho = true;
+      expect((await build().verifyPayment('chg_1')).merchantId).toBe('merchant_CLINIC');
+      client.getCharge.mockResolvedValue(ok({ ...charge, merchant: undefined }));
+      expect((await build().verifyPayment('chg_1')).merchantId).toBe('');
+    });
+
     it("CAPTURED → paid with captured amount in the DOMAIN's x100 unit + currency", async () => {
       client.getCharge.mockResolvedValueOnce(
         ok({

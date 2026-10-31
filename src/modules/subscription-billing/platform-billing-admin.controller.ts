@@ -32,6 +32,7 @@ import { ListFreeAccessOverviewQueryDto } from './dto/list-free-access-overview.
 
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { MfaStepUpGuard } from '../auth/guards/mfa-step-up.guard';
 import { ROLE } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 
@@ -75,6 +76,7 @@ export class PlatformBillingAdminController {
   })
   @ApiOkResponse({ description: 'Mode updated.' })
   @Put('mode')
+  @UseGuards(MfaStepUpGuard)
   @HttpCode(HttpStatus.OK)
   setMode(@Body() dto: SetBillingModeDto) {
     return this.mode.set(dto.mode);
@@ -197,6 +199,7 @@ export class PlatformBillingAdminController {
   })
   @ApiOkResponse({ description: 'Override granted.' })
   @Post('tenants/:tenantId/override')
+  @UseGuards(MfaStepUpGuard)
   grantOverride(
     @Param('tenantId', ParseUUIDPipe) tenantId: string,
     @Body() dto: GrantOverrideDto,
@@ -217,6 +220,7 @@ export class PlatformBillingAdminController {
   })
   @ApiOkResponse({ description: 'Override extended.' })
   @Patch('tenants/:tenantId/override')
+  @UseGuards(MfaStepUpGuard)
   extendOverride(
     @Param('tenantId', ParseUUIDPipe) tenantId: string,
     @Body() dto: ExtendOverrideDto,
@@ -227,6 +231,7 @@ export class PlatformBillingAdminController {
   @ApiOperation({ summary: "Revoke a tenant's active free-access override" })
   @ApiOkResponse({ description: 'Override revoked.' })
   @Post('tenants/:tenantId/override/revoke')
+  @UseGuards(MfaStepUpGuard)
   @HttpCode(HttpStatus.OK)
   revokeOverride(@Param('tenantId', ParseUUIDPipe) tenantId: string) {
     return this.overrides.revoke(tenantId);
@@ -257,6 +262,7 @@ export class PlatformBillingAdminController {
   })
   @ApiOkResponse({ description: '{ status: "refunded" | "pending", invoice }.' })
   @Post('invoices/:id/refund')
+  @UseGuards(MfaStepUpGuard)
   @HttpCode(HttpStatus.OK)
   refundInvoice(
     @Param('id', ParseUUIDPipe) id: string,

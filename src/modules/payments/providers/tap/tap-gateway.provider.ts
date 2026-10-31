@@ -203,6 +203,9 @@ export class TapGatewayProvider implements PaymentGatewayProvider {
       capturedMinorUnits:
         status === 'paid' ? toDomainMinorUnits(charge.amount) : undefined,
       capturedCurrency: status === 'paid' ? charge.currency : undefined,
+      merchantId: this.config.tapStrictMerchantEcho
+        ? String(charge.merchant?.id ?? '')
+        : undefined,
       failureReason:
         status === 'failed'
           ? safeFailureReason(charge.response?.code, charge.status)

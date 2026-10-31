@@ -13,6 +13,11 @@
  * separate Payment rows and, if a live gateway were configured, would charge
  * the card twice.
  */
+import './utils/tap-e2e-env.setup';
+import './utils/tap-e2e-booking.setup';
+import { TEST_META_ENV } from './utils/whatsapp-meta-env-configured.setup';
+void TEST_META_ENV;
+
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
 
@@ -29,6 +34,9 @@ import { In } from 'typeorm';
 import { Payment } from '../src/entities/Payments/Payment';
 import { Customer } from '../src/entities/CRM/Customer';
 import { Tenant } from '../src/entities/SaaS-Core/Tenant';
+import { MerchantAccount } from '../src/entities/Payments/MerchantAccount';
+import { TapApiClient } from '../src/modules/payments/providers/tap/tap-api.client';
+import { TapSandbox } from './utils/tap-e2e';
 
 const API = '/api/v1';
 
@@ -49,8 +57,22 @@ describe('Manual payment idempotency (FND-027, container-backed) — real Postgr
   let owner: OwnerFixture;
 
   beforeAll(async () => {
-    e2e = await createE2eApp();
+    // PAY-009: a clinic charge needs an APPROVED Tap merchant (the payments gate added
+    // after this suite was written); Tap itself is stubbed at the client boundary.
+    e2e = await createE2eApp((b) =>
+      b.overrideProvider(TapApiClient).useValue(new TapSandbox().asClient()),
+    );
     owner = await createOwnerFixture(e2e, 'payment-idem');
+    const merchants = e2e.dataSource.getRepository(MerchantAccount);
+    await merchants.save(
+      merchants.create({
+        tenant: { id: owner.tenantId } as Tenant,
+        provider: 'tap',
+        status: 'APPROVED',
+        provider_recipient_id: `merchant_${randomUUID().slice(0, 10)}`,
+        approved_at: new Date(),
+      }),
+    );
   }, 60_000);
 
   // NOTE: no per-tenant teardown here. `transactions` is append-only by DB

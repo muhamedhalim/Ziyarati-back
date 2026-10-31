@@ -1001,19 +1001,28 @@ export class MarketplaceFinanceService {
 
     const [t] = await this.dataSource.query(
       `SELECT
-         COALESCE(SUM(amount) FILTER (WHERE status = 'PAID'), 0) AS total_revenue,
-         COALESCE(SUM(COALESCE(net_amount, amount)) FILTER (WHERE status = 'PAID'), 0) AS net_revenue,
-         COALESCE(SUM(gateway_fee) FILTER (WHERE status = 'PAID'), 0) AS gateway_fees,
-         COALESCE(SUM(platform_fee) FILTER (WHERE status = 'PAID'), 0) AS platform_fees,
+         COALESCE(SUM(amount) FILTER (WHERE status IN ('PAID', 'PARTIALLY_REFUNDED')), 0) AS total_revenue,
+         COALESCE(SUM(COALESCE(net_amount, amount)) FILTER (WHERE status IN ('PAID', 'PARTIALLY_REFUNDED')), 0) AS net_revenue,
+         COALESCE(SUM(gateway_fee) FILTER (WHERE status IN ('PAID', 'PARTIALLY_REFUNDED')), 0) AS gateway_fees,
+         COALESCE(SUM(platform_fee) FILTER (WHERE status IN ('PAID', 'PARTIALLY_REFUNDED')), 0) AS platform_fees,
          COALESCE(SUM(refunded_amount), 0) AS refunds,
-         COALESCE(COUNT(*) FILTER (WHERE status = 'PAID'), 0) AS successful_payments,
+         COALESCE(COUNT(*) FILTER (WHERE status IN ('PAID', 'PARTIALLY_REFUNDED')), 0) AS successful_payments,
          COALESCE(COUNT(*) FILTER (WHERE status = 'FAILED'), 0) AS failed_payments,
-         COALESCE(AVG(amount) FILTER (WHERE status = 'PAID'), 0) AS avg_booking,
-         COALESCE(MAX(amount) FILTER (WHERE status = 'PAID'), 0) AS highest_booking,
-         COALESCE(MIN(amount) FILTER (WHERE status = 'PAID'), 0) AS lowest_booking,
-         COALESCE(SUM(amount) FILTER (WHERE status = 'PAID' AND paid_at >= date_trunc('month', now())), 0) AS this_month,
-         COALESCE(SUM(amount) FILTER (WHERE status = 'PAID' AND paid_at >= date_trunc('month', now()) - interval '1 month' AND paid_at < date_trunc('month', now())), 0) AS last_month
+         COALESCE(AVG(amount) FILTER (WHERE status IN ('PAID', 'PARTIALLY_REFUNDED')), 0) AS avg_booking,
+         COALESCE(MAX(amount) FILTER (WHERE status IN ('PAID', 'PARTIALLY_REFUNDED')), 0) AS highest_booking,
+         COALESCE(MIN(amount) FILTER (WHERE status IN ('PAID', 'PARTIALLY_REFUNDED')), 0) AS lowest_booking,
+         COALESCE(SUM(amount) FILTER (WHERE status IN ('PAID', 'PARTIALLY_REFUNDED') AND paid_at >= date_trunc('month', now())), 0) AS this_month,
+         COALESCE(SUM(amount) FILTER (WHERE status IN ('PAID', 'PARTIALLY_REFUNDED') AND paid_at >= date_trunc('month', now()) - interval '1 month' AND paid_at < date_trunc('month', now())), 0) AS last_month
        FROM payments WHERE "tenantId" = $1 AND purpose = ANY($2)`,
+      [tenantId, [...CLINIC_REVENUE_PURPOSES]],
+    );
+
+    // PAY-005: revenue figures above are in one currency each; report the set so the UI
+    // never stamps one symbol on a mixed total.
+    const currencies: Array<{ currency: string }> = await this.dataSource.query(
+      `SELECT DISTINCT currency FROM payments
+        WHERE "tenantId" = $1 AND purpose = ANY($2) AND currency IS NOT NULL
+          AND status IN ('PAID', 'PARTIALLY_REFUNDED') ORDER BY currency`,
       [tenantId, [...CLINIC_REVENUE_PURPOSES]],
     );
 
@@ -1021,7 +1030,7 @@ export class MarketplaceFinanceService {
       `SELECT to_char(date_trunc('day', paid_at), 'YYYY-MM-DD') AS day,
               COALESCE(SUM(amount), 0) AS revenue, COUNT(*) AS count
          FROM payments
-        WHERE "tenantId" = $1 AND purpose = ANY($2) AND status = 'PAID' AND paid_at >= now() - interval '30 days'
+        WHERE "tenantId" = $1 AND purpose = ANY($2) AND status IN ('PAID', 'PARTIALLY_REFUNDED') AND paid_at >= now() - interval '30 days'
         GROUP BY 1 ORDER BY 1`,
       [tenantId, [...CLINIC_REVENUE_PURPOSES]],
     );
@@ -1029,7 +1038,7 @@ export class MarketplaceFinanceService {
       `SELECT to_char(date_trunc('month', paid_at), 'YYYY-MM') AS month,
               COALESCE(SUM(amount), 0) AS revenue, COUNT(*) AS count
          FROM payments
-        WHERE "tenantId" = $1 AND purpose = ANY($2) AND status = 'PAID' AND paid_at >= now() - interval '12 months'
+        WHERE "tenantId" = $1 AND purpose = ANY($2) AND status IN ('PAID', 'PARTIALLY_REFUNDED') AND paid_at >= now() - interval '12 months'
         GROUP BY 1 ORDER BY 1`,
       [tenantId, [...CLINIC_REVENUE_PURPOSES]],
     );
@@ -1048,6 +1057,7 @@ export class MarketplaceFinanceService {
         refunds: round2(n(t.refunds)),
         successfulPayments: n(t.successful_payments),
         failedPayments: n(t.failed_payments),
+        currencies: currencies.map((x) => x.currency),
         averageBooking: round2(n(t.avg_booking)),
         highestBooking: round2(n(t.highest_booking)),
         lowestBooking: round2(n(t.lowest_booking)),

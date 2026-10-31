@@ -185,11 +185,29 @@ describe('PaymentService.create (booking payments)', () => {
   });
 
   it('replays an idempotency key without touching the gateway', async () => {
-    const existing = { id: 'pay-1', status: PaymentStatus.PENDING };
+    const existing = { id: 'pay-1', status: PaymentStatus.PENDING, amount: 50, currency: 'SAR' };
     payments.findOne.mockResolvedValueOnce(existing);
     const res = await service.create(TENANT, { amount: 50, idempotencyKey: 'k1' } as any);
     expect(res.payment).toBe(existing);
     expect(gateway.createPayment).not.toHaveBeenCalled();
+  });
+
+  it('PAY-013: a replayed key with a DIFFERENT amount / customer is a 409, never the old payment', async () => {
+    const existing = {
+      id: 'pay-1', status: PaymentStatus.PENDING, amount: 50, currency: 'SAR',
+      customer: { id: 'cust-1' },
+    };
+    payments.findOne.mockResolvedValue(existing);
+    await expect(
+      service.create(TENANT, { amount: 75, idempotencyKey: 'k1' } as any),
+    ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+    await expect(
+      service.create(TENANT, { amount: 50, customerId: 'cust-2', idempotencyKey: 'k1' } as any),
+    ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+    expect(gateway.createPayment).not.toHaveBeenCalled();
+    // same payload (customer given or omitted) still replays
+    const same = await service.create(TENANT, { amount: 50, customerId: 'cust-1', idempotencyKey: 'k1' } as any);
+    expect(same.payment).toBe(existing);
   });
 
   // Phase 1.5 (plan §12) — the platform purposes are a service-only option,
@@ -407,7 +425,7 @@ describe('PaymentService.create (booking payments)', () => {
 
     it('lost the derived-key race (concurrent manual double-submit) → returns the winner, no second charge', async () => {
       payments.save.mockRejectedValueOnce({ code: '23505' });
-      const winner = { id: 'pay-2', status: PaymentStatus.PENDING, metadata: {} };
+      const winner = { id: 'pay-2', status: PaymentStatus.PENDING, amount: 75, currency: 'SAR', metadata: {} };
       payments.findOne.mockResolvedValueOnce(winner);
 
       const res = await service.create(TENANT, { amount: 75, customerId: 'cust-1' } as any);
@@ -525,6 +543,29 @@ describe('PaymentService.create (booking payments)', () => {
         code: ErrorCode.UNPROCESSABLE_ENTITY,
       });
       expect(paymentRepo.save).not.toHaveBeenCalledWith(expect.objectContaining({ status: PaymentStatus.PAID }));
+    });
+
+    it('PAY-001: a paid charge that belongs to a DIFFERENT merchant than the clinic we routed to is rejected, never booked PAID', async () => {
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.findOne.mockResolvedValue(pendingPayment({ sub_merchant_id: 'merchant_CLINIC' }));
+      gateway.verifyPayment.mockResolvedValueOnce({ status: 'paid', merchantId: 'merchant_OTHER', raw: {} });
+
+      await expect(service.confirm(TENANT, 'pay-1', {})).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+      expect(paymentRepo.save).not.toHaveBeenCalledWith(expect.objectContaining({ status: PaymentStatus.PAID }));
+    });
+
+    it('PAY-001: the clinic own merchant echo (or no echo, strict mode off) books PAID', async () => {
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.save.mockImplementation(async (p: any) => p);
+      paymentRepo.findOne.mockResolvedValue(pendingPayment({ sub_merchant_id: 'merchant_CLINIC' }));
+      gateway.verifyPayment.mockResolvedValueOnce({ status: 'paid', merchantId: 'merchant_CLINIC', raw: {} });
+      expect((await service.confirm(TENANT, 'pay-1', {})).status).toBe(PaymentStatus.PAID);
+
+      paymentRepo.findOne.mockResolvedValue(pendingPayment({ sub_merchant_id: 'merchant_CLINIC' }));
+      gateway.verifyPayment.mockResolvedValueOnce({ status: 'paid', raw: {} });
+      expect((await service.confirm(TENANT, 'pay-1', {})).status).toBe(PaymentStatus.PAID);
     });
 
     it('ANTI-TAMPERING: a mismatched captured CURRENCY is also rejected', async () => {

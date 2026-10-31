@@ -718,6 +718,31 @@ describe('env.validation', () => {
         );
       });
 
+      // PAY-011: the live secret key is sent as a Bearer token to TAP_API_BASE.
+      it.each([
+        ['another host', 'https://tap-proxy.example.com'],
+        ['plain http', 'http://api.tap.company'],
+        ['a lookalike host', 'https://api.tap.company.evil.test'],
+      ])('rejects TAP_API_BASE with the live key in production: %s', (_label, base) => {
+        expect(() => validate({ ...liveOk, TAP_API_BASE: base })).toThrow(
+          /TAP_API_BASE must be unset or https:\/\/api\.tap\.company/,
+        );
+      });
+
+      it('accepts TAP_API_BASE unset, empty or exactly Tap with the live key in production', () => {
+        expect(() => validate({ ...liveOk })).not.toThrow();
+        expect(() => validate({ ...liveOk, TAP_API_BASE: '' })).not.toThrow();
+        expect(() =>
+          validate({ ...liveOk, TAP_API_BASE: 'https://api.tap.company/' }),
+        ).not.toThrow();
+      });
+
+      it('still allows a TAP_API_BASE stub with SANDBOX keys in production (lab/staging)', () => {
+        expect(() =>
+          validate({ ...sandboxOk, TAP_API_BASE: 'http://127.0.0.1:4455' }),
+        ).not.toThrow();
+      });
+
       it('Tap variables are NOT required when payments are explicitly disabled, even in production', () => {
         expect(() =>
           validate({ ...prodBase, CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY, PAYMENT_PROVIDER: 'noop' }),

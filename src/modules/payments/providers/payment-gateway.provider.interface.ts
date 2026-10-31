@@ -128,6 +128,12 @@ export interface GatewayPaymentResult {
   capturedMinorUnits?: number;
   /** ISO currency the gateway captured in; reconciled against `Payment.currency`. */
   capturedCurrency?: string;
+  /**
+   * Merchant the gateway says the charge belongs to (PAY-001 / FIN-P4). Reported only
+   * when strict merchant checking is on; '' = the gateway named none. `undefined` =
+   * not checked, the caller must not compare.
+   */
+  merchantId?: string;
   /** Raw provider response — persisted on `Transaction.raw_response` for audit. */
   raw?: Record<string, any>;
 }

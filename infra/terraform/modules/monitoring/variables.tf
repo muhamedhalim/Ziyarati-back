@@ -205,3 +205,9 @@ variable "waf_rate_rule_threshold" {
   type        = number
   default     = 50
 }
+
+variable "enable_provider_reconcile_alarm" {
+  description = "PAY-017: alarm when the daily Tap provider reconciliation stops logging its summary. Enable only where Tap is the live payment provider (the sweep is silent otherwise)."
+  type        = bool
+  default     = false
+}

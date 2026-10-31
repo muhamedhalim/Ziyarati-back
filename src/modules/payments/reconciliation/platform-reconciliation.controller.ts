@@ -32,6 +32,7 @@ import {
 
 import { Roles } from '../../auth/decorators/roles.decorator';
 import { RolesGuard } from '../../auth/guards/roles.guard';
+import { MfaStepUpGuard } from '../../auth/guards/mfa-step-up.guard';
 import { ROLE } from '../../../rbac/rbac.constants';
 import { TenantContextService } from '../../../core/tenant-context/tenant-context.service';
 
@@ -98,6 +99,7 @@ export class PlatformReconciliationController {
     schema: S_ERROR,
   })
   @Post('import')
+  @UseGuards(MfaStepUpGuard)
   @HttpCode(HttpStatus.OK)
   import(@Body() dto: ImportReconciliationReportDto) {
     return this.reconciliation.importChargesReport(
@@ -124,6 +126,7 @@ export class PlatformReconciliationController {
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ description: 'The closed exception.' })
   @Patch(':id')
+  @UseGuards(MfaStepUpGuard)
   close(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: CloseReconciliationDto,

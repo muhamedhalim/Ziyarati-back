@@ -461,6 +461,7 @@ describe('Platform + clinic finance read APIs (Phase 6) — real Postgres + Redi
       });
       expect(res.body.totals.totalRevenue).toBeCloseTo(250, 2);
       expect(res.body.totals.highestBooking).toBeCloseTo(250, 2);
+      expect(res.body.totals.currencies).toEqual(['SAR']);
     });
   });
 

@@ -254,35 +254,36 @@ module "monitoring" {
     aws = aws
   }
 
-  name                         = local.name
-  environment                  = var.environment
-  region                       = var.aws_region
-  alert_emails                 = var.alert_emails
-  kms_key_arn                  = module.kms.key_arn
-  alb_arn_suffix               = module.alb.alb_arn_suffix
-  target_group_arn_suffix      = module.alb.target_group_arn_suffix
-  cluster_name                 = module.ecs.cluster_name
-  api_service_name             = module.ecs.api_service_name
-  worker_service_name          = module.ecs.worker_service_name
-  api_min_count                = var.api.min_count
-  api_log_group_name           = module.ecs.log_group_names.api
-  worker_log_group_name        = module.ecs.log_group_names.worker
-  rds_identifier               = module.rds.identifier
-  rds_max_connections          = var.db.max_connections
-  rds_allocated_storage_gb     = var.db.allocated_storage_gb
-  redis_replication_group_id   = module.elasticache.replication_group_id
-  redis_num_cache_clusters     = var.redis.num_cache_clusters
-  ses_feedback_dlq_name        = module.ses.feedback_dlq_name
-  ses_feedback_queue_name      = module.ses.feedback_queue_name
-  enable_ses_queue_alarm       = true
-  certificate_arn              = module.alb.certificate_arn
-  enable_acm_alarm             = true
-  nat_gateway_count            = var.nat_gateway_count
-  nat_gateway_ids              = module.network.nat_gateway_ids
-  api_domain                   = local.api_domain
-  enable_external_health_check = var.enable_external_health_check
-  waf_mode                     = var.waf_rate_rules_block ? var.waf_mode : "count" # alarms track the rate rules
-  tags                         = local.tags
+  name                            = local.name
+  environment                     = var.environment
+  region                          = var.aws_region
+  alert_emails                    = var.alert_emails
+  kms_key_arn                     = module.kms.key_arn
+  alb_arn_suffix                  = module.alb.alb_arn_suffix
+  target_group_arn_suffix         = module.alb.target_group_arn_suffix
+  cluster_name                    = module.ecs.cluster_name
+  api_service_name                = module.ecs.api_service_name
+  worker_service_name             = module.ecs.worker_service_name
+  api_min_count                   = var.api.min_count
+  api_log_group_name              = module.ecs.log_group_names.api
+  worker_log_group_name           = module.ecs.log_group_names.worker
+  rds_identifier                  = module.rds.identifier
+  rds_max_connections             = var.db.max_connections
+  rds_allocated_storage_gb        = var.db.allocated_storage_gb
+  redis_replication_group_id      = module.elasticache.replication_group_id
+  redis_num_cache_clusters        = var.redis.num_cache_clusters
+  ses_feedback_dlq_name           = module.ses.feedback_dlq_name
+  ses_feedback_queue_name         = module.ses.feedback_queue_name
+  enable_ses_queue_alarm          = true
+  certificate_arn                 = module.alb.certificate_arn
+  enable_acm_alarm                = true
+  enable_provider_reconcile_alarm = lookup(var.app_environment, "TAP_ENV", "") == "live"
+  nat_gateway_count               = var.nat_gateway_count
+  nat_gateway_ids                 = module.network.nat_gateway_ids
+  api_domain                      = local.api_domain
+  enable_external_health_check    = var.enable_external_health_check
+  waf_mode                        = var.waf_rate_rules_block ? var.waf_mode : "count" # alarms track the rate rules
+  tags                            = local.tags
 }
 
 module "account_baseline" {

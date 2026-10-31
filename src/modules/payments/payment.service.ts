@@ -133,8 +133,10 @@ export class PaymentService {
     if (idempotencyKey) {
       const existing = await this.payments.findOne({
         where: { tenant: { id: tenantId }, idempotency_key: idempotencyKey },
+        relations: { customer: true, appointment: true },
       });
       if (existing) {
+        this.assertSameRequest(existing, dto);
         return { payment: existing, status: existing.status, redirectUrl: undefined };
       }
     }
@@ -273,8 +275,10 @@ export class PaymentService {
       if (idempotencyKey && isUniqueViolation) {
         const winner = await this.payments.findOne({
           where: { tenant: { id: tenantId }, idempotency_key: idempotencyKey },
+          relations: { customer: true, appointment: true },
         });
         if (winner) {
+          this.assertSameRequest(winner, dto);
           return {
             payment: winner,
             status: winner.status,
@@ -477,6 +481,31 @@ export class PaymentService {
       phone: customer.phone,
       fallbackFirstName: 'Patient',
     });
+  }
+
+  /**
+   * PAY-013 — a replayed idempotency key must describe the SAME payment. Otherwise the
+   * caller gets a different payment than the one it asked for (and may hand the wrong
+   * pay link to a patient). Only the fields the caller actually sent are compared.
+   */
+  private assertSameRequest(existing: Payment, dto: CreatePaymentDto): void {
+    const differs =
+      (dto.amount != null &&
+        Math.round(Number(existing.amount) * 100) !==
+          Math.round(Number(dto.amount) * 100)) ||
+      (dto.currency != null &&
+        existing.currency.toUpperCase() !== dto.currency.toUpperCase()) ||
+      (dto.customerId != null &&
+        existing.customer?.id !== undefined &&
+        existing.customer.id !== dto.customerId) ||
+      (dto.appointmentId != null &&
+        existing.appointment?.id !== undefined &&
+        existing.appointment.id !== dto.appointmentId);
+    if (differs) {
+      throw new AppError(ErrorCode.CONFLICT, {
+        message: 'This idempotency key was already used for a different payment',
+      });
+    }
   }
 
   /**
@@ -785,9 +814,27 @@ export class PaymentService {
    */
   private assertCapturedMatches(
     payment: Payment,
-    result: { capturedMinorUnits?: number; capturedCurrency?: string },
+    result: {
+      capturedMinorUnits?: number;
+      capturedCurrency?: string;
+      merchantId?: string;
+    },
     requireFigures = false,
   ): void {
+    // PAY-001: a payment routed to a clinic's merchant is only booked when the gateway
+    // says the charge belongs to that same merchant (reported only in strict mode).
+    if (
+      payment.sub_merchant_id &&
+      result.merchantId !== undefined &&
+      result.merchantId !== payment.sub_merchant_id
+    ) {
+      this.logger.error(
+        `ALERT: Payment ${payment.id} confirm rejected: charge merchant does not match the clinic it was routed to`,
+      );
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'The charge does not belong to this clinic; payment cannot be confirmed',
+      });
+    }
     const expectedC = Math.round(Number(payment.amount) * 100);
     if (
       requireFigures &&

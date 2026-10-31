@@ -47,6 +47,6 @@ export class PaymentLink {
   })
   expires_at?: Date;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   created_at!: Date;
 }

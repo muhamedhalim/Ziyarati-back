@@ -43,7 +43,7 @@ export class MerchantAccount {
    * mirrors the one migration 1730003700000 created; application code always
    * sets the provider explicitly (`MerchantAccountService.getOrCreate`).
    */
-  @Column({ default: 'moyasar' })
+  @Column({ default: 'tap' })
   provider!: string;
 
   /**

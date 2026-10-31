@@ -46,6 +46,6 @@ export class Transaction {
   })
   raw_response?: Record<string, any>;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   created_at!: Date;
 }
