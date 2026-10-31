@@ -55,7 +55,7 @@ enrolment screen at their next login after the date), observe a week, then Tier 
    and `TAP_MERCHANT_ID` secret references and the `AI_*` flags. Do **not** apply that as-is: reconcile the
    RDS drift and the Tap rollout step separately, or apply only once the plan shows nothing but the
    intended env changes. The RDS must stay Single-AZ and its availability settings untouched.
-3. After apply, the ECS service rolls new tasks; verify the new task definition contains the variable.
+3. **Apply does NOT restart anything**: the ECS services ignore `task_definition` changes (`modules/ecs/main.tf` lifecycle). Apply only registers a new revision; the NEXT run of `deploy-aws.yml` clones the latest revision (`ecs-deploy.sh`) and rolls it. Verify the new revision contains the variable, then deploy (reviewer approval is the human gate).
 
 ## Verify after enforcement
 
